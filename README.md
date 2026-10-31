@@ -2,7 +2,7 @@
 
 Outil desktop (Windows) : sources hétérogènes (photos, cotes, plans, cadastre) → modèle 3D paramétrique à l'échelle, chaque cote avec origine et marge σ. Usage personnel.
 
-État : phase 0 terminée — `docs/phase0.md`. Décisions : `docs/brief.md`.
+État : phases 0 et 1 terminées — `docs/phase0.md`. Décisions : `docs/brief.md`.
 
 ## Banc d'essai
 

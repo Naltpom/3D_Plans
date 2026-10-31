@@ -23,3 +23,14 @@ Temps COLMAP (130 photos) : points clés 28 s, appariement exhaustif 195 s, glob
 Décision (critères du brief) : photos = forme, ouvertures, poses ; cotes au mètre ou sur plans ; prochaine meilleure mesure centrale ; correction sur photo et aide IA à l'interprétation avant toute optimisation de la reconstruction. Dense en tâche de fond.
 
 Piste non testée : profondeur par vue recalée vue par vue sur les points épars COLMAP (échelle par vue).
+
+# Phase 1 — moteur sans interface (31/10/2026)
+
+`engine/plans3d` : observations = expressions des paramètres ± σ ; moindres carrés robustes (soft_l1) ; covariance → marges ; résidus normalisés (seuil 3) regroupés en conflits ; facteurs σ réel/σ déclaré par groupe ; prochaine meilleure mesure ; projet SQLite avec cache par empreinte ; export `model.json`. Tests : `tests/test_engine.py` (15).
+
+Salon (`adapters/salon.py`, 23 cotes au mètre + 17 mesures photo de A, 26 paramètres dont l'échelle) :
+- mise à jour 88–103 ms ; sans changement : rien de ré-extrait.
+- validation croisée (14 cotes) : toutes à ≤ 1,6 cm ; RMS z = 0,31 (σ déclarés, prudents), 0,62 (σ recalés).
+- précision estimée : mètre ~0,35 cm, photo plans ~0,8 cm, photo bords ~4 cm.
+- contradiction injectée (+10 cm sur une cote) : détectée, conflit nommé avec les 2 mesures photo opposées ; le reste du modèle bouge ≤ 0,7 cm.
+- limite : la cote fausse (σ 1 cm) l'emporte sur les photos (σ 1,5 cm) — le moteur signale, l'utilisateur tranche.

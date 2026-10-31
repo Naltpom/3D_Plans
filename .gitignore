@@ -24,3 +24,4 @@ runs/
 
 # configuration locale (chemins de la machine)
 bench/config.json
+.pytest_cache/
