@@ -1,0 +1,26 @@
+# environnements et dépendances téléchargées
+.venv/
+third_party/
+__pycache__/
+*.pyc
+node_modules/
+
+# données : jamais de photos ni de données de projet dans le dépôt (EXIF avec GPS, mesures du logement)
+data/
+runs/
+*.jpg
+*.jpeg
+*.JPG
+*.png
+*.heic
+*.ply
+*.npz
+*.npy
+*.db
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# configuration locale (chemins de la machine)
+bench/config.json
