@@ -1,12 +1,15 @@
-import json, math, os, re, unicodedata, urllib.request
+import hashlib, json, math, os, re, unicodedata, urllib.parse, urllib.request
 from . import components as C
 from .rpc import RpcError, rpc
 
-IKEA_URL = 'https://raw.githubusercontent.com/Nutlope/bygga/main/src/data/ikea-rows.ts'
+IKEA_URL = 'https://raw.githubusercontent.com/Nutlope/bygga/a02629a7d6454e2e28412ca7c11c69fa838304ff/src/data/ikea-rows.ts'
+IKEA_SHA256, MAX_DOWNLOAD = '0a6dafd06e7b34b201d65cf3554792c8f4bb5f1520ba8f8f88eb97beaddc1ffa', 5 * 1024 * 1024
 FOLDER = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), '3D_Plans', 'catalog')
 SCHEMA = 'create table if not exists furniture(id integer primary key autoincrement, item text, x real, z real, rot real, y real, options text)'
 COLOR, LIGHT = '#8c949c', {'puissance': 60, 'teinte': '#ffd8a8'}
 SNAP, NARROW, PASSAGE, WALKING, TOLERANCE, ACCESS = 0.10, 0.10, 0.80, 1.0, 1e-4, 0.6
+SIZE, POSITION, MAX_BOXES, HEX = (0.05, 5.0), (-1e4, 1e4), 100, re.compile(r'#[0-9a-fA-F]{6}')
+PARAMS = {'doors': (1, 20, True), 'rows': (1, 20, True), 'shelves': (1, 20, True), 'seatH': (5, 500), 'aw': (5, 500), 'round': (0, 1), 'puissance': (0, 1000)}
 FIXED, DOORS, LIGHTS = ('mur', 'escalier', 'boite'), ('porte', 'porte_fenetre'), ('suspension', 'lampadaire', 'lampe')
 SWING, HINGE = {'interieur': -1, 'exterieur': 1}, {'gauche': -1, 'droite': 1}
 
@@ -37,7 +40,7 @@ def fronts(w, h, d, nx, ny):
 
 
 def shelves(w, h, d, p):
-    n = max(2, round(h / 0.35)) + 1
+    n = p['shelves'] + 2 if 'shelves' in p else max(2, round(h / 0.35)) + 1
     return [box(i * (w - 0.02) / 2, 0, 0, 0.02, h, d) for i in (-1, 1)] + [box(0, k * (h - 0.02) / (n - 1), 0, w - 0.04, 0.02, d) for k in range(n)]
 
 
@@ -91,15 +94,45 @@ def number(text):
     except ValueError: return text
 
 
+def bounded(value, low, high, what, integer=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value): raise RpcError(f'{what} : valeur non numérique {value!r}')
+    if not low <= value <= high or integer and value != int(value): raise RpcError(f"{what} : {value:g} hors bornes ({low:g} à {high:g}{', entier' if integer else ''})")
+    return int(value) if integer else float(value)
+
+
+def setting(key, value):
+    if key == 'teinte' and isinstance(value, str) and HEX.fullmatch(value): return value
+    if key not in PARAMS: raise RpcError(f'option inconnue ou invalide : {key}')
+    return bounded(value, *PARAMS[key][:2], key, *PARAMS[key][2:])
+
+
+def settings(params):
+    if not isinstance(params, dict): raise RpcError('options : objet attendu')
+    return {k: setting(k, v) for k, v in params.items()}
+
+
+def dimensions(size):
+    if not isinstance(size, (list, tuple)) or len(size) != 3: raise RpcError('dimensions : [largeur, hauteur, profondeur] en m attendues')
+    return [bounded(v, *SIZE, 'dimension (m)') for v in size]
+
+
+def kept(params):
+    found = {}
+    for k, v in params.items():
+        try: found[k] = setting(k, number(v))
+        except RpcError: pass
+    return found
+
+
 def parse_ikea(text):
     items = []
     for line in (text.split('`')[1] if text.count('`') >= 2 else text).splitlines():
         f = line.split('|')
-        try: w, h, d = (float(v) / 100 for v in f[3:6])
-        except (ValueError, IndexError): continue
+        try: size = dimensions([float(v) / 100 for v in f[3:6]])
+        except (ValueError, RpcError): continue
         params = dict(kv.partition('=')[::2] for kv in (f[6] if len(f) > 6 else '').split(',') if '=' in kv)
         items.append({'id': 'ikea:' + (f[8] if len(f) > 8 and f[8] else re.sub(r'[^a-z0-9]+', '-', plain(' '.join(f[:6])))), 'label': f"{f[0]} — {IKEA_LABELS.get(f[1], f[2])}",
-                      'kind': IKEA_KINDS.get(f[1], 'commode'), 'size': [w, h, d], 'params': {k: number(v) for k, v in params.items()},
+                      'kind': IKEA_KINDS.get(f[1], 'commode'), 'size': size, 'params': kept(params),
                       'keywords': ' '.join([f[1], f[2], *f[7:8]]), 'source': 'ikea', **({'y': 1.4} if f[1] in WALL_MOUNTED else {})})
     return items
 
@@ -111,8 +144,10 @@ def read(name):
 
 
 def custom_item(custom, item_id='sur_mesure'):
-    boxes = [{k: float(b[k]) for k in ('x', 'y', 'z', 'lx', 'ly', 'lz')} for b in custom.get('boxes') or []]
-    if not boxes or any(b[k] <= 0 for b in boxes for k in ('lx', 'ly', 'lz')): raise RpcError('objet sur mesure : boxes = [{x, y, z, lx, ly, lz}] (m, tailles > 0)')
+    boxes = custom.get('boxes') if isinstance(custom, dict) else None
+    if not isinstance(boxes, list) or not 0 < len(boxes) <= MAX_BOXES or not all(isinstance(b, dict) and {'x', 'y', 'z', 'lx', 'ly', 'lz'} <= set(b) for b in boxes):
+        raise RpcError(f'objet sur mesure : boxes = [{{x, y, z, lx, ly, lz}}] (m, 1 à {MAX_BOXES} boîtes)')
+    boxes = [{k: bounded(b[k], *(POSITION if k in 'xyz' else (1e-3, SIZE[1])), f'objet sur mesure : {k}') for k in ('x', 'y', 'z', 'lx', 'ly', 'lz')} for b in boxes]
     low = {a: min(b[a] for b in boxes) for a in 'xyz'}; high = {a: max(b[a] + b['l' + a] for b in boxes) for a in 'xyz'}
     shift = {'x': (low['x'] + high['x']) / 2, 'y': 0.0, 'z': (low['z'] + high['z']) / 2}
     return {'id': item_id, 'label': str(custom.get('label') or 'Objet sur mesure'), 'kind': 'sur_mesure', 'source': 'perso', 'params': {},
@@ -122,15 +157,27 @@ def custom_item(custom, item_id='sur_mesure'):
 def entries():
     gabarits = [{'id': f'gabarit:{k}', 'label': label, 'kind': k, 'size': list(size), 'params': dict(LIGHT) if k in LIGHTS else {}, 'source': 'gabarit'}
                 for k, (label, size, _) in GABARITS.items()]
-    perso = [custom_item(c, c.get('id') or f'perso:{n}') for n, c in enumerate(read('perso.json'))]
+    perso = []
+    for n, c in enumerate(read('perso.json')):
+        try: perso.append(custom_item(c, (c.get('id') if isinstance(c, dict) else None) or f'perso:{n}'))
+        except RpcError: pass
     return gabarits + perso + read('ikea.json')
 
 
-@rpc('catalog.import_ikea', long=True)
-def import_ikea(ctx, url=IKEA_URL):
+def download(url, sha256):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != 'https' or parts.hostname != 'raw.githubusercontent.com': raise RpcError(f'source du catalogue refusée : {url}')
     try:
-        with urllib.request.urlopen(url, timeout=60) as response: items = parse_ikea(response.read().decode('utf-8'))
+        with urllib.request.urlopen(url, timeout=60) as response: data = response.read(MAX_DOWNLOAD + 1)
     except OSError as e: raise RpcError(f'téléchargement du catalogue impossible : {e}') from None
+    if len(data) > MAX_DOWNLOAD: raise RpcError(f'catalogue refusé : plus de {MAX_DOWNLOAD // 1024 // 1024} Mo')
+    if hashlib.sha256(data).hexdigest() != sha256: raise RpcError('catalogue refusé : empreinte SHA-256 inattendue')
+    return data.decode('utf-8', 'replace')
+
+
+@rpc('catalog.import_ikea', long=True)
+def import_ikea(ctx):
+    items = parse_ikea(download(IKEA_URL, IKEA_SHA256))
     if not items: raise RpcError('catalogue IKEA vide ou illisible')
     os.makedirs(FOLDER, exist_ok=True)
     with open(os.path.join(FOLDER, 'ikea.json'), 'w', encoding='utf-8') as fh: json.dump(items, fh, ensure_ascii=False)
@@ -299,25 +346,27 @@ def add(ctx, item=None, custom=None, x=0.0, z=0.0, rot=0.0, y=None, options=None
     if custom is not None: entry = custom_item(custom)
     else: entry = next((e for e in entries() if e['id'] == item), None)
     if entry is None: raise RpcError(f'objet de catalogue inconnu : {item}')
-    data = {k: v for k, v in entry.items() if k not in ('id', 'source', 'keywords', 'y')}; data['params'] = {**data['params'], **(options or {})}
+    data = {k: v for k, v in entry.items() if k not in ('id', 'source', 'keywords', 'y')}
+    data['size'], data['params'] = dimensions(data.get('size')), settings({**data.get('params', {}), **settings(options or {})})
+    x, z, rot, y = (bounded(v, *POSITION, k) for k, v in (('x', x), ('z', z), ('rot', rot), ('y', entry.get('y', 0.0) if y is None else y)))
     load(project); cursor = project.db.execute('insert into furniture(item, x, z, rot, y, options) values (?,?,?,?,?,?)',
-                                              (entry['id'], float(x), float(z), float(rot), float(entry.get('y', 0.0) if y is None else y), json.dumps(data, ensure_ascii=False)))
+                                              (entry['id'], x, z, rot, y, json.dumps(data, ensure_ascii=False)))
     project.db.commit()
     return report(ctx, cursor.lastrowid)
 
 
 @rpc('furniture.move')
 def move(ctx, id, x, z, y=None, snap_walls=True):
-    project = ctx.require_project(); obj = {**get(project, id), 'x': float(x), 'z': float(z)}
+    project = ctx.require_project(); obj = {**get(project, id), 'x': bounded(x, *POSITION, 'x'), 'z': bounded(z, *POSITION, 'z')}
     x, z = snap(C.geometry(project, ctx.result), obj) if snap_walls else (obj['x'], obj['z'])
-    project.db.execute('update furniture set x=?, z=?, y=coalesce(?, y) where id=?', (x, z, None if y is None else float(y), int(id))); project.db.commit()
+    project.db.execute('update furniture set x=?, z=?, y=coalesce(?, y) where id=?', (x, z, None if y is None else bounded(y, *POSITION, 'y'), int(id))); project.db.commit()
     return report(ctx, id)
 
 
 @rpc('furniture.rotate')
 def rotate(ctx, id, rot):
     project = ctx.require_project(); get(project, id)
-    project.db.execute('update furniture set rot=? where id=?', (float(rot) % 360, int(id))); project.db.commit()
+    project.db.execute('update furniture set rot=? where id=?', (bounded(rot, *POSITION, 'rot') % 360, int(id))); project.db.commit()
     return report(ctx, id)
 
 
