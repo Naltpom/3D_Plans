@@ -73,7 +73,7 @@ def rpc_trace(ctx, points, closed=True, lengths=None, cote_status='mesuré', cot
 
 
 @rpc('plan.place')
-def place(ctx, type, point, width=None):
+def place(ctx, type, point, width=None, height=None):
     project = ctx.require_project(); point = np.asarray(point, float); values = current_values(project); best = None
     if type not in components.OPENING_DEFAULTS: raise ValueError(f'ouverture inconnue : {type}')
     for comp in components.load(project).values():
@@ -85,10 +85,11 @@ def place(ctx, type, point, width=None):
     _, wall, along, length = best; width = float(width or components.OPENING_DEFAULTS[type]['l'])
     if length < width + 2 * MARGIN_M: raise ValueError(f"{wall['label']} trop court pour cette ouverture")
     comp_id = free_ids(project, type, 1)[0]; position = min(max(along - width / 2, MARGIN_M), length - width - MARGIN_M)
-    comp = components.add(project, type, comp_id, {'mur': wall['id'], 'pos': position, 'l': width})
+    comp = components.add(project, type, comp_id, {'mur': wall['id'], 'pos': position, 'l': width, **({'h': float(height)} if height else {})})
     covered, params = {o.expr for o in project.observations() if o.source == f'comp:{comp_id}'}, project.params()
     for name in comp['params']:
         if name not in covered: prior(project, comp_id, name, params[name][0], OPENING_SIGMA_M, f"{params[name][2]} (a priori)")
+    if height: prior(project, comp_id, f'{comp_id}_h', float(height), MARGIN_M / 5, f"{comp['label']} — hauteur (fiche)")
     project.db.commit()
     return components.summary(comp)
 
@@ -238,3 +239,75 @@ def read_sketch(ctx, progress=None):
         if box and kind: openings.append({'type': kind, 'point': metres((box[0] + box[2]) / 2, (box[1] + box[3]) / 2).round(3).tolist()})
     progress(1.0, 'Croquis lu')
     return {'walls': walls, 'cotes': cotes, 'openings': openings, 'model': model}
+
+
+ROOF_SLOPE_DEG, BUILT = 35.0, ('mur', 'porte', 'fenetre', 'porte_fenetre')
+
+
+def footprint(project):
+    prefix, house, _ = main_building(project)
+    if house: return np.array(house['pts'], float), (f"{prefix}_{house['id']}_h" if f"{prefix}_{house['id']}_h" in project.params() else None)
+    values = current_values(project); ends = [p for c in components.load(project).values() if c['type'] == 'mur' for p in wall_ends(c, values)]
+    return (np.array(ends), None) if ends else (None, None)
+
+
+@rpc('plan.roof')
+def roof(ctx):
+    project = ctx.require_project(); points, height = footprint(project)
+    if points is None: raise ValueError('toit : il faut une emprise (cadastre) ou des murs')
+    existing = [c for c in components.load(project).values() if c['type'] == 'toit']
+    if existing: return {'id': existing[0]['id'], 'measured': bool(height), 'created': False}
+    edges = [(points[i], points[(i + 1) % len(points)]) for i in range(len(points))]; p, q = max(edges, key=lambda e: np.linalg.norm(e[1] - e[0]))
+    d = (q - p) / np.linalg.norm(q - p); angle = float(np.degrees(np.arctan2(-d[1], d[0]))); across = np.array([np.sin(np.radians(angle)), np.cos(np.radians(angle))])
+    u, v = (points - p) @ d, (points - p) @ across; origin = p + u.min() * d + v.min() * across; length, width = u.max() - u.min(), v.max() - v.min()
+    rise, base = 0.5 * width * np.tan(np.radians(ROOF_SLOPE_DEG)), str(walls_base(project))
+    gutter, ridge = (f'({base}) + {height}', f'({base}) + {height} + {rise:.3f}') if height else (3.0, 3.0 + rise)
+    comp_id = free_ids(project, 'toit', 1)[0]
+    comp = components.add(project, 'toit', comp_id, {'x0': f'{origin[0]:.4f}', 'z0': f'{origin[1]:.4f}', 'long': f'{length:.4f}', 'larg': f'{width:.4f}',
+                                                     'rot': f'{angle:.4f}', 'hg': gutter, 'hf': ridge})
+    return {'id': comp['id'], 'measured': bool(height), 'created': True}
+
+
+def walls_base(project):
+    walls = [c for c in components.load(project).values() if c['type'] == 'mur']
+    return walls[0]['expressions']['y0'] if walls else components.Expr()
+
+
+@rpc('plan.settle')
+def settle(ctx):
+    project = ctx.require_project(); loaded = components.load(project)
+    ground = next((c for c in loaded.values() if c['type'] == 'terrain'), None)
+    if ground is None: raise ValueError('relief : importe d’abord une grille d’altitudes')
+    points, _ = footprint(project)
+    if points is None: raise ValueError('relief : il faut des murs ou une emprise')
+    from . import terrain
+    lowest = min(points, key=lambda p: components.evaluate(terrain.altitude(ground, *p), current_values(project)))
+    base = terrain.altitude(ground, *lowest); moved = []
+    for comp in loaded.values():
+        if comp['type'] in BUILT and 'y0' in comp['expressions']:
+            comp['expressions']['y0'] = base; moved.append(comp['id'])
+            project.db.execute('update components set json=? where id=?', (json.dumps(comp, ensure_ascii=False), comp['id']))
+    project.db.commit()
+    return {'moved': moved, 'base': str(base)}
+
+
+@rpc('plan.vehicle')
+def vehicle(ctx, longueur, largeur, hauteur, roue_longueur=0, roue_largeur=0, roue_hauteur=0, roue_position=0, porte_cote='droite',
+            porte_largeur=0, porte_hauteur=0, porte_position=0, arriere_largeur=0, arriere_hauteur=0):
+    project = ctx.require_project(); cm = lambda v: float(v) / 100
+    L, W, H = cm(longueur), cm(largeur), cm(hauteur)
+    if min(L, W, H) <= 0: raise ValueError('gabarit : longueur, largeur et hauteur utiles en cm, positives')
+    if any(c['type'] == 'mur' for c in components.load(project).values()): raise ValueError('gabarit : le projet a déjà des murs')
+    created = trace(ctx, [[0, 0], [L, 0], [L, W], [0, W]], True, [L, W, None, None], height=f'{H:.4f}', source='gabarit', cote_status='lu', cote_sigma=0.5)['created']
+    components.add(project, 'sol', 'sol1', {'source': 'gabarit'}, 'Plancher'); created.append('sol1')
+    if min(cm(roue_longueur), cm(roue_largeur), cm(roue_hauteur)) > 0:
+        for side, z in (('gauche', 0.0), ('droite', W - cm(roue_largeur))):
+            comp_id = free_ids(project, 'roue', 1)[0]
+            components.add(project, 'boite', comp_id, {'nature': 'passage de roue', 'x0': f'{cm(roue_position):.4f}', 'z0': f'{z:.4f}', 'lx': f'{cm(roue_longueur):.4f}',
+                                                       'lz': f'{cm(roue_largeur):.4f}', 'h': f'{cm(roue_hauteur):.4f}', 'rot': '0', 'source': 'gabarit'}, f'Passage de roue {side}')
+            created.append(comp_id)
+    if cm(porte_largeur) > 0:
+        z = W if porte_cote == 'droite' else 0.0
+        created.append(place(ctx, 'porte', [cm(porte_position) + cm(porte_largeur) / 2, z], cm(porte_largeur), cm(porte_hauteur) or None)['id'])
+    if cm(arriere_largeur) > 0: created.append(place(ctx, 'porte', [0.0, W / 2], cm(arriere_largeur), cm(arriere_hauteur) or None)['id'])
+    return {'created': created}

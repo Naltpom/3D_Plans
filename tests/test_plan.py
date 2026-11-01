@@ -1,7 +1,7 @@
 import json, os
 import numpy as np
 import pytest
-from plans3d import Project, cadastre, components, plan
+from plans3d import Project, cadastre, components, plan, terrain
 from plans3d.rpc import Ctx, read_cotes
 from test_cadastre import make_geojson
 
@@ -101,3 +101,28 @@ def test_read_sketch_with_fake_server(ctx, tmp_path, monkeypatch):
     assert found['openings'] == [{'type': 'porte', 'point': pytest.approx([2.5, 4.0], abs=0.03)}]
     plan.rpc_trace(ctx, wall['points'], True, [5.0, None, None, None], 'lu', 2.0)
     assert [(row['status'], row['sigma']) for row in read_cotes(ctx.project)] == [('lu', 2.0)]
+
+
+def test_house_roof_and_terrain(ctx, tmp_path):
+    cadastre.add_source(ctx.project, make_geojson(str(tmp_path / 'parcelle.geojson'))); plan.from_cadastre(ctx, create=True)
+    components.add(ctx.project, 'terrain', 'terrain', {'x0': -10, 'z0': -10, 'nx': 2, 'nz': 2, 'pas_x': 40, 'pas_z': 40, 'altitudes': [[1.0, 1.0], [1.0, 1.0]]})
+    moved = plan.settle(ctx)['moved']; made = plan.roof(ctx)
+    assert len(moved) == 4 and made['created'] and made['measured'] and not plan.roof(ctx)['created']
+    result = ctx.project.update(); found = shapes(ctx.project, result)
+    assert not result.contradictions and found['mur1']['center'][1] == pytest.approx(1.0 + 3.0, abs=0.01)
+    vertices = [v for s in components.geometry(ctx.project, result) if s['type'] == 'toit' for v in s['vertices']]
+    heights = sorted({round(v[1], 2) for v in vertices})
+    assert heights[0] == pytest.approx(7.0, abs=0.01) and heights[-1] > 7.0
+    xs, zs = zip(*[(v[0], v[2]) for v in vertices])
+    assert min(xs) < 4.0 and max(xs) > 12.0 and min(zs) < 3.0 and max(zs) > 9.0
+
+
+def test_vehicle_body(ctx):
+    created = plan.vehicle(ctx, 330, 170, 180, 90, 20, 30, 80, 'droite', 100, 130, 60, 150, 160)['created']
+    loaded = components.load(ctx.project)
+    assert [loaded[c]['type'] for c in created] == ['mur'] * 4 + ['sol', 'boite', 'boite', 'porte', 'porte']
+    assert loaded[created[7]]['options']['mur'] == 'mur3' and loaded[created[8]]['options']['mur'] == 'mur4'
+    result = ctx.project.update(); found = shapes(ctx.project, result)
+    assert not result.contradictions and sorted(round(found[c]['size'][0], 2) for c in created[:4]) == [1.7, 1.7, 3.3, 3.3]
+    assert found['mur1']['size'][1] == pytest.approx(1.8) and found[created[7]]['size'][1] == pytest.approx(1.3)
+    with pytest.raises(ValueError, match='déjà'): plan.vehicle(ctx, 300, 160, 170)

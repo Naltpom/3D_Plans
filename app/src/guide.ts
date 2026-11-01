@@ -27,8 +27,18 @@ const TIPS: Record<string, string> = {
   maison: "Conseil : fais le tour des façades en photo, et ajoute le plan cadastral (PDF ou GeoJSON) et le relief si tu les as.",
   vehicule: "Conseil : photographie l'intérieur paroi par paroi, portes ouvertes, avec du recouvrement entre deux photos.",
 };
-const STEPS = [["Le projet", "Ce que tu reconstruis"], ["Les sources", "Photos, cotes, plans"], ["Positions des photos", "Calcul automatique"],
-  ["Les murs", "Valider ce qui est trouvé"], ["L'échelle", "Une mesure au mètre"], ["Vérifier", "Contradictions, mesure utile"], ["Meubler", "Optionnel, une fois le plan prêt"]];
+const FLOWS: Record<string, [string, string, string][]> = {
+  piece: [["projet", "Le projet", "Ce que tu reconstruis"], ["sources", "Les sources", "Photos, cotes, plans"], ["positions", "Positions des photos", "Calcul automatique"],
+    ["murs", "Les murs", "Valider ce qui est trouvé"], ["echelle", "L'échelle", "Une mesure au mètre"], ["verifier", "Vérifier", "Contradictions, mesure utile"], ["meubler", "Meubler", "Optionnel, une fois le plan prêt"]],
+  maison: [["projet", "Le projet", "Ce que tu reconstruis"], ["cadastre", "Le cadastre", "Parcelle et murs extérieurs"], ["relief", "Le relief", "Optionnel : maison sur le terrain"],
+    ["toit", "Le toit", "Proposé sur l'emprise"], ["facades", "Les façades", "Photos recalées"], ["verifier", "Vérifier", "Débordements, mesure utile"], ["meubler", "Meubler", "Optionnel"]],
+  vehicule: [["projet", "Le projet", "Ce que tu reconstruis"], ["gabarit", "Le gabarit", "Fiche constructeur"], ["positions", "Les photos", "Positions des photos"],
+    ["murs", "Le recalage", "Photos sur le gabarit"], ["verifier", "Cotes au mètre", "Vérifier, mesure utile"], ["meubler", "Aménager", "Galerie et agencement"]],
+};
+const BODY: [string, string, string][] = [["longueur", "Longueur utile", "330"], ["largeur", "Largeur utile", "170"], ["hauteur", "Hauteur utile", "180"],
+  ["roue_longueur", "Passage de roue : longueur", "90"], ["roue_largeur", "Passage de roue : saillie", "20"], ["roue_hauteur", "Passage de roue : hauteur", "30"],
+  ["roue_position", "Passage de roue : depuis l'arrière", "80"], ["porte_largeur", "Porte latérale : largeur", "100"], ["porte_hauteur", "Porte latérale : hauteur", "130"],
+  ["porte_position", "Porte latérale : depuis l'arrière", "60"], ["arriere_largeur", "Portes arrière : largeur", "150"], ["arriere_hauteur", "Portes arrière : hauteur", "160"]];
 const PHASES: Record<string, [string, string][]> = {
   "photos.extract": [["points clés", "Repérage des détails sur chaque photo"], ["appariement", "Mise en relation des photos"],
     ["poses", "Calcul de la position de chaque photo"], ["plans", "Recherche des murs, du sol et du plafond"]],
@@ -58,6 +68,8 @@ let next: Candidate | null = null;
 let phase = 0;
 let pending = "";
 let fresh = "";
+let parts: { id: string; type: string }[] = [];
+let roofed: { measured: boolean } | null = null;
 let reading: Reading = null;
 let kept = new Set<number>();
 let vision: { vision_ready?: boolean } | null = null;
@@ -69,6 +81,9 @@ let built: Built[] = [];
 let land: Cadastre = null;
 let sketch: Sketch = null;
 
+const flow = () => FLOWS[guide.type] ?? FLOWS.piece;
+const key = (step = guide.step) => flow()[Math.min(Math.max(step, 1), flow().length) - 1][0];
+const position = (name: string) => flow().findIndex(([id]) => id === name) + 1;
 const plural = (n: number, word: string) => `${number(n, 0)} ${word}${n > 1 ? "s" : ""}`;
 const lower = (label: string) => label[0].toLowerCase() + label.slice(1);
 const decimal = (text: string) => Number(text.trim().replace(",", "."));
@@ -79,9 +94,9 @@ const created = () => walls().filter((w) => w.component);
 const side = (wall: Wall, end: End) => wall.axis === "z" ? end === "a" ? "bout de gauche" : "bout de droite" : end === "a" ? "bout du haut" : "bout du bas";
 const missing = () => created().flatMap((w) => (["a", "b"] as End[]).filter((e) => !w.angles[e]).map((e) => [w, e] as [Wall, End]));
 
-function intro(step: number, title: string, text: string) {
-  const box = el("div", "intro");
-  box.append(el("span", "kicker", step === 7 ? "Optionnel" : `Étape ${step} sur 6`), el("h1", "", title), ...text ? [el("p", "", text)] : []);
+function intro(title: string, text: string) {
+  const box = el("div", "intro"), step = info && !creating ? guide.step : 1;
+  box.append(el("span", "kicker", step === flow().length ? "Optionnel" : `Étape ${step} sur ${flow().length - 1}`), el("h1", "", title), ...text ? [el("p", "", text)] : []);
   return box;
 }
 
@@ -110,19 +125,22 @@ const onward = (enabled = true, main = true) => Object.assign(button("Étape sui
 
 function summary(step: number) {
   const photos = photoSource(), count = created().length;
-  return [
-    TYPES.find(([id]) => id === guide.type)?.[3] ?? "",
-    photos ? plural(photos.photos ?? 0, "photo") : sources.length ? plural(sources.length, "source") : sketch ? "croquis" : guide.manual ? "tracé à la main" : "",
-    photos?.registered != null ? `${photos.registered} positionnées` : photos ? "" : "sans photos",
-    built.length ? `${plural(built.length, "mur")}${count ? ` dont ${count} des photos` : ""}` : "",
-    guide.scale ? `${number(guide.scale)} cm mesurés` : count ? "échelle supposée" : "déjà en mètres",
-    "plan vérifié", "",
-  ][step - 1] || STEPS[step - 1][1];
+  const texts: Record<string, string> = {
+    projet: TYPES.find(([id]) => id === guide.type)?.[3] ?? "",
+    sources: photos ? plural(photos.photos ?? 0, "photo") : sources.length ? plural(sources.length, "source") : sketch ? "croquis" : guide.manual ? "tracé à la main" : "",
+    positions: photos?.registered != null ? `${photos.registered} positionnées` : photos ? "" : "sans photos",
+    murs: built.length ? `${plural(built.length, "mur")}${count ? ` dont ${count} des photos` : ""}` : "",
+    echelle: guide.scale ? `${number(guide.scale)} cm mesurés` : count ? "échelle supposée" : "déjà en mètres",
+    verifier: "plan vérifié", cadastre: built.length ? `${plural(built.length, "mur")} extérieurs` : "",
+    relief: parts.some((c) => c.type === "terrain") ? "relief importé" : "terrain plat", toit: parts.some((c) => c.type === "toit") ? "toit proposé" : "",
+    facades: photos?.registered != null ? `${photos.registered} photos` : "sans photos", gabarit: built.length ? plural(built.length, "paroi") : "",
+  };
+  return texts[key(step)] || flow()[step - 1][2];
 }
 
 function renderRail() {
   $("#rail-title").textContent = info && !creating ? info.name : "Nouveau projet";
-  rail.replaceChildren(...STEPS.flatMap(([title, hint], i) => {
+  rail.replaceChildren(...flow().flatMap(([, title, hint], i) => {
     const step = i + 1, done = guide.done.includes(step) && Boolean(info) && !creating, current = info && !creating ? guide.step : 1;
     const item = button("", `st ${step === current ? "current" : ""} ${done ? "done" : ""}`, title, () => run(() => go(step)));
     const text = el("span");
@@ -130,7 +148,7 @@ function renderRail() {
     item.append(el("span", "n", done ? "✓" : String(step)), text);
     item.disabled = (!info || creating) && step > 1;
     if (step === current) item.ariaCurrent = "step";
-    return step === 7 ? [el("hr"), item] : [item];
+    return step === flow().length ? [el("hr"), item] : [item];
   }));
 }
 
@@ -146,7 +164,7 @@ function projectStep() {
     option.ariaPressed = String((info && !creating ? guide.type : draft.type) === id);
     return option;
   }));
-  if (info && !creating) return [intro(1, "Ton projet", `${info.name} · ${info.path}`), options,
+  if (info && !creating) return [intro("Ton projet", `${info.name} · ${info.path}`), options,
     footer(button("Nouveau projet", "", "Créer un autre projet", () => { creating = true; draft = { type: "piece", name: "" }; render(); }),
       button("Ouvrir un autre projet", "", "Choisir le dossier d'un projet", () => run(pick)), onward())];
   const name = Object.assign(el("input"), { value: draft.name, placeholder: "Salon", autocomplete: "off", ariaLabel: "Nom du projet" });
@@ -178,7 +196,7 @@ function projectStep() {
     row(button("Ouvrir un dossier de projet…", "", "Choisir le dossier d'un projet", () => run(pick))));
   const form = el("div", "card plain");
   form.append(label, row(where, folder));
-  return [intro(1, "Que veux-tu reconstruire ?", "Le choix règle les éléments proposés ensuite. Il se change plus tard."), options, form,
+  return [intro("Que veux-tu reconstruire ?", "Le choix règle les éléments proposés ensuite. Il se change plus tard."), options, form,
     footer(...info ? [button("Annuler", "", "Revenir au projet ouvert", () => { creating = false; render(); })] : [], create), resume];
 }
 
@@ -229,7 +247,7 @@ function sourcesStep() {
   }));
   if (!sources.length) list.append(el("li", "empty", "Aucun fichier pour l'instant : glisse un dossier de photos ou un plan ici."));
   const more = button("Ajouter des cotes ou un relief", "link fit", "CSV de cotes, grille d'altitudes", () => run(async () => addSources((await host.pickFiles("Cotes ou relief")) ?? [])));
-  return [intro(2, "D'où viennent les murs ?", "Choisis une ou plusieurs entrées : elles se combinent, un mur tracé se précise ensuite avec des photos ou des cotes."),
+  return [intro("D'où viennent les murs ?", "Choisis une ou plusieurs entrées : elles se combinent, un mur tracé se précise ensuite avec des photos ou des cotes."),
     grid, list, more, footer(back(), onward(sources.length > 0 || Boolean(sketch) || Boolean(guide.manual)))];
 }
 
@@ -248,17 +266,17 @@ function progress(method: string, fraction: number, message: string, started: nu
 
 function positionsStep() {
   const photo = photoInfo(), source = photoSource();
-  if (photo.busy && photo.busy !== "photos.densify") return [intro(3, photo.busy === "tools.install" ? "Installation des outils photo" : "Calcul des positions en cours",
+  if (photo.busy && photo.busy !== "photos.densify") return [intro(photo.busy === "tools.install" ? "Installation des outils photo" : "Calcul des positions en cours",
     "Tu peux laisser l'appli travailler. La vue se remplit à la fin."), ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
-  if (!source) return [intro(3, "Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre."), footer(back(), onward())];
-  if (!photo.installed) return [intro(3, "Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
+  if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre."), footer(back(), onward())];
+  if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
     footer(back(), primary("Installer les outils photo", () => photoTask("tools.install")))];
-  if (photo.count) return [intro(3, `${photo.count} photos positionnées sur ${source.photos}`,
+  if (photo.count) return [intro(`${photo.count} photos positionnées sur ${source.photos}`,
     "Dans la vue, chaque cône bleu est une photo et les points sont les détails retrouvés sur plusieurs photos, en couleur après densification. Les murs se cachent dans ces points : l'étape suivante les trouve."),
   card("Pour tourner la vue", "Glisse avec le bouton gauche, zoome avec la molette. « Dessus » montre le plan."), footer(back(), onward())];
   const minutes = Math.max(2, Math.round((source.photos ?? 0) * 2.5 / 60));
   phase = -1;
-  return [intro(3, "Calculer la position des photos", "L'appli retrouve d'où chaque photo a été prise et place en 3D les détails qu'elles ont en commun."),
+  return [intro("Calculer la position des photos", "L'appli retrouve d'où chaque photo a été prise et place en 3D les détails qu'elles ont en commun."),
     ...progress("photos.extract", NaN, "", Date.now()).slice(0, 1), el("p", "", `Durée estimée : ≈ ${minutes} min pour ${plural(source.photos ?? 0, "photo")}.`),
     ...source.state === "échec" ? [card("Le dernier calcul a échoué", source.error ?? "")] : [],
     footer(back(), primary("Calculer les positions", () => photoTask("photos.extract")))];
@@ -302,16 +320,16 @@ function photoWalls() {
 
 function wallsStep() {
   const photo = photoInfo(), tool = drawing();
-  if (photo.busy === "photos.densify") return [intro(4, "Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
+  if (photo.busy === "photos.densify") return [intro("Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
-  if (tool === "trace") return [intro(4, "Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
+  if (tool === "trace") return [intro("Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
     ...controls(), ...sketch?.points ? [opacity(sketch)] : []];
-  if (tool) return [intro(4, `Pose : ${OPENINGS.find(([id]) => id === tool)?.[1].toLowerCase()}`, "Clique sur un mur dans la vue : l'ouverture se centre sur le clic. Clique un autre mur pour en poser d'autres."),
+  if (tool) return [intro(`Pose : ${OPENINGS.find(([id]) => id === tool)?.[1].toLowerCase()}`, "Clique sur un mur dans la vue : l'ouverture se centre sur le clic. Clique un autre mur pour en poser d'autres."),
     placeHint(), footer(button("Terminer", "primary", "Quitter la pose", stopDrawing))];
   const fromPhotos = photo.count > 0, count = walls().length;
   const house = land?.house, parcel = land?.parcel;
   const parts = [
-    intro(4, fromPhotos && count ? `J'ai trouvé ${count} mur${count > 1 ? "s probables" : " probable"}` : "Les murs", fromPhotos
+    intro(fromPhotos && count ? `J'ai trouvé ${count} mur${count > 1 ? "s probables" : " probable"}` : "Les murs", fromPhotos
       ? "Ils viennent des surfaces planes vues sur tes photos. Décoche ceux qui sont faux. Tu peux aussi tracer des murs ou les reprendre du cadastre."
       : "Trace les murs, décalque ton croquis ou reprends-les du cadastre. Une cote au mètre les précisera ensuite."),
     ...fromPhotos && built.some((w) => w.source !== photoInfo().source) ? [fitCard()] : [],
@@ -400,7 +418,7 @@ async function fromCadastre() {
 
 async function loadPlan() {
   if (!info) return;
-  [built, land, sketch] = await Promise.all([call<Built[]>("plan.walls"), call<Cadastre>("plan.cadastre"), call<Sketch>("plan.sketch")]);
+  [built, land, sketch, parts] = await Promise.all([call<Built[]>("plan.walls"), call<Cadastre>("plan.cadastre"), call<Sketch>("plan.sketch"), call<{ id: string; type: string }[]>("components.list")]);
   if (sketch) await host.allowAssets([sketch.path]).catch(() => {});
   if (sketch?.points && !vision) vision = await call<{ vision_ready?: boolean }>("ai.status").catch(() => null);
   placeSketch(sketch);
@@ -461,9 +479,9 @@ async function clickAngle(wall: Wall, end: End) {
 
 function scaleStep() {
   const wall = walls().find((w) => w.component && w.component === proposal?.measure), angle = missing()[0];
-  if (!created().length && built.length) return [intro(5, "Pas besoin d'échelle", "Tes murs viennent du tracé ou du cadastre : ils sont déjà en mètres. Une cote au mètre les précisera à l'étape suivante."), footer(back(), onward())];
-  if (!created().length) return [intro(5, "Valide d'abord les murs", "L'échelle se mesure sur un mur validé à l'étape 4."), footer(back())];
-  if (!wall) return [intro(5, "Il manque un angle", `Pour fixer l'échelle, il faut un mur dont les deux angles sont trouvés. Clique l'angle manquant du ${lower(angle[0].label)} sur 2 photos.`),
+  if (!created().length && built.length) return [intro("Pas besoin d'échelle", "Tes murs viennent du tracé ou du cadastre : ils sont déjà en mètres. Une cote au mètre les précisera à l'étape suivante."), footer(back(), onward())];
+  if (!created().length) return [intro("Valide d'abord les murs", "L'échelle se mesure sur un mur validé à l'étape 4."), footer(back())];
+  if (!wall) return [intro("Il manque un angle", `Pour fixer l'échelle, il faut un mur dont les deux angles sont trouvés. Clique l'angle manquant du ${lower(angle[0].label)} sur 2 photos.`),
     footer(back(), button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(skipScale)), primary("Cliquer cet angle", () => clickAngle(...angle)))];
   const name = lower(wall.label);
   const input = Object.assign(el("input", "measure"), { inputMode: "decimal", value: guide.scale ? String(guide.scale) : "", placeholder: "531", autocomplete: "off" });
@@ -471,7 +489,7 @@ function scaleStep() {
   label.append(input);
   const submit = primary("Valider la mesure", () => validateScale(wall, input.value));
   input.onkeydown = (event) => { if (event.key === "Enter") submit.click(); };
-  return [intro(5, "Donne une seule mesure", `Les photos donnent les formes, pas la taille. Mesure au mètre le ${name} surligné en jaune, d'un angle à l'autre, à hauteur de taille.`),
+  return [intro("Donne une seule mesure", `Les photos donnent les formes, pas la taille. Mesure au mètre le ${name} surligné en jaune, d'un angle à l'autre, à hauteur de taille.`),
     label, card("Résultat attendu après validation", "Toutes les cotes du plan à ± 1 à 2 cm."), el("hr"),
     card("Ensuite : vérifier", "L'appli te dira s'il y a une contradiction, et quelle mesure de plus rendrait le plan plus précis."),
     footer(button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(skipScale)), submit)];
@@ -485,22 +503,25 @@ async function validateScale(wall: Wall, text: string) {
   if (ratio < 0.5 || ratio > 2) throw new Error(`Le modèle donne environ ${cm(measured.value)} : vérifie que la mesure est en centimètres.`);
   await call("cotes.add", { id: "echelle", expr: measured.expr, value, sigma: 1, unit: "cm", label: `Longueur du ${lower(wall.label)}` });
   guide.scale = value;
-  await complete(5);
+  await complete(guide.step);
 }
 
 async function skipScale() {
   delete guide.scale;
-  await complete(5);
+  await complete(guide.step);
 }
 
 function checkStep() {
-  if (!result) return [intro(6, "Vérification…", "Calcul du plan en cours."), footer(back())];
+  if (!result) return [intro("Vérification…", "Calcul du plan en cours."), footer(back())];
   const uses = new Set(built.flatMap((w) => w.uses));
   const placed = result.params.filter((p) => (p.axis === "x" || p.axis === "z") && uses.has(p.name));
   const known = placed.filter((p) => p.sigma != null && Number.isFinite(p.sigma)), unknown = placed.filter((p) => !known.includes(p));
   const worst = Math.max(0, ...known.map((p) => p.sigma!)), supposed = result.warnings?.some((w) => w.code === "echelle_supposee");
+  const outside = (result.warnings ?? []).filter((w) => (w.code === "hors_parcelle" || w.code === "sur_batiment")
+    && parts.find((c) => c.id === (w as { component?: string }).component)?.type !== "parcelle");
   const cards = [
-    supposed ? card("Échelle supposée", "Sans mesure au mètre, les longueurs peuvent être fausses de 10 à 20 %.", button("Donner une mesure", "", "Étape 5", () => run(() => go(5))))
+    ...outside.length ? [card("Débordements", outside.map((w) => w.message).join(" ; ") + ".")] : position("cadastre") ? [card("Aucun débordement", "Tout tient dans la parcelle.")] : [],
+    supposed ? card("Échelle supposée", "Sans mesure au mètre, les longueurs peuvent être fausses de 10 à 20 %.", ...position("echelle") ? [button("Donner une mesure", "", "Étape de l'échelle", () => run(() => go(position("echelle"))))] : [])
       : card(known.length ? `Murs placés à ± ${cm(worst)}` : "Précision inconnue", unknown.length
         ? `${plural(unknown.length, "valeur")} pas encore connue${unknown.length > 1 ? "s" : ""} : ${unknown.slice(0, 3).map((p) => p.label).join(", ")}. Précise-les à l'étape 4 ou avec une cote.`
         : "Toutes les positions des murs sont déterminées."),
@@ -514,8 +535,8 @@ function checkStep() {
     box.append(row(input, add));
     cards.push(box);
   }
-  return [intro(6, unknown.length || supposed ? "Le plan est presque prêt" : "Le plan est prêt", "Voici ce que donnent tes photos et tes mesures."), ...cards,
-    footer(back(), button("Meubler (optionnel)", "", "Étape 7", () => run(() => complete(6))), primary("Ouvrir le plan", openPlan))];
+  return [intro(unknown.length || supposed ? "Le plan est presque prêt" : "Le plan est prêt", "Voici ce que donnent tes photos et tes mesures."), ...cards,
+    footer(back(), button(`${flow().at(-1)![1]} (optionnel)`, "", "Dernière étape", () => run(() => complete(guide.step))), primary("Ouvrir le plan", openPlan))];
 }
 
 function describe(candidate: Candidate) {
@@ -531,7 +552,7 @@ async function check() {
   result = await update();
   await loadPlan();
   next = (await call<Candidate[]>("next_best", { k: 1 }).catch(() => []))[0] ?? null;
-  if (guide.step === 6) render();
+  if (key() === "verifier") render();
 }
 
 async function addMeasure(candidate: Candidate, text: string) {
@@ -553,34 +574,99 @@ async function openPlan() {
 function furnishStep() {
   const box = el("div", "furnish");
   box.append($("#gallery"), $("#layout"));
-  return [intro(7, "Meubler", "Choisis des meubles dans la galerie, place-les dans la vue, puis demande des agencements."), box, footer(back(), primary("Ouvrir le plan", openPlan))];
+  return [intro("Meubler", "Choisis des meubles dans la galerie, place-les dans la vue, puis demande des agencements."), box, footer(back(), primary("Ouvrir le plan", openPlan))];
 }
 
-const VIEWS = [projectStep, sourcesStep, positionsStep, wallsStep, scaleStep, checkStep, furnishStep];
+function pickInto(title: string) {
+  return async () => {
+    await addSources((await host.pickFiles(title)) ?? []);
+    await loadPlan();
+    render();
+  };
+}
+
+function cadastreStep() {
+  const has = sources.some((s) => s.kind.startsWith("cadastre")), house = land?.house, parcel = land?.parcel;
+  const text = [house && `Bâtiment principal : ${plural(house.walls, "mur")} extérieurs, ${number(house.perimeter)} m de périmètre`, parcel && `parcelle de ${number(parcel.area, 0)} m²`].filter(Boolean).join(" ; ");
+  return [intro("Le cadastre", "Le plan cadastral (PDF de cadastre.gouv.fr ou GeoJSON) donne la parcelle et l'emprise de la maison, qui devient les murs extérieurs."),
+    card(has ? built.length ? "Murs et parcelle créés" : "Cadastre importé" : "Plan cadastral", has ? `${text || "Aucun bâtiment principal reconnu"}.` : "PDF ou GeoJSON du cadastre.",
+      ...has ? [] : [button("Choisir un fichier", "primary", "PDF ou GeoJSON", () => run(pickInto("Plan cadastral")))],
+      ...has && (house || parcel) && !land?.created.length ? [button("Créer les murs et la parcelle", "primary", "Murs extérieurs et parcelle", () => run(() => act("Création depuis le cadastre", fromCadastre)))] : []),
+    footer(back(), onward(built.length > 0))];
+}
+
+function reliefStep() {
+  const ground = parts.some((c) => c.type === "terrain");
+  return [intro("Le relief", "Optionnel : une grille d'altitudes (ASC, GeoTIFF ou JSON) pose la maison et le jardin sur le vrai terrain."),
+    card(ground ? "Relief importé" : "Grille d'altitudes", ground ? "Pose la maison sur le terrain : ses murs partent du point le plus bas de l'emprise." : "Sans grille, le terrain reste plat.",
+      ...ground ? [button("Poser la maison sur le terrain", "primary", "Base des murs à l'altitude du terrain", () => run(() => act("Pose sur le terrain", async () => { await call("plan.settle"); await refreshPlan(); })))]
+        : [button("Choisir une grille", "", "ASC, GeoTIFF ou JSON", () => run(pickInto("Grille d'altitudes")))]),
+    footer(back(), onward())];
+}
+
+function roofStep() {
+  const done = parts.some((c) => c.type === "toit");
+  return [intro("Le toit", "Proposé sur l'emprise : deux pans, faîtage le long du plus grand côté, pente de 35°. Hauteur depuis la BD TOPO si le fichier la donne, sinon à mesurer."),
+    done ? card("Toit proposé", roofed && !roofed.measured ? "Hauteur de gouttière à mesurer : ajoute une cote à l'étape Vérifier, ou règle-la en mode expert." : "Hauteurs reprises du cadastre ; ajuste-les en mode expert si besoin.")
+      : card("Toit à deux pans", built.length ? "Sur les murs extérieurs de la maison." : "Crée d'abord les murs depuis le cadastre.",
+        ...built.length ? [button("Proposer le toit", "primary", "Toit sur l'emprise", () => run(() => act("Création du toit", async () => { roofed = await call("plan.roof"); await refreshPlan(); })))] : []),
+    footer(back(), onward(true, done))];
+}
+
+function facadeStep() {
+  if (photoSource()) return photoInfo().count ? wallsStep() : positionsStep();
+  return [intro("Les façades", "Ajoute les photos prises en faisant le tour de la maison : elles se recalent ensuite sur les murs du cadastre."),
+    card("Photos des façades", "Un dossier de photos, avec du recouvrement entre deux photos.", button("Choisir un dossier", "primary", "Dossier de photos", () => run(async () => {
+      const path = await host.pickFolder("Photos des façades");
+      if (path) await addSources([path]);
+    }))), footer(back(), onward(true, false))];
+}
+
+function bodyStep() {
+  if (built.length) return [intro("Le gabarit", "La caisse est créée : ses parois sont des murs, le plancher sert de pièce pour la galerie et l'agencement."),
+    card("Gabarit créé", `${plural(built.length, "paroi")} et un plancher ; cotes de la fiche enregistrées en « lu ».`), footer(back(), onward())];
+  const form = el("div", "fields");
+  const inputs = BODY.map(([name, label, example]) => {
+    const input = Object.assign(el("input", "measure"), { name, inputMode: "decimal", placeholder: example, autocomplete: "off" }), box = el("label", "", `${label} (cm)`);
+    box.append(input);
+    form.append(box);
+    return input;
+  });
+  const side = el("select");
+  side.append(new Option("Porte latérale à droite", "droite"), new Option("Porte latérale à gauche", "gauche"));
+  return [intro("Le gabarit", "Recopie les cotes utiles de la fiche constructeur, en cm. Laisse vide ce qui n'existe pas."), form, side,
+    footer(back(), primary("Créer le gabarit", () => act("Création du gabarit", async () => {
+      await call("plan.vehicle", { ...Object.fromEntries(inputs.map((i) => [i.name, decimal(i.value) || 0])), porte_cote: side.value });
+      await refreshPlan();
+    })))];
+}
+
+const VIEWS: Record<string, () => Node[]> = { projet: projectStep, sources: sourcesStep, positions: positionsStep, murs: wallsStep, echelle: scaleStep, verifier: checkStep,
+  meubler: furnishStep, cadastre: cadastreStep, relief: reliefStep, toit: roofStep, facades: facadeStep, gabarit: bodyStep };
 
 function paint() {
-  const step = mode === "guide" ? guide.step : 0;
+  const step = mode === "guide" ? key() : "";
   const measured = walls().filter((w) => w.component && w.component === proposal?.measure), house = land?.created.length ? [] : land?.house?.points ?? [];
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
   const read = (reading?.walls ?? []).flatMap((wall, w) => wall.points.slice(0, wall.closed ? undefined : -1).map((a, i) => ({
     a, b: wall.points[(i + 1) % wall.points.length], height: 2.5, tone: "doubt", on: kept.has(w), text: i ? "" : `Croquis ${w + 1}` })));
-  showWalls(step === 4 && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline, ...read]
-    : step === 5 ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
-  if (step) highlight(step === 5 ? proposal?.measure ?? null : null, 0xf5c451);
+  showWalls((step === "murs" || step === "facades") && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline, ...read]
+    : step === "echelle" ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
+  if (step) highlight(step === "echelle" ? proposal?.measure ?? null : null, 0xf5c451);
 }
 
 function render() {
   const guided = mode === "guide";
-  if (!guided || guide.step !== 7) $("#sidebar").append($("#gallery"), $("#layout"));
+  if (!guided || key() !== "meubler") $("#sidebar").append($("#gallery"), $("#layout"));
   document.body.classList.toggle("guided", guided);
-  document.body.classList.toggle("page", guided && (guide.step < 3 || !info || creating));
-  document.body.classList.toggle("furnish", guided && guide.step === 7);
+  document.body.classList.toggle("page", guided && (["projet", "sources"].includes(key()) || !info || creating));
+  document.body.classList.toggle("furnish", guided && key() === "meubler");
   modeButton.textContent = guided ? "Mode expert" : "Mode guidé";
   modeButton.title = guided ? "Afficher toute l'interface" : "Revenir au parcours par étapes";
   if (!guided) return;
   renderRail();
   const bar = Object.assign(el("progress"), { max: 1, ariaLabel: "Calcul en cours" });
-  panel.replaceChildren(...pending ? [intro(guide.step, pending, detail || "Un instant : l'appli calcule le plan."), bar] : VIEWS[(info && !creating ? guide.step : 1) - 1]());
+  panel.replaceChildren(...pending ? [intro(pending, detail || "Un instant : l'appli calcule le plan."), bar] : VIEWS[key(info && !creating ? guide.step : 1)]());
 }
 
 async function save(change: Partial<Guide> = {}) {
@@ -589,17 +675,17 @@ async function save(change: Partial<Guide> = {}) {
 }
 
 async function go(step: number) {
-  if (!info || step < 1 || step > 7) return;
+  if (!info || step < 1 || step > flow().length) return;
   creating = false;
   if (drawing()) stopDrawing();
   await save({ step });
   await loadPlan();
-  if (step === 4 || step === 5) await loadProposal();
+  if (["murs", "echelle", "facades"].includes(key(step))) await loadProposal();
   render();
   paint();
   if (mode !== "guide") return;
-  if (step >= 3 && step <= 5) setView(step === 3 ? "3d" : "dessus");
-  if (step === 6) await check();
+  if (key(step) !== "projet" && key(step) !== "sources") setView(["positions", "toit", "relief", "verifier", "meubler"].includes(key(step)) ? "3d" : "dessus");
+  if (key(step) === "verifier") await check();
 }
 
 async function complete(step: number) {
@@ -624,6 +710,7 @@ async function resume(stored?: Guide) {
   const done = [1, ...listed.length || walled ? [2] : [], ...photos?.registered || walled && !photos ? [3] : [], ...walled ? [4] : [], ...cotes.length ? [5] : []];
   const type = stored?.type ?? (fresh || "piece");
   fresh = "";
+  if (type !== "piece") return { type, done: walled ? [1, 2] : [1], step: walled ? 3 : 2 };
   return { type, done, step: [1, 2, 3, 4, 5, 6].find((n) => !done.includes(n)) ?? 6 };
 }
 
@@ -639,16 +726,16 @@ document.addEventListener("plans3d:opened", (event) => run(async () => {
 }));
 document.addEventListener("plans3d:sources", (event) => {
   sources = (event as CustomEvent<Source[]>).detail;
-  if (mode === "guide" && [2, 3].includes(guide.step)) render();
+  if (mode === "guide" && ["sources", "positions", "cadastre", "relief", "facades"].includes(key())) render();
 });
 document.addEventListener("plans3d:photos", () => run(async () => {
   if (mode !== "guide" || !info) return;
-  const loading = (guide.step === 4 || guide.step === 5) && !proposal && photoInfo().count > 0 && !photoInfo().busy;
+  const loading = ["murs", "echelle", "facades"].includes(key()) && !proposal && photoInfo().count > 0 && !photoInfo().busy;
   if (loading) await loadProposal();
-  if (loading || guide.step === 3 || guide.step === 4 && photoInfo().busy) render();
+  if (loading || ["positions", "facades"].includes(key()) || key() === "murs" && photoInfo().busy) render();
 }));
 document.addEventListener("plans3d:clicked", () => run(async () => {
-  if (guide.step !== 4 && guide.step !== 5) return;
+  if (!["murs", "echelle", "facades"].includes(key())) return;
   await update();
   await loadPlan();
   await loadProposal();
