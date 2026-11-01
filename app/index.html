@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <title>3D_Plans</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/view3d.css" />
+    <link rel="stylesheet" href="/src/cotes.css" />
+    <link rel="stylesheet" href="/src/photos.css" />
+  </head>
+  <body>
+    <header id="toolbar">
+      <strong>3D_Plans</strong>
+      <span id="project-name"></span>
+      <button id="update-button" disabled>Mettre à jour</button>
+    </header>
+    <aside id="sidebar">
+      <section>
+        <h2>Projets</h2>
+        <ul id="project-list" class="list"></ul>
+        <div class="row">
+          <button id="new-project-button">Nouveau projet</button>
+          <button id="open-project-button">Ouvrir…</button>
+        </div>
+        <form id="new-project-form" hidden>
+          <input id="new-project-name" placeholder="Nom du projet" required autocomplete="off" />
+          <small id="new-project-path"></small>
+          <div class="row">
+            <button type="button" id="parent-button">Dossier…</button>
+            <button type="button" id="cancel-button">Annuler</button>
+            <button type="submit">Créer</button>
+          </div>
+        </form>
+      </section>
+      <section id="sources" hidden>
+        <h2>Sources</h2>
+        <ul id="source-list" class="list"></ul>
+        <button id="add-source-button">Ajouter…</button>
+        <small class="hint">ou glissez des fichiers, photos ou dossiers ici</small>
+      </section>
+      <section id="components" hidden>
+        <h2>Composants</h2>
+        <ul id="component-list" class="list"></ul>
+        <button id="add-component-button">Ajouter…</button>
+        <form id="component-form" hidden>
+          <select id="component-type"></select>
+          <input id="component-id" placeholder="Identifiant" required pattern="[A-Za-z][A-Za-z0-9_]*" autocomplete="off" />
+          <div id="component-fields"></div>
+          <div class="row">
+            <button type="button" id="component-cancel">Annuler</button>
+            <button type="submit">Ajouter</button>
+          </div>
+        </form>
+      </section>
+      <section id="photos" hidden>
+        <h2>Photos</h2>
+        <select id="photo-source" hidden></select>
+        <small id="photo-state"></small>
+        <progress id="photo-progress" max="1" hidden></progress>
+        <div class="row">
+          <button id="photo-install" hidden>Installer les outils photo (≈ 400 Mo)</button>
+          <button id="photo-extract" hidden>Calculer les positions</button>
+          <button id="photo-open" hidden>Atelier photo</button>
+          <button id="photo-densify" hidden title="Optionnel : nuage dense, plus de plans détectés">Densifier (≈ 30 min)</button>
+        </div>
+        <div id="photo-details" hidden>
+          <h3>Clics</h3>
+          <ul id="click-list" class="list"></ul>
+          <h3>Plans détectés</h3>
+          <label>Axes photo → projet <select id="photo-axes" title="Correspondance des axes du repère photo avec ceux du projet"></select></label>
+          <ul id="plane-list" class="list"></ul>
+        </div>
+      </section>
+    </aside>
+    <main id="viewport">
+      <div id="banner" role="alert" hidden><span></span><button title="Fermer">×</button></div>
+      <canvas id="scene"></canvas>
+      <div id="photo-view" hidden>
+        <div id="photo-strip"></div>
+        <div id="photo-stage">
+          <div id="photo-frame"><img id="photo-image" alt="Aperçu indisponible (format non affichable)" draggable="false" /><svg id="photo-overlay"></svg></div>
+        </div>
+        <button id="photo-close" title="Fermer l'atelier photo">×</button>
+        <form id="anchor-form" hidden>
+          <select name="comp" title="Composant"></select>
+          <select name="anchor" title="Ancre"></select>
+          <input name="expr" placeholder="expression (m)" autocomplete="off" title="Expression de la coordonnée du plan, en paramètres du modèle" />
+          <button type="button" id="anchor-cancel">Annuler</button>
+          <button type="submit">Valider</button>
+          <small id="anchor-hint"></small>
+        </form>
+      </div>
+      <div id="views"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
+      <aside id="info" hidden></aside>
+      <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
+      <div id="warnings" role="status" hidden></div>
+    </main>
+    <aside id="analysis" hidden>
+      <section id="conflicts" hidden>
+        <h2>Contradictions</h2>
+        <ul id="conflict-list" class="list"></ul>
+      </section>
+      <section>
+        <h2>Cotes</h2>
+        <ul id="cote-list" class="list"></ul>
+        <button id="add-cote-button">Ajouter une cote</button>
+        <form id="cote-form" hidden>
+          <label>De</label><select name="comp-a"></select><select name="a"></select>
+          <label>À</label><select name="comp-b"></select><select name="b"></select>
+          <label>Axe</label>
+          <select name="axis"><option value="dist">distance</option><option value="x">x</option><option value="y">y (hauteur)</option><option value="z">z</option></select>
+          <label>Expression</label><input name="expr" required autocomplete="off" placeholder="paramètres en m" />
+          <label>Valeur</label><input name="value" required inputmode="decimal" pattern="-?\d+([.,]\d+)?" placeholder="cm" autocomplete="off" />
+          <label>± σ</label><input name="sigma" required inputmode="decimal" pattern="\d+([.,]\d+)?" value="1" placeholder="cm" />
+          <label>Libellé</label><input name="label" autocomplete="off" />
+          <small id="cote-hint"></small>
+          <div class="row">
+            <button type="button" id="cote-cancel">Annuler</button>
+            <button type="submit">Ajouter</button>
+          </div>
+        </form>
+      </section>
+      <section>
+        <h2>Prochaine mesure</h2>
+        <ul id="next-list" class="list"></ul>
+      </section>
+      <section>
+        <h2>Précision réelle estimée</h2>
+        <ul id="factor-list" class="list"></ul>
+      </section>
+    </aside>
+    <footer id="statusbar">
+      <progress id="progress" max="1" hidden></progress>
+      <span id="status"></span>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,11 +1,15 @@
-# environnements et dépendances téléchargées
 .venv/
 third_party/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 node_modules/
-
-# données : jamais de photos ni de données de projet dans le dépôt (EXIF avec GPS, mesures du logement)
+dist/
+scratchpad/
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/runtime/
 data/
 runs/
 *.jpg
@@ -21,7 +25,3 @@ runs/
 *.safetensors
 *.pt
 *.pth
-
-# configuration locale (chemins de la machine)
-bench/config.json
-.pytest_cache/

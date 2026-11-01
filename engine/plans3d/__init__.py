@@ -1,2 +1,2 @@
 from .core import Obs, solve, next_best
-from .project import Project, extractor
+from .project import Project

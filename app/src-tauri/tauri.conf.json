@@ -1,0 +1,30 @@
+{
+  "productName": "3D_Plans",
+  "version": "0.1.0",
+  "identifier": "com.naltpom.plans3d",
+  "build": {
+    "beforeDevCommand": "python scripts/prepare_runtime.py && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "python scripts/prepare_runtime.py && npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "title": "3D_Plans", "width": 1400, "height": 900, "dragDropEnabled": true }],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": { "enable": true, "scope": [] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "resources": ["runtime/"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["French"]
+      }
+    }
+  }
+}

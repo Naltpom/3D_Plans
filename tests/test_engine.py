@@ -2,11 +2,11 @@ import json
 import numpy as np
 import pytest
 from plans3d import Obs, solve, next_best, Project
-from plans3d.core import compile_expr
+from plans3d.core import W_MAX, W_NEAR, compile_expr
 
 TRUE = {'w1': 1.2, 'w2': 2.5, 'w3': 3.1, 'w4': 4.4, 'w5': 5.0, 's': 0.5}
 INIT = {k: v + 0.1 for k, v in TRUE.items()}
-ST, SU = 0.01, 0.02          # tape 1 cm ; photo 0.02 u (= 1 cm at s=0.5)
+ST, SU = 0.01, 0.02
 TAPE = ['w1', 'w2 - w1', 'w3 - w2', 'w4 - w3', 'w5 - w4', 'w3 - w1', 'w5 - w2']
 PHOTO = [f'w{k} / s' for k in range(1, 6)]
 
@@ -49,12 +49,12 @@ def test_chain_recovery_and_sigma():
 
 def test_outlier_and_no_redundancy():
     obs = make_obs(np.random.default_rng(2)); base = solve(INIT, obs)
-    obs[2].value += 10 * ST                                   # 't2' : w3 - w2
-    obs.append(Obs('solo', 'p7 - w5', 1.0, ST))               # seule obs de p7 : redondance 0
+    obs[2].value += 10 * ST
+    obs.append(Obs('solo', 'p7 - w5', 1.0, ST))
     r = solve({**INIT, 'p7': 0.0}, obs)
     assert [o.id for o, _ in r.contradictions] == ['t2'], [(o.id, w) for o, w in r.contradictions]
     assert r.redundancy[-1] < 1e-6 and r.value('p7')[0] == pytest.approx(r.value('w5')[0] + 1.0, abs=1e-6)
-    for k in TRUE:   # soft_l1 borne l'influence à ~1σ : params de l'obs fautive < 1.5σ, autres < 0.5σ
+    for k in TRUE:
         assert abs(r.value(k)[0] - base.value(k)[0]) < (1.5 if k in ('w2', 'w3') else 0.5) * base.value(k)[1], k
 
 
@@ -75,11 +75,52 @@ def test_predict_and_next_best():
     v, s = r.predict('w2 * s')
     g = np.zeros(len(r.x)); g[i['w2']] = r.x[i['s']]; g[i['s']] = r.x[i['w2']]
     assert s == pytest.approx(np.sqrt(g @ C @ g), rel=1e-5)
-    # w5 : seulement une photo à 0.2 u (≈10 cm)
     r = solve(INIT, make_obs(np.random.default_rng(5), tape=TAPE[:4] + ['w3 - w1'], su={'w5 / s': 0.2}))
     assert max(r.names[:5], key=lambda n: r.value(n)[1]) == 'w5'
     cands = [('d21', 'w2 - w1', ST), ('d43', 'w4 - w3', ST), ('d54', 'w5 - w4', ST), ('d32', 'w3 - w2', ST)]
     assert next_best(r, cands)[0][1] == 'd54'
+
+
+def test_long_chain_with_photo_scale_all_determined():
+    rng = np.random.default_rng(7); n = 100; w = np.cumsum(rng.uniform(5, 15, n))
+    obs = [Obs(f't{k}', f'w{k} - w{k - 1}', w[k] - w[k - 1] + rng.normal(0, ST), ST) for k in range(1, n)]
+    obs += [Obs(f'p{k}', f'w{k} / s', w[k] / 0.5 + rng.normal(0, SU), SU, status='photo') for k in range(0, n, 5)]
+    r = solve({**{f'w{k}': w[k] + 0.1 for k in range(n)}, 's': 0.6}, obs)
+    assert w[-1] > 900 and r.converged and np.isfinite(r.sigma).all() and r.dof == len(obs) - n - 1
+
+
+def test_max_nfev_marks_not_converged(monkeypatch):
+    obs = make_obs(np.random.default_rng(0))
+    assert solve(INIT, obs).converged
+    monkeypatch.setattr('plans3d.core.MAX_NFEV', 2)
+    assert not solve(INIT, obs).converged
+
+
+def test_next_best_skips_free_params():
+    obs = make_obs(np.random.default_rng(3)) + [Obs('ab', 'a + b', 1.0, ST)]
+    r = solve({**INIT, 'a': 0., 'b': 0., 'u': 0.}, obs)
+    cands = [('a', 'a', ST), ('a-w1', 'a - w1', ST), ('u', 'u', ST), ('w2-w1', 'w2 - w1', ST), ('w5', 'w5', ST)]
+    assert {e for _, _, e, _ in next_best(r, cands, k=10)} == {'w2 - w1', 'w5'}
+
+
+VAN = {'evier': 0.6, 'cloison': 1.4, 'lit': 2.1, 'porte': 2.9, 'armoire': 3.5, 'frigo': 4.2, 'table': 4.8, 'banc': 5.5}
+
+
+def van(seed, errors, sparse_lit=False):
+    rng = np.random.default_rng(seed); n = list(VAN); obs = []
+    obs += [Obs(f'photo_{k}', f'{k} - photos_tx', VAN[k] - 0.37 + rng.normal(0, .015), .015, 'photos', 'photo') for k in n]
+    obs += [Obs(f'clic_{k}', f'{k} - photos_tx', VAN[k] - 0.37 + rng.normal(0, .02), .02, 'clics', 'photo') for k in n[:2]]
+    obs += [Obs(f'm_{k}', k, VAN[k] + rng.normal(0, .01), .01, 'cotes') for k in n]
+    obs += [Obs(f'm_{b}_{a}', f'{b} - {a}', VAN[b] - VAN[a] + rng.normal(0, .01), .01, 'cotes') for d in (1, 2, 3) for a, b in zip(n, n[d:])]
+    for o in obs: o.value += errors.get(o.id, 0.0)
+    if sparse_lit: obs = [o for o in obs if o.id == 'm_lit' or not (o.id.startswith('m_') and 'lit' in o.id) and o.id != 'clic_lit']
+    return solve({**dict.fromkeys(n, 0.0), 'photos_tx': 0.0}, obs).conflicts()
+
+
+def test_conflicts_global_frame_and_partners():
+    assert [[o.id for o, _ in g] for g in van(3, {'m_evier': 0.08, 'photo_lit': 0.08})] == [['photo_lit'], ['clic_cloison'], ['m_evier']]
+    (group,) = van(0, {'m_lit': 0.1}, sparse_lit=True)
+    assert [o.id for o, _ in group] == ['photo_lit', 'm_lit'] and W_NEAR <= abs(group[1][1]) <= W_MAX < abs(group[0][1])
 
 
 HDR = 'id;expr;value;sigma;unit;status;label\n'

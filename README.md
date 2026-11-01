@@ -1,19 +1,43 @@
 # 3D_Plans
 
-Outil desktop (Windows) : sources hétérogènes (photos, cotes, plans, cadastre) → modèle 3D paramétrique à l'échelle, chaque cote avec origine et marge σ. Usage personnel.
+Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d'altitudes) → modèle 3D paramétrique à l'échelle, chaque cote avec son origine et sa marge σ.
 
-État : phases 0 et 1 terminées — `docs/phase0.md`. Décisions : `docs/brief.md`.
+- `app/` : coquille Tauri 2, interface TypeScript + three.js.
+- `engine/plans3d/` : moteur Python (solveur, projet, composants, photos, cadastre, terrain), serveur JSON-lines sur stdin/stdout.
+- `tests/` : tests du moteur.
 
-## Banc d'essai
+## Installeur
 
-Compare des méthodes de reconstruction rapides à la méthode actuelle (COLMAP + nuage dense) sur un projet avec cotes au mètre.
+Prérequis : Node, Rust, Python 3.12 dans le PATH.
 
 ```
-bench/colmap_sfm.sh   COLMAP sans nuage dense (incrémental + global), chronométré
-bench/ff_run.py       VGGT / MapAnything → nuage + normales (.npz)
-bench/align.py        sortie d'une méthode → repère de la référence (similitude RANSAC sur les caméras)
-bench/salon_chain.py  chaîne d'extraction du projet, isolée dans un dossier de run
-bench/evaluate.py     erreurs cote par cote, échelle refaite sans la cote testée
+cd app
+npm install
+npx tauri build
 ```
 
-Environnement : Python 3.12, `.venv` (torch cu128 + `third_party/vggt`, `third_party/map-anything`), COLMAP 4.2.1 CUDA. Aucune donnée de projet dans le dépôt.
+`scripts/prepare_runtime.py` télécharge un Python autonome, installe `engine/requirements.txt` et copie le moteur dans `src-tauri/runtime/`. Installeur NSIS produit dans `app/src-tauri/target/release/bundle/nsis/`.
+
+## Développement
+
+```
+cd app
+npx tauri dev
+```
+
+## Tests
+
+```
+$env:PYTHONPATH = "engine"; .venv\Scripts\python -m pytest -q tests
+cd app; npx tsc --noEmit
+```
+
+## Règles
+
+- Projet = dossier : `sources/`, `cache/`, `project.db`, `model.json`.
+- Toute observation porte une valeur et un σ en unités physiques ; contradiction si résidu normalisé > 3.
+- L'IA propose, le solveur tranche, l'utilisateur valide.
+- Cache par source : seules les sources modifiées sont ré-extraites ; le solveur est relancé en entier à chaque mise à jour.
+- Outils photo : COLMAP, téléchargé au premier usage dans `%LOCALAPPDATA%\3D_Plans\tools`.
+- Aucune photo ni donnée de projet dans le dépôt.
+- Usage personnel.

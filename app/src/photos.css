@@ -1,0 +1,36 @@
+#photos, #photo-details { display: flex; flex-direction: column; gap: 8px; }
+#photos h3 { margin: 4px 0 0; font-size: 12px; font-weight: normal; text-transform: uppercase; color: #999; }
+#photos label { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; color: #aaa; }
+#photos select, #anchor-form :is(select, input) { min-width: 0; padding: 4px 6px; border: 1px solid #4a4d55; border-radius: 4px; background: #1e1f22; color: inherit; font: inherit; }
+#photo-progress { width: 100%; accent-color: #5b8def; }
+#click-list, #plane-list { max-height: 30vh; overflow: auto; }
+#photos .list .remove, #photos .list .action { grid-row: 1; grid-column: 2; }
+#photos .action { padding: 2px 8px; font-size: 12px; }
+
+#viewport.photo-mode #scene { position: absolute; top: 60%; height: 40%; }
+#viewport.photo-mode #views { top: calc(60% + 12px); }
+#viewport.photo-mode #info { top: calc(60% + 52px); max-height: calc(40% - 64px); }
+#photo-view { position: absolute; inset: 0 0 40% 0; display: flex; flex-direction: column; background: #111214; border-bottom: 2px solid #000; }
+#photo-strip { flex: none; display: flex; gap: 4px; padding: 4px 36px 4px 4px; overflow-x: auto; }
+#photo-strip img { height: 52px; border-radius: 2px; opacity: 0.6; cursor: pointer; }
+#photo-strip img:hover, #photo-strip img.current { opacity: 1; }
+#photo-strip img.current { outline: 2px solid #ffd54f; }
+#photo-stage { position: relative; flex: 1; overflow: hidden; cursor: crosshair; touch-action: none; }
+#photo-frame { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #000; }
+#photo-image { display: block; width: 100%; height: 100%; color: #777; user-select: none; -webkit-user-drag: none; }
+#photo-overlay { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+#photo-overlay .wire polyline { fill: none; stroke: #4dd0e1; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+#photo-overlay .plane polygon { fill: #ffa72633; stroke: #ffa726; stroke-width: 2; vector-effect: non-scaling-stroke; }
+#photo-overlay circle { fill: none; stroke: #ff5252; stroke-width: 2; vector-effect: non-scaling-stroke; }
+#photo-overlay .pending circle { stroke: #ffd54f; }
+#photo-overlay text { fill: #fff; stroke: #000; paint-order: stroke; }
+#photo-close { position: absolute; top: 6px; right: 6px; padding: 0 8px; border: 0; background: none; color: #888; font-size: 18px; }
+#photo-close:hover { color: #fff; background: none; }
+
+#anchor-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+#anchor-form small { flex-basis: 100%; }
+#photo-view #anchor-form { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); padding: 8px; border: 1px solid #111; border-radius: 4px; background: #25272bf2; }
+#plane-list #anchor-form { grid-column: 1 / -1; margin: 6px 0 2px; }
+#plane-list #anchor-form :is(select, input) { flex: 1 1 100%; }
+#click-list .group { margin-top: 4px; }
+#click-list .member { margin-left: 8px; padding-left: 10px; border-left: 2px solid #4dd0e1; border-radius: 0 4px 4px 0; }
