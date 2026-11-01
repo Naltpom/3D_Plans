@@ -75,11 +75,33 @@
           </div>
         </form>
       </section>
+      <section id="gallery" hidden>
+        <div class="head">
+          <h2>Galerie</h2>
+          <button id="ikea-button" class="small" title="Télécharge le catalogue IKEA (≈ 160 Ko) dans le dossier local de l'appli">Importer le catalogue IKEA</button>
+        </div>
+        <div class="row">
+          <input id="gallery-search" type="search" placeholder="Rechercher un objet" aria-label="Rechercher dans la galerie" autocomplete="off" />
+          <select id="gallery-kind" aria-label="Type d'objet"><option value="">Tous les types</option></select>
+        </div>
+        <small id="gallery-count"></small>
+        <ul id="gallery-list" class="list"></ul>
+        <h2>Objets placés</h2>
+        <ul id="furniture-list" class="list"></ul>
+      </section>
     </aside>
     <main id="viewport">
       <canvas id="scene" aria-label="Vue 3D du modèle"></canvas>
       <div id="views" class="row" role="group" aria-label="Point de vue"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
       <aside id="info" hidden></aside>
+      <div id="furniture-tools" role="toolbar" aria-label="Objet sélectionné" hidden>
+        <strong id="furniture-name"></strong>
+        <button data-turn="-15" class="small" title="Tourner de −15°">−15°</button>
+        <label>Angle<input id="furniture-angle" type="number" step="1" /></label>
+        <button data-turn="15" class="small" title="Tourner de +15°">+15°</button>
+        <button id="furniture-remove" class="small">Supprimer</button>
+        <button id="furniture-close" class="remove" title="Désélectionner" aria-label="Désélectionner">×</button>
+      </div>
       <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
       <div id="warnings" role="status" hidden></div>
     </main>

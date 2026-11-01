@@ -1,0 +1,3 @@
+Le catalogue IKEA n'est pas inclus dans ce dépôt : à la demande, l'appli télécharge les lignes de catalogue publiées par le projet Bygga (https://github.com/Nutlope/bygga, licence MIT) et les garde dans %LOCALAPPDATA%\3D_Plans\catalog.
+
+IKEA et les noms de produits IKEA sont des marques d'Inter IKEA Systems B.V. 3D_Plans n'est ni affilié à IKEA ni approuvé par IKEA ; les objets sont dessinés par des gabarits approximatifs.

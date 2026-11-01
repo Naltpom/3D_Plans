@@ -1,12 +1,12 @@
 import { call } from "./host";
-import { $, button, cm, el, message, number, run } from "./ui";
+import { $, button, cm, el, message, number, run, warn } from "./ui";
 
 type Obs = { id: string; expr: string; value: number; sigma: number; status: string; label: string; resid: number; w: number; source: string; unit: string };
 type Cote = { id: string; expr: string; value: number; sigma: number; unit: string; status: string; label: string };
 type Conflict = { id: string; w: number; label: string }[];
 type Result = {
   params: { name: string; value: number; label: string }[]; obs: Obs[]; conflicts: Conflict[];
-  warnings?: { code: string; param?: string; component?: string; message: string }[];
+  warnings?: { code: string; param?: string; component?: string; meuble?: number; message: string }[];
 };
 type Candidate = { gain: number; label: string; expr: string; sigma: number };
 type Factor = { group: Record<string, string>; factor: number | null; n: number };
@@ -18,7 +18,6 @@ const coteList = $("#cote-list");
 const conflictList = $("#conflict-list");
 const nextList = $("#next-list");
 const factorList = $("#factor-list");
-const warnings = $("#warnings");
 const hint = $("#cote-hint");
 const form = $<HTMLFormElement>("#cote-form");
 const [compA, anchorA, compB, anchorB, axis] = ["comp-a", "a", "comp-b", "b", "axis"].map((n) => form.elements.namedItem(n) as HTMLSelectElement);
@@ -95,13 +94,8 @@ function renderConflicts() {
 
 function render() {
   const params = new Map(result?.params.map((p) => [p.name, p.label || p.name]));
-  warnings.hidden = !result?.warnings?.length;
-  warnings.replaceChildren(...(result?.warnings ?? []).map((w) => {
-    const item = el("div", "", w.param ? `${w.message} (${params.get(w.param) ?? w.param})` : w.message);
-    if (w.component) item.append(" ", button("voir", "link", "Mettre en évidence le composant",
-      () => document.dispatchEvent(new CustomEvent("plans3d:highlight", { detail: [w.component] }))));
-    return item;
-  }));
+  warn("calcul", (result?.warnings ?? []).filter((w) => w.meuble === undefined)
+    .map((w) => ({ ...w, message: w.param ? `${w.message} (${params.get(w.param) ?? w.param})` : w.message })));
   const idle = result ? "Aucune proposition" : "Mettez à jour pour obtenir des propositions";
   fill(nextList, candidates.map((c) => line(c.label, `marge actuelle ± ${cm(c.sigma)} · gain total ${cm(c.gain)}`, "",
     button("J'ai mesuré", "action", c.expr, () => run(() => prefill(c))))), idle);

@@ -15,3 +15,17 @@ export function report(error: unknown) {
 }
 
 export const run = (task: () => unknown) => Promise.resolve().then(task).catch(report);
+
+type Warning = { message: string; component?: string };
+const warnings = new Map<string, Warning[]>();
+
+export function warn(group: string, list: Warning[]) {
+  const all = [...warnings.set(group, list).values()].flat(), band = $("#warnings");
+  band.hidden = !all.length;
+  band.replaceChildren(...all.map((w) => {
+    const item = el("div", "", w.message);
+    if (w.component) item.append(" ", button("voir", "link", "Mettre en évidence dans la vue 3D",
+      () => document.dispatchEvent(new CustomEvent("plans3d:highlight", { detail: [w.component] }))));
+    return item;
+  }));
+}

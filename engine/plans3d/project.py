@@ -80,8 +80,9 @@ class Project:
         P, last = self.params(), self.last_solution()
         res = solve({n: last.get(n, v[0]) for n, v in P.items()}, self.observations(exclude)); t2 = time.perf_counter()
         from .components import inclusion_warnings, load
+        from .furniture import warnings as furniture_warnings
         owned = {n for c in load(self).values() for n in c['params']}
-        res.warnings = scale_guard(res, P) + determination_warnings(res, P, owned) + inclusion_warnings(self, res) + ([] if res.converged else [{'code': 'non_converge', 'message': NOT_CONVERGED}])
+        res.warnings = scale_guard(res, P) + determination_warnings(res, P, owned) + inclusion_warnings(self, res) + furniture_warnings(self, res) + ([] if res.converged else [{'code': 'non_converge', 'message': NOT_CONVERGED}])
         progress(0.9, 'Export')
         self.export(res, P)
         res.timing = {'extract_s': t1 - t0, 'solve_s': t2 - t1, 'reextracted': done}

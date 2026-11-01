@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 export type Shape = {
   id: string; type: string; label: string; color: string | null; sigma_max: number | null;
-  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number;
+  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; light?: { puissance: number; teinte: string };
 };
 type Vec = [number, number, number];
 type Range = [number, number];
@@ -23,8 +23,9 @@ const sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(5, 10, 7);
 const model = new THREE.Group();
 const photos = new THREE.Group();
+const furniture = new THREE.Group();
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos);
+scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos, furniture);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -78,21 +79,40 @@ function mesh(shape: Shape) {
   return result;
 }
 
-export function show(shapes: Shape[], frame = false) {
-  const empty = !model.children.length;
-  model.traverse((o) => {
+function clear(group: THREE.Group) {
+  group.traverse((o) => {
     if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) { o.geometry.dispose(); o.material.dispose(); }
   });
-  model.clear();
+  group.clear();
+}
+
+export function show(shapes: Shape[], frame = false) {
+  const empty = !model.children.length;
+  clear(model);
   for (const shape of corners(shapes)) model.add(mesh(shape));
   legend.hidden = shapes.every((s) => status(s.sigma_max) === "ok");
   if (frame || empty) setView("3d");
 }
 
+export function showFurniture(shapes: Shape[]) {
+  clear(furniture);
+  for (const shape of shapes) {
+    const object = mesh(shape);
+    furniture.add(object);
+    if (!shape.light) continue;
+    const light = new THREE.PointLight(shape.light.teinte, shape.light.puissance / 20, 0, 2);
+    light.position.copy(new THREE.Box3().setFromObject(object).getCenter(new THREE.Vector3()));
+    light.userData.id = shape.id;
+    furniture.add(light);
+  }
+}
+
+export const focusPoint = () => ({ x: controls.target.x, z: controls.target.z });
+
 export function highlight(id: string | string[] | null, color = 0x1f6f8a) {
   const ids = [id ?? []].flat();
-  for (const o of model.children as THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[])
-    o.material.emissive.set(ids.includes(o.userData.id) ? color : 0x000000);
+  for (const o of [...model.children, ...furniture.children])
+    if (o instanceof THREE.Mesh) o.material.emissive.set(ids.includes(o.userData.id) ? color : 0x000000);
 }
 
 export function showCameras(cameras: { name: string; center: Vec; R: number[][] }[], current: string | null) {
@@ -125,12 +145,39 @@ function setView(name: string) {
 document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => { button.onclick = () => setView(button.dataset.view!); });
 
 const raycaster = new THREE.Raycaster();
+const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let down = [0, 0];
-canvas.addEventListener("pointerdown", (event) => { down = [event.clientX, event.clientY]; });
-canvas.addEventListener("pointerup", (event) => {
-  if (event.button !== 0 || Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 4) return;
+let drag: { id: string; from: THREE.Vector3; parts: [THREE.Object3D, THREE.Vector3][] } | null = null;
+
+function aim(event: PointerEvent) {
   const rect = canvas.getBoundingClientRect();
   raycaster.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, (rect.top - event.clientY) / rect.height * 2 + 1), camera);
+  return raycaster.ray.intersectPlane(floor, new THREE.Vector3());
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  down = [event.clientX, event.clientY];
+  const from = event.button === 0 ? aim(event) : null, id = from && raycaster.intersectObjects(furniture.children, false)[0]?.object.userData.id;
+  if (!id) return;
+  drag = { id, from, parts: furniture.children.filter((o) => o.userData.id === id).map((o) => [o, o.position.clone()]) };
+  controls.enabled = false;
+  canvas.setPointerCapture(event.pointerId);
+}, { capture: true });
+canvas.addEventListener("pointermove", (event) => {
+  const at = drag && aim(event);
+  if (drag && at) for (const [o, base] of drag.parts) o.position.set(base.x + at.x - drag.from.x, base.y, base.z + at.z - drag.from.z);
+});
+canvas.addEventListener("pointerup", (event) => {
+  const moved = Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 4;
+  if (drag) {
+    const { id, parts: [[o, base]] } = drag;
+    drag = null;
+    controls.enabled = true;
+    document.dispatchEvent(new CustomEvent(moved ? "plans3d:furniture-move" : "plans3d:furniture", { detail: { id, dx: o.position.x - base.x, dz: o.position.z - base.z } }));
+    return;
+  }
+  if (event.button !== 0 || moved) return;
+  aim(event);
   const hit = (raycaster.intersectObjects(photos.children, false)[0] ?? raycaster.intersectObjects(model.children, false)[0])?.object.userData;
   document.dispatchEvent(hit?.photo ? new CustomEvent("plans3d:photo", { detail: hit.photo }) : new CustomEvent("plans3d:pick", { detail: hit?.id ?? null }));
 });
