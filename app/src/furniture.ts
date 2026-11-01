@@ -21,6 +21,7 @@ const height = $<HTMLInputElement>("#furniture-y");
 let placed: Placed[] = [];
 let selected: number | null = null;
 let query = 0;
+let queue: Promise<unknown> = Promise.resolve();
 
 const dims = (size: number[]) => `${[size[0], size[2], size[1]].map((v) => number(v * 100, 0)).join(" × ")} cm`;
 const current = () => placed.find((p) => p.id === selected);
@@ -34,11 +35,11 @@ async function refresh(report?: Report) {
   select(current()?.id ?? null);
 }
 
-const act = (method: string, params: Record<string, unknown>) => run(async () => {
+const act = (method: string, params: Record<string, unknown>) => queue = queue.then(() => run(async () => {
   const report = await call<Report>(method, params);
   if (report.object) selected = report.object.id;
   await refresh(report);
-});
+}));
 
 function select(id: number | null) {
   selected = id;
@@ -86,7 +87,11 @@ async function loadKinds() {
   await find();
 }
 
-const turn = (rot: number) => selected !== null && act("furniture.rotate", { id: selected, rot });
+const turn = (rot: number) => {
+  if (selected === null || !Number.isFinite(rot)) return;
+  angle.value = String(rot);
+  act("furniture.rotate", { id: selected, rot });
+};
 
 $("#ikea-button").onclick = () => run(async () => {
   count.textContent = "Téléchargement du catalogue IKEA…";
@@ -96,8 +101,8 @@ $("#ikea-button").onclick = () => run(async () => {
 });
 search.oninput = () => run(find);
 kind.onchange = () => run(find);
-tools.querySelectorAll<HTMLButtonElement>("[data-turn]").forEach((b) => { b.onclick = () => turn((current()?.rot ?? 0) + Number(b.dataset.turn)); });
-angle.onchange = () => Number.isFinite(angle.valueAsNumber) && turn(angle.valueAsNumber);
+tools.querySelectorAll<HTMLButtonElement>("[data-turn]").forEach((b) => { b.onclick = () => turn(angle.valueAsNumber + Number(b.dataset.turn)); });
+angle.onchange = () => turn(angle.valueAsNumber);
 height.onchange = () => {
   const obj = current();
   if (obj && Number.isFinite(height.valueAsNumber)) act("furniture.move", { id: obj.id, x: obj.x, z: obj.z, y: height.valueAsNumber / 100, snap_walls: false });
@@ -107,7 +112,8 @@ $("#furniture-close").onclick = () => select(null);
 
 document.addEventListener("plans3d:opened", (event) => {
   section.hidden = !(event as CustomEvent).detail;
-  selected = null;
+  placed = [];
+  select(null);
   warn("meubles", []);
   if (section.hidden) showFurniture([]);
   else run(async () => { await act("furniture.check", {}); await loadKinds(); });

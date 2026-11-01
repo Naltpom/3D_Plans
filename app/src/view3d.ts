@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 export type Shape = {
   id: string; type: string; label: string; color: string | null; sigma_max: number | null;
-  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; light?: { puissance: number; teinte: string }; objet?: Pose;
+  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; normal?: number[]; sens?: string; light?: { puissance: number; teinte: string }; objet?: Pose;
 };
 type Pose = { x: number; z: number; rot: number; size: number[] };
 type Vec = [number, number, number];
@@ -26,9 +26,10 @@ sun.position.set(5, 10, 7);
 const model = new THREE.Group();
 const photos = new THREE.Group();
 const furniture = new THREE.Group();
+const swings = new THREE.Group();
 let walls: Shape[] = [];
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos, furniture);
+scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos, furniture, swings);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -85,9 +86,23 @@ function mesh(shape: Shape) {
 
 function clear(group: THREE.Group) {
   group.traverse((o) => {
-    if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) { o.geometry.dispose(); o.material.dispose(); }
+    if (o instanceof THREE.Mesh || o instanceof THREE.Line) { o.geometry.dispose(); o.material.dispose(); }
   });
   group.clear();
+}
+
+function swing({ center: [x, y, z], size: [l, h, ep], rotY: a, normal, sens = "" }: Shape) {
+  const [side, hand] = sens.split("_"), s = side === "interieur" ? -1 : 1, k = hand === "gauche" ? -1 : 1, t = (ep - 0.02) / 2;
+  const [nx, nz] = normal ?? [Math.sin(a), Math.cos(a)], ux = Math.cos(a), uz = -Math.sin(a), hx = x + s * t * nx + k * l / 2 * ux, hz = z + s * t * nz + k * l / 2 * uz;
+  const points = [new THREE.Vector2(hx, hz), ...Array.from({ length: 13 }, (_, i) => {
+    const q = (12 - i) * Math.PI / 24;
+    return new THREE.Vector2(hx + l * (s * nx * Math.sin(q) - k * ux * Math.cos(q)), hz + l * (s * nz * Math.sin(q) - k * uz * Math.cos(q)));
+  })];
+  const fill = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(points.map((p) => new THREE.Vector2(p.x, -p.y)))).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0xf5c451, transparent: true, opacity: 0.15, depthWrite: false, side: THREE.DoubleSide }));
+  fill.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points.map((p) => new THREE.Vector3(p.x, 0, p.y))), new THREE.LineBasicMaterial({ color: 0xf5c451 })));
+  fill.position.y = y - h / 2 + 0.01;
+  return fill;
 }
 
 export function show(shapes: Shape[], frame = false) {
@@ -95,6 +110,8 @@ export function show(shapes: Shape[], frame = false) {
   walls = shapes.filter((s) => s.type === "mur" && s.kind === "box");
   clear(model);
   for (const shape of corners(shapes)) model.add(mesh(shape));
+  clear(swings);
+  for (const shape of shapes) if (shape.sens && shape.kind === "box") swings.add(swing(shape));
   legend.hidden = shapes.every((s) => status(s.sigma_max) === "ok");
   if (frame || empty) setView("3d");
 }
@@ -177,7 +194,12 @@ function aim(event: PointerEvent) {
 canvas.addEventListener("pointerdown", (event) => {
   down = [event.clientX, event.clientY];
   const from = event.button === 0 ? aim(event) : null, hit = from && raycaster.intersectObjects(furniture.children, false)[0]?.object.userData;
-  if (!from || !hit?.id || !hit.objet) return;
+  if (!from || !hit?.id) return;
+  if (!hit.objet) {
+    event.stopPropagation();
+    document.dispatchEvent(new CustomEvent("plans3d:locked"));
+    return;
+  }
   drag = { id: hit.id, from, pose: hit.objet, parts: furniture.children.filter((o) => o.userData.id === hit.id).map((o) => [o, o.position.clone()]) };
   controls.enabled = false;
   canvas.setPointerCapture(event.pointerId);

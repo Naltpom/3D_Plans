@@ -4,22 +4,23 @@ import { highlight, setView, showFurniture, type Shape } from "./view3d";
 
 type Ref = string | number;
 type Rule = { type: string; objet?: number; objets?: number[]; cible?: Ref; vers?: Ref; mur?: string; distance?: number[]; max?: number; min?: number };
-type Placed = { id: number; label: string };
+type Placed = { id: number; label: string; rot: number };
 type Component = { id: string; type: string; label: string };
 type Proposal = { index: number; score: number; ok: boolean; details: { ok: boolean; text: string }[]; shapes: Shape[] };
 
 const KINDS: Record<string, string> = {
-  contre_mur: "Contre un mur", face_a: "Face à (vis-à-vis)", pres_de: "Près de", loin_de: "Loin de", aligne: "Alignés", centre: "Au centre de la pièce", orientation: "Orienté vers",
+  contre_mur: "Contre un mur", face_a: "Face à (vis-à-vis)", pres_de: "Près de", loin_de: "Loin de", aligne: "Alignés", centre: "Au centre de la pièce", orientation: "Orienté vers", angle: "Angle imposé",
 };
 const FIELDS: Record<string, string[]> = {
   contre_mur: ["objet", "mur"], face_a: ["objet", "cible", "dmin", "dmax"], pres_de: ["objet", "cible", "max"], loin_de: ["objet", "cible", "min"],
-  aligne: ["objets"], centre: ["objet"], orientation: ["objet", "vers"],
+  aligne: ["objets"], centre: ["objet"], orientation: ["objet", "vers"], angle: ["objet", "angle"],
 };
 const LABELS: Record<string, string> = {
-  objet: "Objet", objets: "Objets (Ctrl+clic)", cible: "Cible", vers: "Vers", mur: "Mur", dmin: "Distance min (cm)", dmax: "Distance max (cm)", max: "Écart max (cm)", min: "Écart min (cm)",
+  objet: "Objet", objets: "Objets (Ctrl+clic)", cible: "Cible", vers: "Vers", mur: "Mur", dmin: "Distance min (cm)", dmax: "Distance max (cm)", max: "Écart max (cm)", min: "Écart min (cm)", angle: "Angle (°)",
 };
 const DEFAULTS: Record<string, number> = { dmin: 200, dmax: 300, max: 50, min: 150 };
 const NEAREST: Record<string, string> = { fenetre: "une fenêtre", porte: "une porte", porte_fenetre: "une porte-fenêtre", mur: "un mur" };
+const LOCKED = "Aperçu : appliquez la proposition ou revenez à l'agencement actuel pour déplacer un objet";
 const TARGETS = ["mur", "porte", "porte_fenetre", "fenetre", "escalier", "boite"];
 
 const section = $("#layout");
@@ -43,7 +44,7 @@ const de = (text: string) => /^[aeiouyéèêh]/i.test(text) ? `d’${text}` : `d
 const cm = (m = 0) => `${Math.round(m * 100)} cm`;
 const nameOf = (o: Placed) => objects.filter((p) => p.label === o.label).length > 1 ? `${o.label} ${o.id}` : o.label;
 const objectName = (id: unknown) => { const o = objects.find((p) => p.id === Number(id)); return o ? nameOf(o) : `objet ${id} (supprimé)`; };
-const targetName = (ref: Ref | undefined) => typeof ref === "number" ? objectName(ref) : NEAREST[ref ?? ""] ?? components.find((c) => c.id === ref)?.label ?? String(ref);
+const targetName = (ref: Ref | undefined) => /^(meuble-)?\d+$/.test(String(ref)) ? objectName(String(ref).replace("meuble-", "")) : NEAREST[ref ?? ""] ?? components.find((c) => c.id === ref)?.label ?? String(ref);
 
 function describe(rule: Rule) {
   const o = objectName(rule.objet);
@@ -53,7 +54,7 @@ function describe(rule: Rule) {
   if (rule.type === "loin_de") return `${o} loin ${de(targetName(rule.cible))} (≥ ${cm(rule.min)})`;
   if (rule.type === "aligne") return `${(rule.objets ?? []).map(objectName).join(", ")} alignés`;
   if (rule.type === "centre") return `${o} au centre de la pièce`;
-  return `${o} orienté vers ${targetName(rule.vers)}`;
+  return typeof rule.vers === "number" ? `${o} à ${rule.vers}°` : `${o} orienté vers ${targetName(rule.vers)}`;
 }
 
 function renderRules() {
@@ -80,10 +81,12 @@ function renderProposals() {
 
 function preview(index: number | null) {
   previewed = index;
+  if (state.textContent === LOCKED) state.textContent = "";
   if (index === null) run(async () => document.dispatchEvent(new CustomEvent("plans3d:furniture-refresh", { detail: await call("furniture.check") })));
   else {
     warn("meubles", []);
-    showFurniture(proposals[index].shapes);
+    document.dispatchEvent(new CustomEvent("plans3d:furniture", { detail: { id: null } }));
+    showFurniture(proposals[index].shapes.map((shape) => ({ ...shape, objet: undefined })));
     highlight(null);
     setView("dessus");
   }
@@ -118,7 +121,7 @@ function control(name: string) {
     const nearest = Object.entries(NEAREST).filter(([type]) => components.some((c) => c.type === type)).map(([type, text]): [string, string] => [type, `${text} (la plus proche)`]);
     return select(name, [...pieces, ...nearest, ...components.filter((c) => TARGETS.includes(c.type)).map((c): [string, string] => [c.id, c.label])]);
   }
-  return Object.assign(el("input"), { name, type: "number", step: "1", min: "0", value: String(DEFAULTS[name]), required: true });
+  return Object.assign(el("input"), { name, type: "number", step: "1", value: String(DEFAULTS[name] ?? 0), required: true }, name === "angle" ? {} : { min: "0" });
 }
 
 function fillForm() {
@@ -127,6 +130,8 @@ function fillForm() {
     input.id = `rule-${name}`;
     return [Object.assign(el("label", "", LABELS[name]), { htmlFor: input.id }), input];
   }));
+  const objet = fields.querySelector<HTMLSelectElement>('[name="objet"]'), angle = fields.querySelector<HTMLInputElement>('[name="angle"]');
+  if (objet && angle) (objet.onchange = () => { angle.value = String(Math.round(objects.find((o) => o.id === Number(objet.value))?.rot ?? 0)); })();
 }
 
 $("#rule-add-button").onclick = () => run(async () => {
@@ -142,13 +147,15 @@ form.onsubmit = (event) => {
   const field = (name: string) => form.querySelector<HTMLInputElement & HTMLSelectElement>(`[name="${name}"]`)!;
   const ref = (name: string): Ref => /^\d+$/.test(field(name).value) ? Number(field(name).value) : field(name).value;
   const metres = (name: string) => Number(field(name).value) / 100;
-  const rule: Rule = { type: kind.value };
+  const rule: Rule = { type: kind.value === "angle" ? "orientation" : kind.value };
   for (const name of FIELDS[kind.value]) {
     if (name === "objet") rule.objet = Number(field(name).value);
     else if (name === "objets") rule.objets = [...field(name).selectedOptions].map((o) => Number(o.value));
     else if (name === "dmin") rule.distance = [metres("dmin"), metres("dmax")];
     else if (name === "max" || name === "min") rule[name] = metres(name);
-    else if (name === "cible" || name === "vers") rule[name] = ref(name);
+    else if (name === "cible") rule.cible = ref(name);
+    else if (name === "vers") rule.vers = typeof ref(name) === "number" ? `meuble-${ref(name)}` : ref(name);
+    else if (name === "angle") rule.vers = Number(field(name).value);
     else if (name === "mur" && field(name).value) rule.mur = field(name).value;
   }
   run(async () => {
@@ -177,6 +184,7 @@ propose.onclick = () => run(async () => {
   }
 });
 back.onclick = () => preview(null);
+document.addEventListener("plans3d:locked", () => { state.textContent = LOCKED; });
 
 onEvent((event) => {
   if (event.event !== "progress" || event.method !== "layout.propose") return;

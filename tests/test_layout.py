@@ -51,6 +51,12 @@ def test_propose_and_apply(ctx):
     assert [o['id'] for o in fixed] == [9]
 
 
+def test_imposed_angle(ctx):
+    rules = [{'type': 'orientation', 'objet': 1, 'vers': 30}, {'type': 'contre_mur', 'objet': 8}]
+    for p in L.propose(ctx, rules=rules, n=2)['proposals']:
+        assert next(o['rot'] for o in p['objects'] if o['id'] == 1) == 30 and p['details'][0]['text'] == 'Canapé orienté à 30° : OK'
+
+
 def test_errors(ctx):
     for rules in ([{'type': 'devant'}], [{'type': 'contre_mur', 'objet': 42}], [{'type': 'face_a', 'objet': 2, 'cible': 1, 'distance': 2}],
                   [{'type': 'pres_de', 'objet': 2, 'cible': 'cheminee'}], [{'type': 'aligne', 'objets': [1]}], [{'type': 'contre_mur', 'objet': 1, 'mur': 'p1'}], {}):

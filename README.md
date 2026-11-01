@@ -6,6 +6,15 @@ Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d
 - `engine/plans3d/` : moteur Python (solveur, projet, composants, photos, cadastre, terrain), serveur JSON-lines sur stdin/stdout.
 - `tests/` : tests du moteur.
 
+## Fonctions
+
+- Sources : cotes, photos (COLMAP), cadastre, relevé d'altitudes ; contradictions signalées.
+- Composants : murs, sols, plafonds, portes, fenêtres, portes-fenêtres, escalier, boîte, zone extérieure, toit ; arc d'ouverture des portes affiché selon le côté et les charnières.
+- Terrain : maillage du relevé d'altitudes, parcelle cadastrale.
+- Galerie : gabarits intégrés et catalogue IKEA importé en local (`%LOCALAPPDATA%\3D_Plans\catalog`), recherche par nom et type.
+- Placement : ajout au centre de la vue, glisser au sol aimanté aux murs, angle libre (champ ou ±15°), hauteur ; alertes de collision, de passage étroit et d'ouverture gênée.
+- Agencement automatique : règles (contre un mur, face à, près de, loin de, alignés, au centre, orienté vers, angle imposé), propositions notées, aperçu sans déplacement possible, application en un clic. L'optimiseur tourne par pas de 90° sauf angle imposé.
+
 ## Installeur
 
 Prérequis : Node, Rust, Python 3.12 dans le PATH.

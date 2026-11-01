@@ -192,7 +192,7 @@ form { display: flex; flex-direction: column; gap: 8px; }
 #gallery .row { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 6px; }
 #gallery-list { max-height: 40vh; overflow: auto; }
 #gallery-count { color: var(--muted); }
-#furniture-tools { position: absolute; top: 12px; left: 50%; display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; transform: translateX(-50%); border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; }
+#furniture-tools { position: absolute; top: 56px; left: 50%; display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; transform: translateX(-50%); border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; }
 #furniture-tools strong { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 #furniture-tools label { flex-direction: row; align-items: center; color: var(--muted); }
 #furniture-tools input { width: 64px; min-height: 28px; padding: 3px 6px; }

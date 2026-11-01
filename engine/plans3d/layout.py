@@ -53,6 +53,11 @@ def best(results):
     return tuple(np.stack(np.broadcast_arrays(*column))[k, np.arange(k.size)] for column in zip(*results))
 
 
+def angle(rule):
+    v = rule.get('vers') if isinstance(rule, dict) and rule.get('type') == 'orientation' else None
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
 def centroid(points):
     x, z = np.asarray(points, float).T; cross = x * np.roll(z, -1) - np.roll(x, -1) * z; a = cross.sum() / 2
     if abs(a) < 1e-9: return float(x.mean()), float(z.mean())
@@ -104,7 +109,7 @@ class Scene:
         self.low, self.high = start.min(0), start.max(0)
         bases = {round(math.degrees(a[w]) % 90, 3) for w in self.walls} | {0.0}
         self.rots = np.radians(sorted({(b + 90 * k) % 360 for b in bases for k in range(4)}))
-        self.rules = []
+        self.rules, self.fixed = [], {}
 
     def state(self, chains):
         return [np.tile(v, (chains, 1)) for v in (self.x0, self.z0, np.cos(self.a0), np.sin(self.a0))]
@@ -134,6 +139,7 @@ class Scene:
             weight, fn, text = self.rule(r); used, get = set(), self.getter(*self.state(1))
             fn(lambda t: used.add(int(t)) or get(t)); self.rules.append((weight, fn, text, used))
         self.involves = [[k for k, rule in enumerate(self.rules) if j in rule[3]] for j in range(self.n)]
+        self.fixed = {j: math.radians(a) for r in rules if (a := angle(r)) is not None and (j := self.piece(r.get('objet'))) < self.n}
         return self
 
     def rule(self, rule):
@@ -167,8 +173,8 @@ class Scene:
             else: cols, label = self.target(zone, 'zone'); point = (float(self.x0[cols].mean()), float(self.z0[cols].mean()))
             def fn(get): d = np.hypot(get(o)[0] - point[0], get(o)[1] - point[1]); return d, d < 0.1, d
             return weight, fn, lambda ok, d: f'{name} au centre {de(label)}' + ('' if ok else f' (écart {cm(d)})')
-        if kind == 'orientation' and isinstance(rule.get('vers'), (int, float)) and not isinstance(rule.get('vers'), bool):
-            a = math.radians(rule['vers'])
+        if angle(rule) is not None:
+            a = math.radians(angle(rule))
             def fn(get): cos = get(o)[2] * math.cos(a) + get(o)[3] * math.sin(a); return 2 * (1 - cos), cos > COS10, cos
             return weight, fn, lambda ok, cos: f"{name} orienté à {round(rule['vers'])}°" + ('' if ok else f' (écart {round(deg(cos))}°)')
         cols, label = self.target(rule.get('vers' if kind == 'orientation' else 'cible'))
@@ -213,7 +219,9 @@ class Scene:
         rng, n, walls = np.random.default_rng(seed), self.n, np.array(self.walls)
         X, Z, Cs, Sn = self.state(chains)
         X[1:, :n], Z[1:, :n] = (rng.uniform(lo, hi, (chains - 1, n)) for lo, hi in zip(self.low, self.high))
-        A = np.tile(self.a0[:n], (chains, 1)); A[1:] = rng.choice(self.rots, (chains - 1, n)); Cs[:, :n], Sn[:, :n] = np.cos(A), np.sin(A)
+        A = np.tile(self.a0[:n], (chains, 1)); A[1:] = rng.choice(self.rots, (chains - 1, n))
+        for j, a in self.fixed.items(): A[:, j] = a
+        Cs[:, :n], Sn[:, :n] = np.cos(A), np.sin(A)
         costs = [w * fn(self.getter(X, Z, Cs, Sn))[0] * np.ones(chains) for w, fn, *_ in self.rules]; E = sum(costs, np.zeros(chains))
         for j in range(n):
             st, mv = self.local(j, X[:, j], Z[:, j], Cs[:, j], Sn[:, j], X, Z, Cs, Sn); E += st + mv / 2
@@ -230,6 +238,7 @@ class Scene:
                 along, out = rng.uniform(-1, 1, chains) * np.maximum(self.hu[w] - h, 0), side * (self.hv[w] + d + 0.002)
                 nx, nz = np.where(stick, self.x0[w] + along * wc + out * ws, nx), np.where(stick, self.z0[w] - along * ws + out * wc, nz)
                 na = np.where(stick, self.a0[w] + (side < 0) * math.pi, na)
+            if j in self.fixed: na = np.full(chains, self.fixed[j])
             nc, ns = np.cos(na), np.sin(na)
             st, mv = self.local(j, *(np.stack([v[:, j], new]) for v, new in zip((X, Z, Cs, Sn), (nx, nz, nc, ns))), X, Z, Cs, Sn)
             delta, fresh, get = st[1] + mv[1] - st[0] - mv[0], {}, self.getter(X, Z, Cs, Sn, j, (nx, nz, nc, ns))
