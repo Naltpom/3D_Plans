@@ -37,9 +37,12 @@ const furniture = new THREE.Group();
 const swings = new THREE.Group();
 const cloud = new THREE.Group();
 const overlays = new THREE.Group();
+const draft = new THREE.Group();
+const sketch = new THREE.Group();
+let sketchMap: THREE.Texture | null = null;
 let walls: Shape[] = [];
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(...helpers, neutral, model, photos, furniture, swings, cloud, overlays);
+scene.add(...helpers, neutral, model, photos, furniture, swings, cloud, overlays, draft, sketch);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -199,9 +202,12 @@ export function showCameras(cameras: { name: string; center: Vec; R: number[][] 
 
 document.addEventListener("plans3d:highlight", (event) => highlight((event as CustomEvent<string[]>).detail, 0x8a4a12));
 
+let viewName = "3d";
+
 export function setView(name: string) {
+  viewName = name;
   const known = model.children.filter((o) => o.userData.known), box = new THREE.Box3();
-  for (const o of known.length ? known : model.children.length ? model.children : cloud.children) box.expandByObject(o);
+  for (const o of known.length ? known : model.children.length ? model.children : cloud.children.length ? cloud.children : sketch.children) box.expandByObject(o);
   if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2.5, 2));
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const half = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect));
@@ -238,8 +244,17 @@ function aim(event: PointerEvent) {
   return raycaster.ray.intersectPlane(floor, new THREE.Vector3());
 }
 
+export const pointer: { move: ((x: number, z: number) => void) | null; click: ((x: number, z: number) => void) | null } = { move: null, click: null };
+
+export function setPointer(move: typeof pointer.move, click: typeof pointer.click) {
+  Object.assign(pointer, { move, click });
+  controls.enableRotate = !click;
+  canvas.style.cursor = click ? "crosshair" : "";
+}
+
 canvas.addEventListener("pointerdown", (event) => {
   down = [event.clientX, event.clientY];
+  if (pointer.click) return;
   const from = event.button === 0 ? aim(event) : null, hit = from && raycaster.intersectObjects(furniture.children, false)[0]?.object.userData;
   if (!from || !hit?.id) return;
   if (!hit.objet) {
@@ -257,8 +272,17 @@ canvas.addEventListener("pointermove", (event) => {
   const { x, z } = drag.pose, [sx, sz] = snap(drag.pose, x + at.x - drag.from.x, z + at.z - drag.from.z);
   for (const [o, base] of drag.parts) o.position.set(base.x + sx - x, base.y, base.z + sz - z);
 });
+canvas.addEventListener("pointermove", (event) => {
+  const at = pointer.move && aim(event);
+  if (at) pointer.move!(at.x, at.z);
+});
 canvas.addEventListener("pointerup", (event) => {
   const moved = Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 4;
+  if (pointer.click) {
+    const at = event.button === 0 && !moved && aim(event);
+    if (at) pointer.click(at.x, at.z);
+    return;
+  }
   if (drag) {
     const { id, parts: [[o, base]] } = drag;
     drag = null;
@@ -278,7 +302,7 @@ new ResizeObserver(() => {
   camera.updateProjectionMatrix();
 }).observe(canvas);
 
-export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings, cloud, overlays] };
+export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings, cloud, overlays, draft, sketch] };
 export const hooks = { frame: () => renderer.render(scene, camera) };
 renderer.setAnimationLoop(() => hooks.frame());
 
@@ -297,15 +321,17 @@ function tag(text: string, color: number) {
   return sprite;
 }
 
-export function showCloud(points: number[]) {
+export function showCloud(points: number[], colors: number[] = []) {
   const first = !cloud.children.length;
   clear(cloud);
   if (!points.length) return;
-  const material = new THREE.PointsMaterial({ color: 0x8b95a3, size: 2, sizeAttenuation: false });
-  const dots = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(points, 3)), material);
+  const geometry = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+  if (colors.length) geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors.map((c) => (c / 255) ** 2.2), 3));
+  const material = new THREE.PointsMaterial({ color: colors.length ? 0xffffff : 0x8b95a3, vertexColors: colors.length > 0, size: 2, sizeAttenuation: false });
+  const dots = new THREE.Points(geometry, material);
   dots.userData.material = material;
   cloud.add(dots);
-  if (first && !model.children.length) setView("3d");
+  if (first && !model.children.length) setView(viewName);
 }
 
 export function showWalls(walls: { a: number[]; b: number[]; height: number; tone: string; on: boolean; text: string }[]) {
@@ -317,8 +343,35 @@ export function showWalls(walls: { a: number[]; b: number[]; height: number; ton
     panel.rotation.y = Math.atan2(z0 - z1, x1 - x0);
     panel.userData.material = material;
     panel.add(new THREE.LineSegments(new THREE.EdgesGeometry(panel.geometry), new THREE.LineBasicMaterial({ color: TONES[tone], transparent: true, opacity: on ? 1 : 0.4 })));
+    overlays.add(panel);
+    if (!text) continue;
     const label = tag(text, TONES[tone]);
     label.position.set((x0 + x1) / 2, height + 0.4, (z0 + z1) / 2);
-    overlays.add(panel, label);
+    overlays.add(label);
   }
+}
+
+export function showDraft(points: number[][]) {
+  clear(draft);
+  if (!points.length) return;
+  const vertices = points.map(([x, z]) => new THREE.Vector3(x, 0.02, z));
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(vertices), new THREE.LineBasicMaterial({ color: 0xf5c451, depthTest: false }));
+  const dots = new THREE.Points(new THREE.BufferGeometry().setFromPoints(vertices), new THREE.PointsMaterial({ color: 0xf5c451, size: 9, sizeAttenuation: false, depthTest: false }));
+  line.renderOrder = dots.renderOrder = 2;
+  draft.add(line, dots);
+}
+
+export function showSketch(url: string | null, place?: { x: number; z: number; width: number; depth: number; angle: number }) {
+  clear(sketch);
+  sketchMap?.dispose();
+  sketchMap = null;
+  if (!url || !place) return;
+  sketchMap = new THREE.TextureLoader().load(url);
+  sketchMap.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.MeshBasicMaterial({ map: sketchMap, transparent: true, opacity: 0.55, depthWrite: false });
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(place.width, place.depth).rotateX(-Math.PI / 2), material);
+  plane.position.set(place.x, 0.003, place.z);
+  plane.rotation.y = place.angle;
+  plane.userData.material = material;
+  sketch.add(plane);
 }

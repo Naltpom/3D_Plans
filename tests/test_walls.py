@@ -106,3 +106,17 @@ def test_guide_saved_in_project(tmp_path):
     info = rpc.call(ctx, 'project.info', {})
     assert info['name'] == 'Salon' and info['created'] and info['guide'] == {'type': 'piece', 'step': 4, 'done': [1, 2, 3]}
     assert {'photos.propose_walls', 'photos.create_walls', 'photos.cloud', 'photos.visible', 'project.guide'} <= set(rpc.METHODS)
+
+
+def test_dense_cloud_with_colors(setup):
+    ctx, project = setup; cache = photos.source_cache(project, 'photos')[1]; points = photos.load_model(cache)['P'][:3000]
+    vertices = np.zeros(len(points), [('x', '<f4'), ('y', '<f4'), ('z', '<f4'), ('nx', '<f4'), ('ny', '<f4'), ('nz', '<f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')])
+    vertices['x'], vertices['y'], vertices['z'], vertices['nz'], vertices['red'] = *points.T, 1, 200
+    os.makedirs(os.path.join(cache, 'dense'))
+    with open(os.path.join(cache, 'dense', 'fused.ply'), 'wb') as f:
+        f.write(f'ply\nformat binary_little_endian 1.0\nelement vertex {len(points)}\n'.encode())
+        f.write(''.join(f'property {kind} {name}\n' for name, kind in [*((n, 'float') for n in ('x', 'y', 'z', 'nx', 'ny', 'nz')), *((n, 'uchar') for n in ('red', 'green', 'blue'))]).encode() + b'end_header\n')
+        f.write(vertices.tobytes())
+    found = photos.cloud(ctx, limit=1000)
+    assert found['dense'] and len(found['points']) == len(found['colors']) <= 3000 and set(found['colors'][::3]) == {200}
+    assert photos.cloud(ctx, limit=1000)['points'] == found['points'] and os.path.exists(os.path.join(cache, 'cloud.npz'))

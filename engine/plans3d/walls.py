@@ -3,7 +3,7 @@ from . import components, photos
 from .rpc import read_cotes, rpc, write_cotes
 
 MERGE_M, ASSOC_M, SPAN_M, TOP_M, LENGTH_M, SURE_LENGTH_M, CORNER_M, FRONT_M, FLOOR_M, CEILING_M = 0.1, 0.03, 0.8, 1.3, 0.5, 1.0, 0.75, 0.1, 0.2, 1.8
-SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE = 200, 0.01, 13, 'echelle'
+SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 13, 'echelle', 1.0
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 
 
@@ -36,7 +36,7 @@ def candidates(frame, model):
     found = sorted(found, key=lambda wall: -wall['n'])[:len(LETTERS)]; threshold = max(SURE_POINTS, SURE_SHARE * sum(wall['n'] for wall in found))
     for letter, wall in zip(LETTERS, found): wall['id'] = letter
     for wall in found:
-        behind = next((other for other in found if other['k'] == wall['k'] and other['side'] == wall['side'] and (wall['offset'] - other['offset']) * wall['side'] * scale > FRONT_M
+        behind = next((other for other in found if other['k'] == wall['k'] and other['side'] == wall['side'] and FRONT_M < (wall['offset'] - other['offset']) * wall['side'] * scale <= FRONT_MAX_M
                        and overlap(wall, other) > 0.3 * (wall['high'][wall['run']] - wall['low'][wall['run']])), None)
         length = (wall['high'][wall['run']] - wall['low'][wall['run']]) * scale
         wall['reason'] = f"devant le mur {behind['id']} : meuble ?" if behind else 'peu de points' if wall['n'] < threshold else 'court' if length < SURE_LENGTH_M else ''

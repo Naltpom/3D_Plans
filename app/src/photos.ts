@@ -102,7 +102,7 @@ async function refresh() {
   const ask = <T>(method: string, fallback: T) => id ? call<T>(method, { source: id }).catch(() => fallback) : Promise.resolve(fallback);
   const [status, found, detected, listed, cloud] = await Promise.all([
     id ? call<{ colmap: boolean }>("tools.status").catch(() => ({ colmap: true })) : { colmap: true },
-    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), ask("photos.cloud", { points: [] as number[] })]);
+    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), ask("photos.cloud", { points: [] as number[], colors: [] as number[] })]);
   if (found) await host.allowAssets(found.cameras.map((c) => c.path)).catch(report);
   if (n !== sequence) return;
   [source, installed, located, planes, clicks] = [id, status.colmap, found, detected, listed];
@@ -110,7 +110,7 @@ async function refresh() {
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
-  showCloud(cloud.points);
+  showCloud(cloud.points, cloud.colors);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
   if (image) await draw();

@@ -283,8 +283,7 @@ body.page #step h1 { font-size: 28px; line-height: 36px; }
 #step .card { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid #2f4e5c; border-radius: 10px; background: #17262e; font-size: 13px; color: var(--soft); }
 #step .card b { color: var(--text); font-weight: 600; }
 #step .card.plain { padding: 18px; gap: 10px; border-color: var(--border); background: var(--panel); }
-#step .card.drop { padding: 18px; gap: 10px; border: 1px dashed var(--strong); background: var(--panel); }
-body.dropping #step .drop { border-color: var(--accent); background: var(--accent-bg); }
+body.dropping #step .grid { outline: 2px dashed var(--accent); outline-offset: 6px; }
 #step .card .row { gap: 8px; }
 #step .options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 #step .opt { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px; border-radius: 10px; background: var(--raised); font-weight: 400; font-size: 13px; line-height: 18px; color: var(--soft); text-align: left; }
@@ -315,3 +314,19 @@ body.page #step .actions { margin-top: 0; }
 #photo-guide { grid-area: stage; z-index: 1; align-self: start; justify-self: center; display: flex; align-items: center; gap: 12px; max-width: min(760px, calc(100% - 180px)); margin: 12px; padding: 10px 14px; border: 1px solid #2f4e5c; border-radius: 10px; background: #17262ef2; font-size: 14px; }
 #photo-guide button { flex: none; white-space: nowrap; }
 #photo-overlay .aim polyline { fill: none; stroke: var(--point); stroke-width: 6; stroke-dasharray: 16 8; vector-effect: non-scaling-stroke; }
+#step .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#step .fields input { width: 100%; }
+#step .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+#step .card.done { border-color: var(--accent); }
+#step .status { color: var(--accent-text); font-weight: 600; }
+#sketch-view { position: fixed; inset: 0 0 30px; z-index: 7; display: grid; grid-template-rows: 48px 1fr; background: var(--bg); }
+#sketch-bar { display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--panel); }
+#sketch-bar label { flex-direction: row; align-items: center; gap: 8px; }
+#sketch-bar input { width: 100px; }
+#sketch-help { color: var(--soft); }
+#sketch-stage { display: flex; align-items: center; justify-content: center; min-height: 0; padding: 16px; overflow: hidden; }
+#sketch-frame { position: relative; max-width: 100%; max-height: 100%; }
+#sketch-image { display: block; max-width: 100%; max-height: calc(100vh - 120px); cursor: crosshair; user-select: none; }
+#sketch-marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#sketch-marks circle { fill: none; stroke: var(--point); stroke-width: 3; vector-effect: non-scaling-stroke; }
+#sketch-marks line { stroke: var(--point); stroke-width: 2; stroke-dasharray: 8 6; vector-effect: non-scaling-stroke; }

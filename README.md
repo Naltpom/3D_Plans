@@ -8,8 +8,9 @@ Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d
 
 ## Fonctions
 
-- Parcours guidé (par défaut) : projet → sources → positions des photos (nuage de points épars et caméras) → murs proposés à cocher → une mesure au mètre pour l'échelle → vérification (précision, contradictions, mesure utile) → meubler. Un panneau par étape, état enregistré dans `project.json` ; « Mode expert » affiche l'interface complète. L'atelier photo s'ouvre en mode guidé seulement pour cliquer un angle désigné sur 2 photos.
+- Parcours guidé (par défaut) : projet → sources (photos, plan cadastral, croquis à main levée, construction manuelle, combinables) → positions des photos (nuage dense coloré s'il existe, sinon épars, et caméras) → murs proposés à cocher, repris du cadastre ou tracés → une mesure au mètre pour l'échelle → vérification (précision, contradictions, mesure utile) → meubler. Un panneau par étape, état enregistré dans `project.json` ; « Mode expert » affiche l'interface complète. L'atelier photo s'ouvre en mode guidé seulement pour cliquer un angle désigné sur 2 photos.
 - Sources : cotes, photos (COLMAP), cadastre, relevé d'altitudes ; contradictions signalées.
+- Tracé en vue de dessus : clic angle par angle sur une grille de 5 cm, angle droit aimanté, longueur (cm) et angle (°) au clavier, fermeture de la pièce ; murs reliés par leurs angles, positions a priori à ± 5 cm, longueurs tapées enregistrées comme cotes. Portes et fenêtres posées d'un clic sur un mur. Croquis à main levée affiché en fond, calé par 2 points et leur distance.
 - Composants : murs, sols, plafonds, portes, fenêtres, portes-fenêtres, escalier, boîte, zone extérieure, toit ; arc d'ouverture des portes affiché selon le côté et les charnières.
 - Terrain : maillage du relevé d'altitudes, parcelle cadastrale.
 - Galerie : gabarits intégrés et catalogue IKEA importé en local (`%LOCALAPPDATA%\3D_Plans\catalog`), recherche par nom et type.
@@ -52,7 +53,7 @@ cd app; npx tsc --noEmit
 - Toute observation porte une valeur et un σ en unités physiques ; contradiction si résidu normalisé > 3.
 - L'IA propose, le solveur tranche, l'utilisateur valide. L'IA ne produit jamais de coordonnées ; aucune règle n'est ajoutée sans validation.
 - Cache par source : seules les sources modifiées sont ré-extraites ; le solveur est relancé en entier à chaque mise à jour.
-- Murs proposés : plans verticaux regroupés (écart ≤ 10 cm), d'au moins 0,8 m de haut et atteignant 1,3 m ; incertains si peu de points, courts ou devant un autre mur. À la validation : murs perpendiculaires reliés par leurs angles (≤ 75 cm), premier mur de chaque direction à 0, sol et plafond associés ; une nouvelle validation remplace les murs proposés et la cote d'échelle.
+- Murs proposés : plans verticaux regroupés (écart ≤ 10 cm), d'au moins 0,8 m de haut et atteignant 1,3 m ; incertains si peu de points, courts ou à moins d'1 m devant un autre mur. Cadastre : murs extérieurs du bâtiment principal sur ses sommets (épaisseur vers l'intérieur, hauteur BD TOPO si connue) et parcelle principale. À la validation : murs perpendiculaires reliés par leurs angles (≤ 75 cm), premier mur de chaque direction à 0, sol et plafond associés ; une nouvelle validation remplace les murs proposés et la cote d'échelle.
 - Outils photo : COLMAP, téléchargé au premier usage dans `%LOCALAPPDATA%\3D_Plans\tools`.
 - Aucune photo ni donnée de projet dans le dépôt.
 - Usage personnel.

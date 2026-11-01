@@ -282,6 +282,17 @@
         </div>
       </form>
     </div>
+    <div id="sketch-view" hidden>
+      <header id="sketch-bar">
+        <strong>Caler le croquis</strong>
+        <span id="sketch-help"></span>
+        <span class="spacer"></span>
+        <label>Distance (cm)<input id="sketch-length" inputmode="decimal" autocomplete="off" /></label>
+        <button id="sketch-cancel">Annuler</button>
+        <button id="sketch-ok" class="primary">Valider</button>
+      </header>
+      <div id="sketch-stage"><div id="sketch-frame"><img id="sketch-image" alt="Croquis" draggable="false" /><svg id="sketch-marks" aria-hidden="true"></svg></div></div>
+    </div>
     <div id="banner" role="alert" hidden><span></span><button aria-label="Fermer" title="Fermer">×</button></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

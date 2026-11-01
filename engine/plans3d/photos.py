@@ -115,7 +115,7 @@ def reconstruct(paths, cache, progress=no_progress):
     image_dir, names = link_images(paths, in_cache('images')); database = in_cache('database.db')
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
-    shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse')); write_lines(in_cache('images.txt'), names)
+    shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse'), exist_ok=True); write_lines(in_cache('images.txt'), names)
     sizes = {exif[path]['size'] for path in paths}; camera = []
     if len(sizes) == 1 and None not in sizes:
         (width, height), = sizes; focal = (exif[paths[0]]['focal35'] or 26.0) * np.hypot(width, height) / 43.267
@@ -166,14 +166,17 @@ def camera_centers(model):
     return -np.einsum('nji,nj->ni', rotation_matrices(model['q']), model['t'])
 
 
-def read_ply(path):
+def read_vertices(path):
     types = {'float': 'f4', 'float32': 'f4', 'double': 'f8', 'uchar': 'u1', 'uint8': 'u1', 'int': 'i4', 'short': 'i2', 'ushort': 'u2'}
     with open(path, 'rb') as file:
         header = []
         while (line := file.readline().decode('ascii', 'replace').strip()) != 'end_header': header.append(line.split())
         count = next(int(words[2]) for words in header if words[:2] == ['element', 'vertex'])
-        vertices = np.fromfile(file, np.dtype([(words[2], '<' + types[words[1]]) for words in header if words[0] == 'property']), count)
-    points = np.stack([vertices['x'], vertices['y'], vertices['z']], 1).astype(float)
+        return np.fromfile(file, np.dtype([(words[2], '<' + types[words[1]]) for words in header if words[0] == 'property']), count)
+
+
+def read_ply(path):
+    vertices = read_vertices(path); points = np.stack([vertices['x'], vertices['y'], vertices['z']], 1).astype(float)
     normals = np.stack([vertices['nx'], vertices['ny'], vertices['nz']], 1).astype(float) if 'nx' in vertices.dtype.names else None
     return points, normals
 
@@ -676,13 +679,28 @@ def unclick(ctx, id):
     return {'id': id}
 
 
+def cloud_sample(cache, limit):
+    dense, saved = os.path.join(cache, 'dense', 'fused.ply'), os.path.join(cache, 'cloud.npz')
+    if not os.path.exists(dense): points = load_model(cache)['P']; return points[np.random.default_rng(0).permutation(len(points))[:limit]], np.zeros((0, 3), np.uint8)
+    signature = f'{os.path.getsize(dense)}:{os.path.getmtime(dense)}:{limit}'
+    if os.path.exists(saved):
+        with np.load(saved) as data:
+            if str(data['signature']) == signature: return data['P'], data['C']
+    vertices = read_vertices(dense); kept = np.random.default_rng(0).permutation(len(vertices))[:limit]; vertices = vertices[kept]
+    points = np.stack([vertices['x'], vertices['y'], vertices['z']], 1).astype(float)
+    colors = np.stack([vertices['red'], vertices['green'], vertices['blue']], 1).astype(np.uint8) if 'red' in vertices.dtype.names else np.zeros((0, 3), np.uint8)
+    np.savez(saved, P=points, C=colors, signature=signature)
+    return points, colors
+
+
 @rpc('photos.cloud')
-def cloud(ctx, source='photos', limit=20000):
+def cloud(ctx, source='photos', limit=50000):
     project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False)
-    linear_map, shift, _ = project_transform(project, source, frame); points = load_model(cache)['P'] @ linear_map.T + shift
+    points, colors = cloud_sample(cache, int(limit)); linear_map, shift, _ = project_transform(project, source, frame); points = points @ linear_map.T + shift
     low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
-    points = points[np.all((points > low - margin) & (points < high + margin), 1)]
-    return {'points': points[np.random.default_rng(0).permutation(len(points))[:int(limit)]].round(3).ravel().tolist()}
+    kept = np.all((points > low - margin) & (points < high + margin), 1); kept[np.flatnonzero(kept)[int(limit):]] = False
+    return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [],
+            'dense': bool(len(colors)) or os.path.exists(os.path.join(cache, 'dense', 'fused.ply'))}
 
 
 @rpc('photos.visible')
