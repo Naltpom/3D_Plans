@@ -3,8 +3,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 export type Shape = {
   id: string; type: string; label: string; color: string | null; sigma_max: number | null;
-  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; normal?: number[]; sens?: string; light?: { puissance: number; teinte: string }; objet?: Pose;
+  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; normal?: number[]; sens?: string; light?: Lamp; objet?: Pose;
 };
+export type Lamp = { lumens: number; kelvin: number; spot: boolean; allume: boolean; faisceau: number; couleur: string; candela: number; luminance: number };
 type Pose = { x: number; z: number; rot: number; size: number[] };
 type Vec = [number, number, number];
 type Range = [number, number];
@@ -13,23 +14,30 @@ const OPACITY: Record<string, number> = { mur: 0.45, fenetre: 0.6, porte_fenetre
 const EDGES = { ok: 0x202020, large: 0xe8953a, unknown: 0xf07a72 };
 const VIEWS: Record<string, Vec> = { dessus: [0, 1, 1e-4], face: [0, 0, 1], "3d": [0.6, 0.5, 0.8] };
 const SNAP = 0.1;
+export const GLASS = ["fenetre", "porte_fenetre"];
+const OPENINGS = ["porte", ...GLASS];
+const FLAT = ["sol", "terrain", "parcelle"];
 
 const canvas = document.querySelector<HTMLCanvasElement>("#scene")!;
 const legend = document.querySelector<HTMLElement>("#legend")!;
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.setPixelRatio(window.devicePixelRatio);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x101318);
 const sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(5, 10, 7);
+const neutral = new THREE.Group().add(new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun);
+const helpers = [new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1)];
 const model = new THREE.Group();
 const photos = new THREE.Group();
 const furniture = new THREE.Group();
 const swings = new THREE.Group();
 let walls: Shape[] = [];
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos, furniture, swings);
+scene.add(...helpers, neutral, model, photos, furniture, swings);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -55,23 +63,44 @@ function corners(shapes: Shape[]) {
   });
 }
 
-function shapeGeometry(shape: Shape) {
-  if (shape.kind === "box") return new THREE.BoxGeometry(...shape.size);
+function wallGeometry({ center, size: [l, h, t], rotY }: Shape, openings: Shape[]) {
+  const c = Math.cos(rotY), s = Math.sin(rotY), V = THREE.Vector2, floor = -h / 2 + 0.005;
+  const holes = openings.flatMap((o) => {
+    const dx = o.center[0] - center[0], dz = o.center[2] - center[2], u = dx * c - dz * s, y = o.center[1] - center[1];
+    if (Math.abs(Math.sin(o.rotY - rotY)) > 1e-3 || Math.abs(dx * s + dz * c) > t / 2 + 0.05) return [];
+    const box = [Math.max(u - o.size[0] / 2, 0.01 - l / 2), Math.min(u + o.size[0] / 2, l / 2 - 0.01), Math.max(y - o.size[1] / 2, -h / 2), Math.min(y + o.size[1] / 2, h / 2 - 0.01)];
+    return box[1] > box[0] && box[3] > box[2] ? [box] : [];
+  });
+  if (!holes.length) return new THREE.BoxGeometry(l, h, t);
+  const outline = [new V(-l / 2, -h / 2)];
+  for (const [u0, u1, , y1] of holes.filter((b) => b[2] <= floor).sort((a, b) => a[0] - b[0])) outline.push(new V(u0, -h / 2), new V(u0, y1), new V(u1, y1), new V(u1, -h / 2));
+  const face = new THREE.Shape([...outline, new V(l / 2, -h / 2), new V(l / 2, h / 2), new V(-l / 2, h / 2)]);
+  face.holes = holes.filter((b) => b[2] > floor).map(([u0, u1, y0, y1]) => new THREE.Path([new V(u0, y0), new V(u1, y0), new V(u1, y1), new V(u0, y1)]));
+  const geometry = new THREE.ExtrudeGeometry(face, { depth: t, bevelEnabled: false }).translate(0, 0, -t / 2);
+  geometry.clearGroups();
+  return geometry;
+}
+
+function shapeGeometry(shape: Shape, openings: Shape[]) {
+  if (shape.kind === "box") return shape.type === "mur" ? wallGeometry(shape, openings) : new THREE.BoxGeometry(...shape.size);
   if (shape.kind === "polygon") return new THREE.ShapeGeometry(new THREE.Shape(shape.vertices.map(([x, z]) => new THREE.Vector2(x, -z)))).rotateX(-Math.PI / 2);
   const geometry = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(shape.vertices.flat(), 3)).setIndex(shape.faces.flat());
   geometry.computeVertexNormals();
   return geometry;
 }
 
-function mesh(shape: Shape) {
-  const geometry = shapeGeometry(shape), terrain = shape.type === "terrain";
+function mesh(shape: Shape, openings: Shape[] = []) {
+  const geometry = shapeGeometry(shape, openings), terrain = shape.type === "terrain";
   const opacity = OPACITY[shape.type] ?? 1;
-  const material = new THREE.MeshLambertMaterial({
-    color: shape.color ?? "#bbbbbb", transparent: opacity < 1, opacity, depthWrite: opacity === 1,
-    side: shape.type === "plafond" ? THREE.BackSide : shape.kind === "box" || terrain ? THREE.FrontSide : THREE.DoubleSide,
+  const material = new THREE.MeshStandardMaterial({
+    color: shape.color ?? "#bbbbbb", roughness: 0.9, metalness: 0, transparent: opacity < 1, opacity, depthWrite: opacity === 1,
+    side: shape.type === "plafond" ? THREE.BackSide : shape.kind === "box" || terrain ? THREE.FrontSide : THREE.DoubleSide, shadowSide: shape.kind === "box" ? null : THREE.DoubleSide,
     polygonOffset: shape.kind !== "box", polygonOffsetFactor: 1, polygonOffsetUnits: terrain || shape.type === "parcelle" ? 4 : 1,
   });
   const result = new THREE.Mesh(geometry, material);
+  result.castShadow = !FLAT.includes(shape.type) && !GLASS.includes(shape.type) && !shape.light;
+  result.receiveShadow = true;
+  Object.assign(result.userData, { type: shape.type, opacity, material });
   if (shape.kind === "box") {
     result.position.fromArray(shape.center);
     result.rotation.y = shape.rotY;
@@ -86,7 +115,8 @@ function mesh(shape: Shape) {
 
 function clear(group: THREE.Group) {
   group.traverse((o) => {
-    if (o instanceof THREE.Mesh || o instanceof THREE.Line) { o.geometry.dispose(); o.material.dispose(); }
+    if (o instanceof THREE.Mesh || o instanceof THREE.Line) { o.geometry.dispose(); (o.userData.material ?? o.material).dispose(); }
+    if (o instanceof THREE.Light) o.dispose();
   });
   group.clear();
 }
@@ -109,11 +139,13 @@ export function show(shapes: Shape[], frame = false) {
   const empty = !model.children.length;
   walls = shapes.filter((s) => s.type === "mur" && s.kind === "box");
   clear(model);
-  for (const shape of corners(shapes)) model.add(mesh(shape));
+  const openings = shapes.filter((s) => OPENINGS.includes(s.type) && s.kind === "box");
+  for (const shape of corners(shapes)) model.add(mesh(shape, openings));
   clear(swings);
   for (const shape of shapes) if (shape.sens && shape.kind === "box") swings.add(swing(shape));
   legend.hidden = shapes.every((s) => status(s.sigma_max) === "ok");
   if (frame || empty) setView("3d");
+  document.dispatchEvent(new CustomEvent("plans3d:scene"));
 }
 
 export function showFurniture(shapes: Shape[]) {
@@ -122,11 +154,23 @@ export function showFurniture(shapes: Shape[]) {
     const object = mesh(shape);
     furniture.add(object);
     if (!shape.light) continue;
-    const light = new THREE.PointLight(shape.light.teinte, shape.light.puissance / 20, 0, 2);
+    const { couleur, candela, spot, faisceau } = shape.light;
+    const light = spot ? new THREE.SpotLight(couleur, candela, 0, THREE.MathUtils.degToRad(faisceau / 2), 0.3, 2) : new THREE.PointLight(couleur, candela, 0, 2);
     light.position.copy(new THREE.Box3().setFromObject(object).getCenter(new THREE.Vector3()));
-    light.userData.id = shape.id;
+    light.castShadow = true;
+    light.shadow.mapSize.set(512, 512);
+    light.shadow.bias = -0.002;
+    light.shadow.camera.near = 0.05;
+    light.userData = { id: shape.id, label: shape.label, lamp: shape.light };
+    object.userData.lamp = shape.light;
     furniture.add(light);
+    if (light instanceof THREE.SpotLight) {
+      light.target.position.copy(light.position).y -= 1;
+      light.target.userData.id = shape.id;
+      furniture.add(light.target);
+    }
   }
+  document.dispatchEvent(new CustomEvent("plans3d:scene"));
 }
 
 export const focusPoint = () => ({ x: controls.target.x, z: controls.target.z });
@@ -134,7 +178,7 @@ export const focusPoint = () => ({ x: controls.target.x, z: controls.target.z })
 export function highlight(id: string | string[] | null, color = 0x1f6f8a) {
   const ids = [id ?? []].flat();
   for (const o of [...model.children, ...furniture.children])
-    if (o instanceof THREE.Mesh) o.material.emissive.set(ids.includes(o.userData.id) ? color : 0x000000);
+    if (o instanceof THREE.Mesh) o.userData.material.emissive.set(ids.includes(o.userData.id) ? color : o.userData.glow ?? 0x000000);
 }
 
 export function showCameras(cameras: { name: string; center: Vec; R: number[][] }[], current: string | null) {
@@ -221,7 +265,7 @@ canvas.addEventListener("pointerup", (event) => {
   }
   if (event.button !== 0 || moved) return;
   aim(event);
-  const hit = (raycaster.intersectObjects(photos.children, false)[0] ?? raycaster.intersectObjects(model.children, false)[0])?.object.userData;
+  const hit = (raycaster.intersectObjects(photos.children, false)[0] ?? raycaster.intersectObjects(model.children, false).find((h) => (h.object as THREE.Mesh).material === h.object.userData.material))?.object.userData;
   document.dispatchEvent(hit?.photo ? new CustomEvent("plans3d:photo", { detail: hit.photo }) : new CustomEvent("plans3d:pick", { detail: hit?.id ?? null }));
 });
 
@@ -231,4 +275,6 @@ new ResizeObserver(() => {
   camera.updateProjectionMatrix();
 }).observe(canvas);
 
-renderer.setAnimationLoop(() => renderer.render(scene, camera));
+export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings] };
+export const hooks = { frame: () => renderer.render(scene, camera) };
+renderer.setAnimationLoop(() => hooks.frame());

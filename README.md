@@ -15,6 +15,9 @@ Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d
 - Placement : ajout au centre de la vue, glisser au sol aimanté aux murs, angle libre (champ ou ±15°), hauteur ; alertes de collision, de passage étroit et d'ouverture gênée.
 - Agencement automatique : règles (contre un mur, face à, près de, loin de, alignés, au centre, orienté vers, angle imposé), propositions notées, aperçu sans déplacement possible, application en un clic. L'optimiseur tourne par pas de 90° sauf angle imposé.
 - Assistant d'agencement : description en français → règles proposées, validées par le moteur (meubles et éléments existants, distances bornées par la pièce), cochées puis ajoutées par l'utilisateur. IA locale par défaut : Ollama + `qwen2.5:7b-instruct`, installables depuis l'appli (winget, ~4,7 Go). Protocole OpenAI (`/v1/chat/completions`) : serveur, modèle et clé réglables, enregistrés dans `%LOCALAPPDATA%\3D_Plans\settings.json`.
+- Objets imaginaires : description d'un objet → gabarit existant, dimensions et paramètres validés (bornes du mobilier), aperçu puis ajout par l'utilisateur.
+- Lumière réelle : luminaires de la galerie (lumens → candelas, kelvins → teinte, ponctuel ou spot, interrupteur), soleil selon le lieu (origine du cadastre, sinon latitude et longitude du projet), la date et l'heure ; ombres ; nord = −z.
+- Rendu réaliste : lancer de rayons progressif (three-gpu-pathtracer, licence MIT) sur la vue courante, arrêt, export PNG ; murs et plafond côté caméra retirés (vue en coupe).
 
 ## Installeur
 

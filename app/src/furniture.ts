@@ -1,4 +1,5 @@
 import { call } from "./host";
+import { aiReady, busy } from "./layout";
 import { $, button, el, number, run, warn } from "./ui";
 import { focusPoint, highlight, showFurniture, type Shape } from "./view3d";
 
@@ -6,8 +7,10 @@ type Item = { id: string; label: string; kind: string; size: number[]; source: s
 type Placed = { id: number; ref: string; label: string; kind: string; size: number[]; x: number; z: number; y: number; rot: number };
 type Warning = { code: string; message: string; component?: string; meuble?: number };
 type Report = { object: Placed | null; warnings: Warning[] };
+type Imagined = { item: string; kind: string; label: string; size: number[]; params: Record<string, number | string> };
 
 const SOURCES: Record<string, string> = { gabarit: "gabarit", ikea: "IKEA", perso: "perso" };
+const PARAMS: Record<string, string> = { doors: "portes", rows: "tiroirs", shelves: "tablettes", seatH: "assise (cm)", aw: "accoudoirs (cm)", couleur: "couleur", lumens: "lm", kelvin: "K" };
 const section = $("#gallery");
 const results = $("#gallery-list");
 const placedList = $("#furniture-list");
@@ -17,11 +20,16 @@ const count = $("#gallery-count");
 const tools = $("#furniture-tools");
 const angle = $<HTMLInputElement>("#furniture-angle");
 const height = $<HTMLInputElement>("#furniture-y");
+const imagineForm = $<HTMLFormElement>("#imagine-form");
+const imagineText = $<HTMLInputElement>("#imagine-text");
+const imagineView = $("#imagine-preview");
 
 let placed: Placed[] = [];
 let selected: number | null = null;
 let query = 0;
 let queue: Promise<unknown> = Promise.resolve();
+let imagined: Imagined | null = null;
+let kindLabels: Record<string, string> = {};
 
 const dims = (size: number[]) => `${[size[0], size[2], size[1]].map((v) => number(v * 100, 0)).join(" × ")} cm`;
 const current = () => placed.find((p) => p.id === selected);
@@ -82,6 +90,7 @@ async function find() {
 async function loadKinds() {
   const kinds = await call<{ kind: string; label: string; count: number }[]>("catalog.kinds");
   const chosen = kind.value;
+  kindLabels = Object.fromEntries(kinds.map((k) => [k.kind, k.label]));
   kind.replaceChildren(new Option("Tous les types", ""), ...kinds.filter((k) => k.count).map((k) => new Option(`${k.label} (${k.count})`, k.kind)));
   kind.value = chosen;
   await find();
@@ -107,12 +116,42 @@ height.onchange = () => {
   const obj = current();
   if (obj && Number.isFinite(height.valueAsNumber)) act("furniture.move", { id: obj.id, x: obj.x, z: obj.z, y: height.valueAsNumber / 100, snap_walls: false });
 };
+function renderImagined(rejected: string[] = []) {
+  imagineView.hidden = !imagined;
+  if (!imagined) return;
+  const params = Object.entries(imagined.params).map(([k, v]) => k === "round" ? (v ? "rond" : "rectangulaire") : k === "spot" ? (v ? "spot" : "ponctuel") : k === "allume" ? "" : `${PARAMS[k] ?? k} ${v}`);
+  $("#imagine-name").textContent = imagined.label;
+  $("#imagine-details").textContent = [kindLabels[imagined.kind] ?? imagined.kind, dims(imagined.size), ...params, ...rejected.map((r) => `ignoré : ${r}`)].filter(Boolean).join(" · ");
+}
+
+imagineForm.onsubmit = (event) => {
+  event.preventDefault();
+  run(() => busy(async () => {
+    imagined = null;
+    renderImagined();
+    if (!(await aiReady())) return "";
+    const found = await call<{ objet: Imagined; rejetes: string[]; model: string; seconds: number }>("ai.object_from_text", { text: imagineText.value });
+    imagined = found.objet;
+    renderImagined(found.rejetes);
+    return `Objet proposé par ${found.model} en ${number(found.seconds, 1)} s : vérifiez puis ajoutez`;
+  }, imagineView));
+};
+$("#imagine-ignore").onclick = () => { imagined = null; renderImagined(); };
+$("#imagine-add").onclick = () => {
+  if (!imagined) return;
+  const { item, size, label, params } = imagined;
+  imagined = null;
+  renderImagined();
+  act("furniture.add", { item, size, label, options: params, ...focusPoint() });
+};
 $("#furniture-remove").onclick = () => selected !== null && act("furniture.remove", { id: selected });
 $("#furniture-close").onclick = () => select(null);
 
 document.addEventListener("plans3d:opened", (event) => {
   section.hidden = !(event as CustomEvent).detail;
   placed = [];
+  imagined = null;
+  renderImagined();
   select(null);
   warn("meubles", []);
   if (section.hidden) showFurniture([]);

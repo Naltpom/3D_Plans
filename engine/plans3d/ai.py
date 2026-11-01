@@ -23,6 +23,9 @@ RULES_HELP = '''Règles possibles :
 - {"type":"centre","objet":ID} : au centre de la pièce
 - {"type":"orientation","objet":ID,"vers":CIBLE} : objet tourné vers la cible ; ou {"type":"orientation","objet":ID,"angle":degrés}
 ID = id numérique d'un meuble listé. CIBLE = id d'un meuble, id d'un élément fixe listé, ou un type générique (le plus proche) : '''
+OBJECT_HELP = '''Paramètres possibles : "round": 1 pour une table ou un tabouret ronds ; "doors", "rows", "shelves" : nombre de portes, de tiroirs, de tablettes ; "seatH" : hauteur d'assise (cm) ; "couleur" : couleur "#rrggbb" du matériau (chêne #b08a5a, noyer #6b4a32, pin #d9b37a, blanc #f2f2ee, noir #2b2b2b) ; luminaire : "lumens", "kelvin", "spot" (0 ou 1).
+Un objet rond a largeur = profondeur = diamètre. Dimension non précisée : valeur par défaut du type.
+Réponds uniquement par un objet JSON {"type": TYPE, "dimensions": [largeur, hauteur, profondeur] en cm, "parametres": {...}, "libelle": "nom court en français"}.'''
 ANSWER = 'Traite chaque souhait séparément : dans « X près de / loin de / face à / vers Y », objet = id de X et cible (ou vers) = Y, soit l’id d’un meuble, soit l’id ou le type d’un élément fixe (porte, fenetre, mur). Aucune règle non demandée, aucune règle pour un meuble non cité. Ne donne jamais de coordonnées. Réponds uniquement par un objet JSON {"regles":[...]}.'
 
 
@@ -142,12 +145,16 @@ def prompt(scene):
         RULES_HELP + ', '.join(t for t in GENERIC if any(s['type'] == t for s in fixed.values())) + '.', ANSWER])
 
 
-def parse(content):
-    try: data = json.loads(content)
+def decode(content):
+    try: return json.loads(content)
     except (TypeError, ValueError):
         found = re.search(r'\{.*\}', str(content), re.S)
-        try: data = json.loads(found[0]) if found else None
-        except ValueError: data = None
+        try: return json.loads(found[0]) if found else None
+        except ValueError: return None
+
+
+def parse(content):
+    data = decode(content)
     if isinstance(data, dict): data = data.get('regles', data.get('rules'))
     if not isinstance(data, list): raise RpcError('réponse du modèle illisible : JSON {"regles": [...]} attendu')
     return data
@@ -205,18 +212,60 @@ def check(scene, raw):
     return rule
 
 
+def described(text, empty):
+    text = str(text).strip()
+    if not text: raise RpcError(empty)
+    if len(text) > MAX_TEXT: raise RpcError(f'description trop longue ({MAX_TEXT} caractères max)')
+    return text
+
+
+def ask(system, text, progress):
+    s = settings(); progress(0.1, f"Interrogation de {s['model']}…")
+    body = {'model': s['model'], 'temperature': 0, 'stream': False, 'response_format': {'type': 'json_object'},
+            'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}]}
+    answer = request(s, '/chat/completions', body, timeout=600)
+    try: return answer['choices'][0]['message']['content'], s['model']
+    except (KeyError, IndexError, TypeError): raise RpcError('réponse du serveur IA inattendue') from None
+
+
+def object_prompt():
+    return '\n'.join([
+        'Tu traduis la description d’un objet de mobilier en JSON pour un logiciel de plans 3D.', 'Types (type : libellé, largeur × hauteur × profondeur par défaut) :',
+        *[f'- {k} : {label}, {" × ".join(f"{v * 100:g}" for v in size)} cm' for k, (label, size, _) in F.GABARITS.items()], OBJECT_HELP])
+
+
+def imagined(raw):
+    kind = raw.get('type') if isinstance(raw, dict) else None
+    if kind not in F.GABARITS: raise RpcError(f"type d’objet inconnu : {kind} ({', '.join(F.GABARITS)})")
+    label, default, _ = F.GABARITS[kind]; dims = raw.get('dimensions')
+    if isinstance(dims, dict): dims = [dims.get(k) for k in ('largeur', 'hauteur', 'profondeur')]
+    if not isinstance(dims, list) or len(dims) != 3: raise RpcError('dimensions : [largeur, hauteur, profondeur] en cm attendues')
+    cm = [d * 100 if v is None else v for v, d in zip(dims, default)]
+    size = [round(v, 4) for v in F.dimensions([v / 100 if isinstance(v, (int, float)) and not isinstance(v, bool) else v for v in cm])]
+    params, rejected = {}, []
+    for key, value in (raw.get('parametres') if isinstance(raw.get('parametres'), dict) else {}).items():
+        try: params[key] = F.setting(key, value)
+        except RpcError as e: rejected.append(str(e))
+    name = str(raw.get('libelle') or label).strip()[:80]
+    return {'item': f'gabarit:{kind}', 'kind': kind, 'label': name[:1].upper() + name[1:], 'size': size, 'params': params}, rejected
+
+
+@rpc('ai.object_from_text', long=True)
+def object_from_text(ctx, text, progress=None):
+    text, start = described(text, 'décrivez l’objet souhaité'), time.perf_counter()
+    content, model = ask(object_prompt(), text, progress)
+    data = decode(content)
+    if not isinstance(data, dict): raise RpcError('réponse du modèle illisible : objet JSON {"type", "dimensions", "parametres", "libelle"} attendu')
+    found, rejected = imagined(data)
+    progress(1.0, 'Terminé')
+    return {'objet': found, 'rejetes': rejected, 'model': model, 'seconds': time.perf_counter() - start}
+
+
 @rpc('ai.rules_from_text', long=True)
 def rules_from_text(ctx, text, progress=None):
-    text, start = str(text).strip(), time.perf_counter()
-    if not text: raise RpcError('décrivez l’agencement souhaité')
-    if len(text) > MAX_TEXT: raise RpcError(f'description trop longue ({MAX_TEXT} caractères max)')
-    scene, s = L.Scene(ctx.require_project(), ctx.result), settings()
-    progress(0.1, f"Interrogation de {s['model']}…")
-    body = {'model': s['model'], 'temperature': 0, 'stream': False, 'response_format': {'type': 'json_object'},
-            'messages': [{'role': 'system', 'content': prompt(scene)}, {'role': 'user', 'content': text}]}
-    answer = request(s, '/chat/completions', body, timeout=600)
-    try: content = answer['choices'][0]['message']['content']
-    except (KeyError, IndexError, TypeError): raise RpcError('réponse du serveur IA inattendue') from None
+    text, start = described(text, 'décrivez l’agencement souhaité'), time.perf_counter()
+    scene = L.Scene(ctx.require_project(), ctx.result)
+    content, model = ask(prompt(scene), text, progress)
     rules, rejected = [], []
     for raw in parse(content):
         try:
@@ -225,4 +274,4 @@ def rules_from_text(ctx, text, progress=None):
             rules.append(rule)
         except RpcError as e: rejected.append({'rule': raw, 'reason': str(e)})
     progress(1.0, 'Terminé')
-    return {'rules': rules, 'rejected': rejected, 'model': s['model'], 'seconds': time.perf_counter() - start}
+    return {'rules': rules, 'rejected': rejected, 'model': model, 'seconds': time.perf_counter() - start}

@@ -2,7 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { documentDir } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 const SOURCE_EXTENSIONS = ["csv", "jpg", "jpeg", "heic", "png", "pdf", "geojson", "json", "asc", "tif", "tiff"];
 
@@ -23,6 +23,7 @@ export const host = {
   allowAssets: (paths: string[]) => invoke<void>("allow_assets", { paths }),
   documents: documentDir,
   pickFolder: (title: string) => open({ directory: true, title }),
+  pickPng: (title: string, defaultPath: string) => save({ title, defaultPath, filters: [{ name: "Image PNG", extensions: ["png"] }] }),
   pickFiles: (title: string) => open({ multiple: true, title, filters: [{ name: "Sources", extensions: SOURCE_EXTENSIONS }] }),
   onDrop: (hover: (active: boolean) => void, drop: (paths: string[]) => void) =>
     getCurrentWebview().onDragDropEvent(({ payload }) => {

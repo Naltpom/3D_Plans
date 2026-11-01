@@ -1,4 +1,4 @@
-import json
+import json, threading
 import numpy as np
 import pytest
 from plans3d import Obs, solve, next_best, Project
@@ -146,3 +146,12 @@ def test_project_incremental(tmp_path):
     assert {o.id: o.value for o in P.observations()}['B:d4'] == pytest.approx(3.12)
     assert r.value('w3')[0] > 3.1
     P.db.close()
+
+
+def test_each_thread_has_its_own_connection(tmp_path):
+    project, seen = Project(str(tmp_path)), []
+    project.add_param('a', 1.0)
+    worker = threading.Thread(target=lambda: seen.append((project.db, project.db.execute('select count(*) from params').fetchone()[0])))
+    worker.start(); worker.join()
+    assert seen[0][0] is not project.db and seen[0][1] == 1
+    project.db.close()

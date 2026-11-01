@@ -84,10 +84,40 @@
           <input id="gallery-search" type="search" placeholder="Rechercher un objet" aria-label="Rechercher dans la galerie" autocomplete="off" />
           <select id="gallery-kind" aria-label="Type d'objet"><option value="">Tous les types</option></select>
         </div>
+        <form id="imagine-form" class="row">
+          <input id="imagine-text" required maxlength="2000" autocomplete="off" placeholder="Décris un objet : table ronde 120 cm en chêne…" aria-label="Décris un objet" />
+          <button type="submit" id="imagine-button" class="small" data-ai title="L'IA propose un objet, vous vérifiez avant de l'ajouter">Imaginer</button>
+        </form>
+        <div id="imagine-preview" hidden>
+          <strong id="imagine-name"></strong>
+          <small id="imagine-details"></small>
+          <div class="row">
+            <button type="button" id="imagine-ignore" class="small">Ignorer</button>
+            <button type="button" id="imagine-add" class="small primary">Ajouter</button>
+          </div>
+        </div>
         <small id="gallery-count"></small>
         <ul id="gallery-list" class="list"></ul>
         <h2>Objets placés</h2>
         <ul id="furniture-list" class="list"></ul>
+      </section>
+      <section id="lighting" hidden>
+        <div class="head">
+          <h2>Lumière</h2>
+          <button id="render-button" class="small" title="Lancer de rayons progressif sur la vue courante">Rendu réaliste</button>
+        </div>
+        <label class="check"><input id="light-real" type="checkbox" />Lumière réelle : soleil, luminaires et ombres</label>
+        <small id="light-place"></small>
+        <div id="light-where" class="row">
+          <label>Latitude<input id="light-lat" type="number" step="0.0001" min="-90" max="90" /></label>
+          <label>Longitude<input id="light-lon" type="number" step="0.0001" min="-180" max="180" /></label>
+        </div>
+        <label><span class="row">Date<span class="spacer"></span><span id="light-day-label" class="value"></span></span><input id="light-day" type="range" min="1" max="365" step="1" /></label>
+        <label><span class="row">Heure<span class="spacer"></span><span id="light-hour-label" class="value"></span></span><input id="light-hour" type="range" min="0" max="24" step="0.25" /></label>
+        <label><span class="row">Exposition<span class="spacer"></span><span id="light-ev-label" class="value"></span></span><input id="light-ev" type="range" min="-3" max="3" step="0.5" value="0" /></label>
+        <small id="light-sun"></small>
+        <h2>Luminaires</h2>
+        <ul id="lamp-list" class="list"></ul>
       </section>
       <section id="layout" hidden>
         <div class="head">
@@ -97,7 +127,7 @@
         <form id="ai-form">
           <label>Décris ce que tu veux<textarea id="ai-text" rows="3" maxlength="2000" required placeholder="la télé face au canapé à 2,5 m, la bibliothèque contre un mur…"></textarea></label>
           <div class="row">
-            <button type="submit" id="ai-translate" class="small" title="L'IA propose des règles, vous choisissez lesquelles garder">Traduire en règles</button>
+            <button type="submit" id="ai-translate" class="small" data-ai title="L'IA propose des règles, vous choisissez lesquelles garder">Traduire en règles</button>
             <span class="spacer"></span>
             <button type="button" id="ai-settings-button" class="link" title="Serveur et modèle d'IA">Modèle…</button>
           </div>
@@ -111,9 +141,11 @@
             <button type="submit" class="primary">Enregistrer</button>
           </div>
         </form>
-        <div id="ai-help" hidden><small></small><button id="ai-install" class="small primary"></button></div>
-        <progress id="ai-progress" max="1" hidden></progress>
-        <small id="ai-state"></small>
+        <div id="assistant">
+          <div id="ai-help" hidden><small></small><button id="ai-install" class="small primary" data-ai></button></div>
+          <progress id="ai-progress" max="1" hidden></progress>
+          <small id="ai-state"></small>
+        </div>
         <ul id="ai-list" class="list"></ul>
         <div id="ai-actions" class="row" hidden>
           <button id="ai-ignore" class="small">Ignorer</button>
@@ -147,6 +179,13 @@
         <label title="Hauteur du bas de l'objet au-dessus du sol">Hauteur (cm)<input id="furniture-y" type="number" step="1" min="0" /></label>
         <button id="furniture-remove" class="small">Supprimer</button>
         <button id="furniture-close" class="remove" title="Désélectionner" aria-label="Désélectionner">×</button>
+      </div>
+      <div id="render-tools" role="toolbar" aria-label="Rendu réaliste" hidden>
+        <strong>Rendu réaliste</strong>
+        <span id="render-state" class="value"></span>
+        <button id="render-pause" class="small">Arrêter</button>
+        <button id="render-export" class="small">Exporter PNG</button>
+        <button id="render-exit" class="small primary">Temps réel</button>
       </div>
       <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
       <div id="warnings" role="status" hidden></div>

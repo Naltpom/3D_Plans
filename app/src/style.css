@@ -237,3 +237,20 @@ form { display: flex; flex-direction: column; gap: 8px; }
 #anchor-form { gap: 6px; }
 #plane-list #anchor-form { grid-column: 1 / -1; margin: 6px 0 2px; }
 #plane-list #anchor-form > strong { display: none; }
+label.check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+label.check input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
+input[type="range"] { min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--accent); }
+#assistant { display: flex; flex-direction: column; gap: 6px; }
+#assistant:has(#ai-help[hidden]):has(#ai-progress[hidden]):has(#ai-state:empty) { display: none; }
+#imagine-form { flex-wrap: nowrap; }
+#imagine-form input { flex: 1; }
+#imagine-preview { display: flex; flex-direction: column; gap: 4px; padding: 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-bg); }
+#imagine-preview .row { justify-content: flex-end; }
+#light-where label { flex: 1; }
+#lamp-list li { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; }
+#lamp-list li > .row { grid-column: 1 / -1; padding-left: 24px; }
+#lamp-list .unit { flex-direction: row; align-items: center; gap: 4px; color: var(--muted); }
+#lamp-list .unit input { width: 76px; min-height: 28px; padding: 3px 6px; }
+#lamp-list select { min-height: 28px; padding: 3px 6px; }
+#render-tools { position: absolute; top: 12px; right: 12px; display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; white-space: nowrap; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; }
+#render-tools .value { min-width: 84px; color: var(--muted); }

@@ -1,4 +1,4 @@
-import csv, hashlib, json, os, sqlite3, time
+import csv, hashlib, json, os, sqlite3, threading, time
 import numpy as np
 from scipy.sparse import diags_array
 from scipy.sparse.linalg import lsqr
@@ -40,8 +40,13 @@ def file_hash(path):
 
 class Project:
     def __init__(self, folder):
-        os.makedirs(folder, exist_ok=True); self.folder = folder
-        self.db = sqlite3.connect(os.path.join(folder, 'project.db'), check_same_thread=False); self.db.executescript(SCHEMA)
+        os.makedirs(folder, exist_ok=True); self.folder, self.local = folder, threading.local()
+        self.db.executescript(SCHEMA)
+
+    @property
+    def db(self):
+        if not hasattr(self.local, 'db'): self.local.db = sqlite3.connect(os.path.join(self.folder, 'project.db'))
+        return self.local.db
 
     def add_param(self, name, init, axis='', label=''):
         self.db.execute('insert or replace into params values (?,?,?,?)', (name, init, axis, label)); self.db.commit()

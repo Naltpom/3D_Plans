@@ -6,10 +6,11 @@ IKEA_URL = 'https://raw.githubusercontent.com/Nutlope/bygga/a02629a7d6454e2e2841
 IKEA_SHA256, MAX_DOWNLOAD = '0a6dafd06e7b34b201d65cf3554792c8f4bb5f1520ba8f8f88eb97beaddc1ffa', 5 * 1024 * 1024
 FOLDER = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), '3D_Plans', 'catalog')
 SCHEMA = 'create table if not exists furniture(id integer primary key autoincrement, item text, x real, z real, rot real, y real, options text)'
-COLOR, LIGHT = '#8c949c', {'puissance': 60, 'teinte': '#ffd8a8'}
+COLOR, LIGHT, BEAM = '#8c949c', {'lumens': 806, 'kelvin': 2700, 'spot': 0, 'allume': 1}, 60
 SNAP, NARROW, PASSAGE, WALKING, TOLERANCE, ACCESS = 0.10, 0.10, 0.80, 1.0, 1e-4, 0.6
 SIZE, POSITION, MAX_BOXES, HEX = (0.05, 5.0), (-1e4, 1e4), 100, re.compile(r'#[0-9a-fA-F]{6}')
-PARAMS = {'doors': (1, 20, True), 'rows': (1, 20, True), 'shelves': (1, 20, True), 'seatH': (5, 500), 'aw': (5, 500), 'round': (0, 1), 'puissance': (0, 1000)}
+PARAMS = {'doors': (1, 20, True), 'rows': (1, 20, True), 'shelves': (1, 20, True), 'seatH': (5, 500), 'aw': (5, 500), 'round': (0, 1),
+          'lumens': (0, 20000), 'kelvin': (1000, 10000), 'spot': (0, 1, True), 'allume': (0, 1, True)}
 FIXED, DOORS, LIGHTS = ('mur', 'escalier', 'boite'), ('porte', 'porte_fenetre'), ('suspension', 'lampadaire', 'lampe')
 SWING, HINGE = {'interieur': -1, 'exterieur': 1}, {'gauche': -1, 'droite': 1}
 
@@ -88,6 +89,25 @@ IKEA_LABELS = {
     'wallshelf': 'Étagère murale', 'wardrobe': 'Armoire', 'washstand': 'Meuble lavabo', 'workbench': 'Établi'}
 
 
+def kelvin_rgb(kelvin):
+    t = kelvin / 100
+    r = 255 if t <= 66 else 329.698727446 * (t - 60) ** -0.1332047592
+    g = 99.4708025861 * math.log(t) - 161.1195681661 if t <= 66 else 288.1221695283 * (t - 60) ** -0.0755148492
+    b = 255 if t >= 66 else 0 if t <= 19 else 138.5177312231 * math.log(t - 10) - 305.0447927307
+    return tuple(round(min(255, max(0, v))) for v in (r, g, b))
+
+
+def kelvin_hex(kelvin): return '#%02x%02x%02x' % kelvin_rgb(kelvin)
+def candela(lumens, spot=False): return lumens / (2 * math.pi * (1 - math.cos(math.radians(BEAM / 2))) if spot else 4 * math.pi)
+
+
+def lighting(params, size):
+    p = {**LIGHT, **{k: params[k] for k in LIGHT if k in params}}; lx, ly, lz = size
+    area = math.pi * (lx + lz) / 2 * ly + math.pi * lx * lz / 2
+    return {'lumens': p['lumens'], 'kelvin': p['kelvin'], 'spot': bool(p['spot']), 'allume': bool(p['allume']), 'faisceau': BEAM, 'couleur': kelvin_hex(p['kelvin']),
+            'candela': round(candela(p['lumens'], p['spot']), 3), 'luminance': round(p['lumens'] / (math.pi * area), 3)}
+
+
 def plain(text): return unicodedata.normalize('NFKD', str(text)).encode('ascii', 'ignore').decode().lower()
 def number(text):
     try: return float(text)
@@ -101,7 +121,7 @@ def bounded(value, low, high, what, integer=False):
 
 
 def setting(key, value):
-    if key == 'teinte' and isinstance(value, str) and HEX.fullmatch(value): return value
+    if key == 'couleur' and isinstance(value, str) and HEX.fullmatch(value): return value.lower()
     if key not in PARAMS: raise RpcError(f'option inconnue ou invalide : {key}')
     return bounded(value, *PARAMS[key][:2], key, *PARAMS[key][2:])
 
@@ -239,8 +259,8 @@ def geometry(objects):
         common = {'id': ref(obj), 'type': 'meuble', 'label': obj['label'], 'sigma_max': 0.0, 'objet': {k: obj[k] for k in ('x', 'z', 'rot', 'size')}}
         for kind, center, size, a, light in placed(obj):
             shape = C.box_shape(center, size, a) if kind == 'box' else cylinder(center, size, a)
-            lit = {'color': obj['params'].get('teinte', LIGHT['teinte']), 'light': {k: obj['params'].get(k, v) for k, v in LIGHT.items()}} if light else {'color': COLOR}
-            shapes.append({**common, **shape, **lit})
+            lamp = lighting(obj['params'], size) if light else None
+            shapes.append({**common, **shape, **({'color': lamp['couleur'], 'light': lamp} if lamp else {'color': obj['params'].get('couleur', COLOR)})})
     return shapes
 
 
@@ -341,13 +361,15 @@ def report(ctx, id=None):
 
 
 @rpc('furniture.add')
-def add(ctx, item=None, custom=None, x=0.0, z=0.0, rot=0.0, y=None, options=None):
+def add(ctx, item=None, custom=None, x=0.0, z=0.0, rot=0.0, y=None, options=None, size=None, label=None):
     project = ctx.require_project()
     if custom is not None: entry = custom_item(custom)
     else: entry = next((e for e in entries() if e['id'] == item), None)
     if entry is None: raise RpcError(f'objet de catalogue inconnu : {item}')
+    if size is not None and 'boxes' in entry: raise RpcError('dimensions : non modifiables pour un objet sur mesure')
     data = {k: v for k, v in entry.items() if k not in ('id', 'source', 'keywords', 'y')}
-    data['size'], data['params'] = dimensions(data.get('size')), settings({**data.get('params', {}), **settings(options or {})})
+    data['size'], data['params'] = dimensions(data.get('size') if size is None else size), settings({**data.get('params', {}), **settings(options or {})})
+    data['label'] = str(label or '').strip()[:80] or data['label']
     x, z, rot, y = (bounded(v, *POSITION, k) for k, v in (('x', x), ('z', z), ('rot', rot), ('y', entry.get('y', 0.0) if y is None else y)))
     load(project); cursor = project.db.execute('insert into furniture(item, x, z, rot, y, options) values (?,?,?,?,?,?)',
                                               (entry['id'], x, z, rot, y, json.dumps(data, ensure_ascii=False)))
@@ -367,6 +389,14 @@ def move(ctx, id, x, z, y=None, snap_walls=True):
 def rotate(ctx, id, rot):
     project = ctx.require_project(); get(project, id)
     project.db.execute('update furniture set rot=? where id=?', (bounded(rot, *POSITION, 'rot') % 360, int(id))); project.db.commit()
+    return report(ctx, id)
+
+
+@rpc('furniture.options')
+def options_(ctx, id, options):
+    project = ctx.require_project(); obj = get(project, id)
+    data = {k: v for k, v in obj.items() if k not in ('id', 'item', 'x', 'z', 'rot', 'y')}
+    project.db.execute('update furniture set options=? where id=?', (json.dumps({**data, 'params': {**obj['params'], **settings(options)}}, ensure_ascii=False), int(id))); project.db.commit()
     return report(ctx, id)
 
 

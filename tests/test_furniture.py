@@ -37,7 +37,7 @@ def test_templates_stay_inside_their_size(ctx, kind):
         assert abs(x) + lx / 2 <= w / 2 + 1e-9 and abs(z) + lz / 2 <= d / 2 + 1e-9 and -1e-9 <= y - ly / 2 and y + ly / 2 <= h + 1e-9
     shapes = call(ctx, 'furniture.geometry', {}); json.dumps(shapes)
     assert {s['kind'] for s in shapes} <= {'box', 'mesh'} and all(s['id'] == obj['ref'] and s['type'] == 'meuble' for s in shapes)
-    assert any(s.get('light') == {'puissance': 60, 'teinte': '#ffd8a8'} for s in shapes) == (kind in F.LIGHTS)
+    assert any(s.get('light', {}).get('lumens') == 806 and s['color'] == '#ffa757' for s in shapes) == (kind in F.LIGHTS)
 
 
 def test_import_search_and_kinds(ctx, monkeypatch):
@@ -69,7 +69,7 @@ def test_import_is_pinned_and_capped(ctx, monkeypatch):
 
 
 def test_add_rejects_out_of_bounds(ctx):
-    for options in ({'doors': 0}, {'doors': 21}, {'rows': 2.5}, {'doors': 'deux'}, {'seatH': math.nan}, {'inconnu': 1}, {'teinte': 'rouge'}, [1]):
+    for options in ({'doors': 0}, {'doors': 21}, {'rows': 2.5}, {'doors': 'deux'}, {'seatH': math.nan}, {'inconnu': 1}, {'couleur': 'rouge'}, {'kelvin': 500}, {'spot': 0.5}, [1]):
         with pytest.raises(RpcError): call(ctx, 'furniture.add', {'item': 'gabarit:armoire', 'options': options})
     for params in ({'x': 'a'}, {'z': math.inf}, {'rot': None}, {'y': '1'}):
         with pytest.raises(RpcError): call(ctx, 'furniture.add', {'item': 'gabarit:table', **params})

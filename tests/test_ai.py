@@ -136,3 +136,36 @@ def test_real_ollama(ctx):
     assert out['rejected'] == [] and len(out['rules']) == 3 and set(rules) == {'face_a', 'contre_mur', 'pres_de'}
     assert {rules['face_a']['objet'], rules['face_a']['cible']} == {1, 2} and rules['face_a']['distance'][0] <= 2.5 <= rules['face_a']['distance'][1]
     assert rules['contre_mur']['objet'] == 3 and (rules['pres_de']['objet'], rules['pres_de']['cible']) == (4, 1)
+
+
+def objet(content): return lambda body: {'choices': [{'message': {'content': content if isinstance(content, str) else json.dumps(content)}}]}
+
+
+def test_imagined_object(server, ctx):
+    server.routes['/v1/chat/completions'] = objet({'type': 'table', 'dimensions': [120, 75, 120], 'parametres': {'round': 1, 'couleur': '#B08A5A', 'matiere': 'chêne', 'doors': 0},
+                                                   'libelle': 'Table ronde en chêne'})
+    out = call(ctx, 'ai.object_from_text', {'text': 'table ronde 120 cm en chêne', 'progress': lambda *a: None})
+    assert out['objet'] == {'item': 'gabarit:table', 'kind': 'table', 'label': 'Table ronde en chêne', 'size': [1.2, 0.75, 1.2], 'params': {'round': 1.0, 'couleur': '#b08a5a'}}
+    assert out['rejetes'] == ['option inconnue ou invalide : matiere', 'doors : 0 hors bornes (1 à 20, entier)'] and out['model'] == ai.MODEL
+    system = server.seen[-1][2]['messages'][0]['content']
+    assert '- table : Table, 140 × 75 × 80 cm' in system and '"round": 1' in system and server.seen[-1][2]['messages'][1]['content'] == 'table ronde 120 cm en chêne'
+    added = call(ctx, 'furniture.add', {'item': out['objet']['item'], 'size': out['objet']['size'], 'label': out['objet']['label'], 'options': out['objet']['params']})['object']
+    assert (added['label'], added['size'], added['kind']) == ('Table ronde en chêne', [1.2, 0.75, 1.2], 'table')
+    server.routes['/v1/chat/completions'] = objet('Voici : {"type": "chaise", "dimensions": {"hauteur": 100}} !')
+    assert call(ctx, 'ai.object_from_text', {'text': 'chaise haute'})['objet'] | {'params': None} == {
+        'item': 'gabarit:chaise', 'kind': 'chaise', 'label': 'Chaise', 'size': [0.45, 1.0, 0.5], 'params': None}
+
+
+def test_imagined_object_rejected(server, ctx):
+    for content, reason in (({'type': 'fusee', 'dimensions': [1, 2, 3]}, 'type d’objet inconnu : fusee'), ({'type': 'table', 'dimensions': [600, 75, 80]}, 'hors bornes'),
+                            ({'type': 'table', 'dimensions': [120, 75]}, 'dimensions'), ({'type': 'table', 'dimensions': ['grand', 75, 80]}, 'non numérique'),
+                            ('pas du json', 'illisible'), ([1, 2], 'illisible'), ({'type': 'lit', 'dimensions': [True, 50, 200]}, 'non numérique')):
+        server.routes['/v1/chat/completions'] = objet(content)
+        with pytest.raises(RpcError, match=reason): call(ctx, 'ai.object_from_text', {'text': 'un objet'})
+    with pytest.raises(RpcError, match='décrivez l’objet'): call(ctx, 'ai.object_from_text', {'text': ' '})
+
+
+def test_real_ollama_object(ctx):
+    if not call(ctx, 'ai.status', {})['ready']: pytest.skip('Ollama ou le modèle absent')
+    out = call(ctx, 'ai.object_from_text', {'text': 'table ronde 120 cm en chêne'})['objet']
+    assert out['kind'] == 'table' and out['params'].get('round') == 1 and out['size'][0] == out['size'][2] == 1.2
