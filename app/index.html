@@ -94,6 +94,31 @@
           <h2>Agencement</h2>
           <button id="rule-add-button" class="small">Ajouter une règle</button>
         </div>
+        <form id="ai-form">
+          <label>Décris ce que tu veux<textarea id="ai-text" rows="3" maxlength="2000" required placeholder="la télé face au canapé à 2,5 m, la bibliothèque contre un mur…"></textarea></label>
+          <div class="row">
+            <button type="submit" id="ai-translate" class="small" title="L'IA propose des règles, vous choisissez lesquelles garder">Traduire en règles</button>
+            <span class="spacer"></span>
+            <button type="button" id="ai-settings-button" class="link" title="Serveur et modèle d'IA">Modèle…</button>
+          </div>
+        </form>
+        <form id="ai-settings" hidden>
+          <label for="ai-url">Serveur</label><input id="ai-url" required autocomplete="off" />
+          <label for="ai-model">Modèle</label><input id="ai-model" required autocomplete="off" />
+          <label for="ai-key">Clé API</label><input id="ai-key" type="password" autocomplete="off" />
+          <div class="row">
+            <button type="button" id="ai-settings-cancel">Annuler</button>
+            <button type="submit" class="primary">Enregistrer</button>
+          </div>
+        </form>
+        <div id="ai-help" hidden><small></small><button id="ai-install" class="small primary"></button></div>
+        <progress id="ai-progress" max="1" hidden></progress>
+        <small id="ai-state"></small>
+        <ul id="ai-list" class="list"></ul>
+        <div id="ai-actions" class="row" hidden>
+          <button id="ai-ignore" class="small">Ignorer</button>
+          <button id="ai-add" class="small primary">Ajouter au projet</button>
+        </div>
         <ul id="rule-list" class="list"></ul>
         <form id="rule-form" hidden>
           <div class="fields"><label for="rule-type">Règle</label><select id="rule-type"></select></div>

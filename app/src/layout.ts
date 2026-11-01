@@ -7,6 +7,8 @@ type Rule = { type: string; objet?: number; objets?: number[]; cible?: Ref; vers
 type Placed = { id: number; label: string; rot: number };
 type Component = { id: string; type: string; label: string };
 type Proposal = { index: number; score: number; ok: boolean; details: { ok: boolean; text: string }[]; shapes: Shape[] };
+type Status = { url: string; model: string; key: boolean; local: boolean; installed: boolean; server: boolean; ready: boolean };
+type Rejected = { rule: unknown; reason: string };
 
 const KINDS: Record<string, string> = {
   contre_mur: "Contre un mur", face_a: "Face à (vis-à-vis)", pres_de: "Près de", loin_de: "Loin de", aligne: "Alignés", centre: "Au centre de la pièce", orientation: "Orienté vers", angle: "Angle imposé",
@@ -22,6 +24,8 @@ const DEFAULTS: Record<string, number> = { dmin: 200, dmax: 300, max: 50, min: 1
 const NEAREST: Record<string, string> = { fenetre: "une fenêtre", porte: "une porte", porte_fenetre: "une porte-fenêtre", mur: "un mur" };
 const LOCKED = "Aperçu : appliquez la proposition ou revenez à l'agencement actuel pour déplacer un objet";
 const TARGETS = ["mur", "porte", "porte_fenetre", "fenetre", "escalier", "boite"];
+const DEFAULT_MODEL = "qwen2.5:7b-instruct";
+const AI_METHODS = ["ai.install", "ai.pull", "ai.rules_from_text"];
 
 const section = $("#layout");
 const ruleList = $("#rule-list");
@@ -33,13 +37,24 @@ const progress = $<HTMLProgressElement>("#layout-progress");
 const state = $("#layout-state");
 const back = $<HTMLButtonElement>("#layout-current");
 const proposalList = $("#proposal-list");
+const aiForm = $<HTMLFormElement>("#ai-form");
+const aiTranslate = $<HTMLButtonElement>("#ai-translate");
+const aiSettings = $<HTMLFormElement>("#ai-settings");
+const aiHelp = $("#ai-help");
+const aiInstall = $<HTMLButtonElement>("#ai-install");
+const aiProgress = $<HTMLProgressElement>("#ai-progress");
+const aiState = $("#ai-state");
+const aiList = $("#ai-list");
+const input = (id: string) => $<HTMLInputElement>(id);
 
 let rules: Rule[] = [];
 let objects: Placed[] = [];
 let components: Component[] = [];
 let proposals: Proposal[] = [];
 let previewed: number | null = null;
+let suggested: Rule[] = [];
 
+const plural = (n: number, text: string) => `${n} ${n > 1 ? text.replace(/(\S)(?= |$)/g, "$1s") : text}`;
 const de = (text: string) => /^[aeiouyéèêh]/i.test(text) ? `d’${text}` : `de ${text}`;
 const cm = (m = 0) => `${Math.round(m * 100)} cm`;
 const nameOf = (o: Placed) => objects.filter((p) => p.label === o.label).length > 1 ? `${o.label} ${o.id}` : o.label;
@@ -184,9 +199,105 @@ propose.onclick = () => run(async () => {
   }
 });
 back.onclick = () => preview(null);
+
+function renderSuggestions(rejected: Rejected[] = []) {
+  aiList.replaceChildren(
+    ...suggested.map((rule) => {
+      const item = el("li"), label = el("label", "check");
+      label.append(Object.assign(el("input"), { type: "checkbox", checked: true }), describe(rule));
+      item.append(label);
+      return item;
+    }),
+    ...rejected.map((r) => {
+      const item = el("li", "rejected");
+      item.append(el("span", "", `Rejetée : ${r.reason}`), el("small", "", JSON.stringify(r.rule)));
+      return item;
+    }));
+  $("#ai-actions").hidden = !suggested.length;
+}
+
+async function aiReady() {
+  const s = await call<Status>("ai.status");
+  const [text, action, method] = s.ready ? ["", "", ""]
+    : s.server ? [`Le modèle ${s.model} n'est pas encore sur cet ordinateur.`, `Télécharger le modèle${s.model === DEFAULT_MODEL ? " (~4,7 Go)" : ""}`, "ai.pull"]
+    : !s.local ? [`Serveur IA injoignable : ${s.url}`, "", ""]
+    : s.installed ? ["Ollama est installé mais ne répond pas.", "Démarrer Ollama", "ai.install"]
+    : ["L'assistant utilise Ollama, une IA locale : votre description ne quitte pas cet ordinateur. Ollama n'est pas installé.", "Installer Ollama", "ai.install"];
+  aiHelp.hidden = s.ready;
+  aiHelp.querySelector("small")!.textContent = text;
+  Object.assign(aiInstall, { textContent: action, hidden: !action });
+  aiInstall.dataset.method = method;
+  return s.ready;
+}
+
+async function busy(task: () => Promise<string>) {
+  aiTranslate.disabled = aiInstall.disabled = true;
+  aiProgress.hidden = false;
+  try {
+    aiState.textContent = await task();
+  } catch (error) {
+    aiState.textContent = "";
+    throw error;
+  } finally {
+    aiTranslate.disabled = aiInstall.disabled = false;
+    aiProgress.hidden = true;
+  }
+}
+
+aiForm.onsubmit = (event) => {
+  event.preventDefault();
+  run(() => busy(async () => {
+    aiProgress.removeAttribute("value");
+    aiState.textContent = "Vérification de l'assistant…";
+    if (!(await aiReady())) return "";
+    [objects, components] = await Promise.all([call<Placed[]>("furniture.list"), call<Component[]>("components.list")]);
+    const found = await call<{ rules: Rule[]; rejected: Rejected[]; model: string; seconds: number }>("ai.rules_from_text", { text: $<HTMLTextAreaElement>("#ai-text").value });
+    suggested = found.rules;
+    renderSuggestions(found.rejected);
+    return `${plural(found.rules.length, "règle proposée")} par ${found.model} en ${number(found.seconds, 1)} s${found.rejected.length ? `, ${plural(found.rejected.length, "rejetée")}` : ""}${found.rules.length ? " : cochez celles à garder" : ""}`;
+  }));
+};
+aiInstall.onclick = () => run(() => busy(async () => {
+  aiProgress.value = 0;
+  await call(aiInstall.dataset.method!);
+  return await aiReady() ? "Assistant prêt : cliquez sur « Traduire en règles »" : "";
+}));
+$("#ai-add").onclick = () => {
+  const boxes = [...aiList.querySelectorAll<HTMLInputElement>("input")], chosen = suggested.filter((_, k) => boxes[k].checked);
+  suggested = [];
+  renderSuggestions();
+  aiState.textContent = `${plural(chosen.length, "règle ajoutée")} au projet`;
+  if (chosen.length) save([...rules, ...chosen]);
+};
+$("#ai-ignore").onclick = () => {
+  suggested = [];
+  renderSuggestions();
+  aiState.textContent = "";
+};
+$("#ai-settings-button").onclick = () => run(async () => {
+  const s = await call<Status>("ai.settings");
+  input("#ai-url").value = s.url;
+  input("#ai-model").value = s.model;
+  Object.assign(input("#ai-key"), { value: "", placeholder: s.key ? "enregistrée (vide = inchangée)" : "aucune (serveur local)" });
+  aiSettings.hidden = false;
+});
+$("#ai-settings-cancel").onclick = () => { aiSettings.hidden = true; };
+aiSettings.onsubmit = (event) => {
+  event.preventDefault();
+  run(async () => {
+    const key = input("#ai-key").value;
+    await call("ai.settings", { url: input("#ai-url").value, model: input("#ai-model").value, ...key ? { key } : {} });
+    aiSettings.hidden = aiHelp.hidden = true;
+    aiState.textContent = "Réglages du modèle enregistrés";
+  });
+};
 document.addEventListener("plans3d:locked", () => { state.textContent = LOCKED; });
 
 onEvent((event) => {
+  if (event.event === "progress" && AI_METHODS.includes(String(event.method))) {
+    if (event.method !== "ai.rules_from_text") aiProgress.value = Number(event.fraction);
+    aiState.textContent = String(event.message ?? "");
+  }
   if (event.event !== "progress" || event.method !== "layout.propose") return;
   progress.value = Number(event.fraction);
   state.textContent = String(event.message ?? "");
@@ -197,7 +308,10 @@ document.addEventListener("plans3d:opened", (event) => {
   form.hidden = true;
   proposals = [];
   previewed = null;
-  state.textContent = "";
+  state.textContent = aiState.textContent = "";
+  suggested = [];
+  aiHelp.hidden = aiSettings.hidden = true;
+  renderSuggestions();
   renderProposals();
   if (!section.hidden) run(async () => {
     [rules, components] = await Promise.all([call<Rule[]>("layout.rules"), call<Component[]>("components.list")]);

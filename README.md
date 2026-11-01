@@ -14,6 +14,7 @@ Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d
 - Galerie : gabarits intégrés et catalogue IKEA importé en local (`%LOCALAPPDATA%\3D_Plans\catalog`), recherche par nom et type.
 - Placement : ajout au centre de la vue, glisser au sol aimanté aux murs, angle libre (champ ou ±15°), hauteur ; alertes de collision, de passage étroit et d'ouverture gênée.
 - Agencement automatique : règles (contre un mur, face à, près de, loin de, alignés, au centre, orienté vers, angle imposé), propositions notées, aperçu sans déplacement possible, application en un clic. L'optimiseur tourne par pas de 90° sauf angle imposé.
+- Assistant d'agencement : description en français → règles proposées, validées par le moteur (meubles et éléments existants, distances bornées par la pièce), cochées puis ajoutées par l'utilisateur. IA locale par défaut : Ollama + `qwen2.5:7b-instruct`, installables depuis l'appli (winget, ~4,7 Go). Protocole OpenAI (`/v1/chat/completions`) : serveur, modèle et clé réglables, enregistrés dans `%LOCALAPPDATA%\3D_Plans\settings.json`.
 
 ## Installeur
 
@@ -45,7 +46,7 @@ cd app; npx tsc --noEmit
 
 - Projet = dossier : `sources/`, `cache/`, `project.db`, `model.json`.
 - Toute observation porte une valeur et un σ en unités physiques ; contradiction si résidu normalisé > 3.
-- L'IA propose, le solveur tranche, l'utilisateur valide.
+- L'IA propose, le solveur tranche, l'utilisateur valide. L'IA ne produit jamais de coordonnées ; aucune règle n'est ajoutée sans validation.
 - Cache par source : seules les sources modifiées sont ré-extraites ; le solveur est relancé en entier à chaque mise à jour.
 - Outils photo : COLMAP, téléchargé au premier usage dans `%LOCALAPPDATA%\3D_Plans\tools`.
 - Aucune photo ni donnée de projet dans le dépôt.

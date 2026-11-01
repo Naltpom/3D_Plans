@@ -123,7 +123,7 @@ class Scene:
 
     def target(self, ref, what='cible'):
         if str(ref) in self.pieces: return [self.pieces[str(ref)]], self.names[self.pieces[str(ref)]]
-        if not self.refs.get(str(ref)): raise RpcError(f'{what} inconnue : {ref}')
+        if not self.refs.get(str(ref)): raise RpcError(f"{what} inconnu{'' if what == 'mur' else 'e'} : {ref}")
         cols = self.refs[str(ref)]
         return cols, TYPES.get(str(ref)) or self.names[cols[0]]
 
