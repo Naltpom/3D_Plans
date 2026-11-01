@@ -121,12 +121,15 @@ def wall_geometry(comp, evaluate_expr, walls):
 
 
 WALL_FRAME = ('start_x', 'start_z', 'dir_x', 'dir_z', 'normal_x', 'normal_z', 'ep', 'y0')
+DOOR_SENS = ('interieur_gauche', 'interieur_droite', 'exterieur_gauche', 'exterieur_droite')
 OPENING_DEFAULTS = {'porte': {'l': 0.83, 'h': 2.04, 'al': '0'}, 'fenetre': {'l': 1.2, 'h': 1.25, 'al': 0.9}, 'porte_fenetre': {'l': 1.4, 'h': 2.15, 'al': '0'}}
 
 
 def build_opening(comp, quantity, initial, components):
     wall = components.get(comp['options'].get('mur'))
     if not wall or wall['type'] != 'mur': raise ValueError(f"{TYPES[comp['type']].label} : option « mur » = id d’un mur existant")
+    if comp['options'].get('sens') not in (None, '', *DOOR_SENS) or comp['type'] == 'fenetre' and comp['options'].get('sens'):
+        raise ValueError(f"{TYPES[comp['type']].label} : option « sens » = {', '.join(DOOR_SENS)} (portes uniquement)")
     comp['expressions'].update({k: wall['expressions'][k] for k in WALL_FRAME})
     defaults = OPENING_DEFAULTS[comp['type']]
     quantity('pos', 'dim', 'position depuis l’extrémité a du mur', 0.5)
@@ -145,7 +148,8 @@ def opening_anchors(comp):
 
 def opening_geometry(comp, evaluate_expr, walls):
     val = evaluated(comp, evaluate_expr); center = opening_anchors(comp)['centre']
-    return [box_shape([evaluate_expr(center[a]) for a in 'xyz'], [val['l'], val['h'], val['ep'] + 0.02], math.atan2(-val['dir_z'], val['dir_x']))]
+    return [box_shape([evaluate_expr(center[a]) for a in 'xyz'], [val['l'], val['h'], val['ep'] + 0.02], math.atan2(-val['dir_z'], val['dir_x']),
+                      normal=[val['normal_x'], val['normal_z']], **({'sens': comp['options']['sens']} if comp['options'].get('sens') else {}))]
 
 
 def set_vertices(comp, vertices, make):
@@ -277,12 +281,13 @@ def roof_geometry(comp, evaluate_expr, walls):
 
 ComponentType = namedtuple('ComponentType', 'label build anchors geometry color options')
 OPENING_OPTIONS = {'mur': 'mur porteur'}
+DOOR_OPTIONS = {**OPENING_OPTIONS, 'sens': 'ouverture : intérieur (côté face) ou extérieur, charnières côté a (gauche) ou b (droite) ; vide : deux côtés'}
 LEVEL_OPTIONS = {'contour': 'contour [[x, z], …]'}
 TYPES = {
     'mur': ComponentType('Mur', build_wall, wall_anchors, wall_geometry, '#d9d4c7', {'axe': "parallèle à 'x' ou 'z' ; vide : en biais", 'sens': 'côté de l’épaisseur (1 ou -1)'}),
-    'porte': ComponentType('Porte', build_opening, opening_anchors, opening_geometry, '#8b5a2b', OPENING_OPTIONS),
+    'porte': ComponentType('Porte', build_opening, opening_anchors, opening_geometry, '#8b5a2b', DOOR_OPTIONS),
     'fenetre': ComponentType('Fenêtre', build_opening, opening_anchors, opening_geometry, '#7fb3d5', OPENING_OPTIONS),
-    'porte_fenetre': ComponentType('Porte-fenêtre', build_opening, opening_anchors, opening_geometry, '#5d9ccf', OPENING_OPTIONS),
+    'porte_fenetre': ComponentType('Porte-fenêtre', build_opening, opening_anchors, opening_geometry, '#5d9ccf', DOOR_OPTIONS),
     'sol': ComponentType('Sol', build_level, polygon_anchors, polygon_geometry, '#b0a18a', LEVEL_OPTIONS),
     'plafond': ComponentType('Plafond', build_level, polygon_anchors, polygon_geometry, '#f2f2f2', LEVEL_OPTIONS),
     'escalier': ComponentType('Escalier droit', build_stairs, stairs_anchors, stairs_geometry, '#a0522d',

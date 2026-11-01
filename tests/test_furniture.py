@@ -40,7 +40,8 @@ def test_import_search_and_kinds(ctx, tmp_path):
     assert chair['size'] == [0.45, 0.9, 0.5] and chair['params'] == {'seatH': 46.0} and chair['kind'] == 'chaise'
     assert cabinet['kind'] == 'armoire' and cabinet['y'] == 1.4 and other['kind'] == 'commode' and other['id'] == 'ikea:mystere-slug'
     assert [e['id'] for e in call(ctx, 'catalog.search', {'q': 'orna cabinet'})['items']] == [cabinet['id']]
-    assert [e['label'] for e in call(ctx, 'catalog.search', {'q': 'chaise'})['items']] == ['Chaise', 'TESTA — Chaise test']
+    assert [e['label'] for e in call(ctx, 'catalog.search', {'q': 'chaise'})['items']] == ['Chaise', 'TESTA — Chaise']
+    assert (cabinet['label'], other['label']) == ('ÖRNA — Élément mural', 'MYSTÈRE — Objet inconnu')
     assert call(ctx, 'catalog.search', {'kind': 'chaise', 'limit': 1})['total'] == 2
     assert {k['kind']: k['count'] for k in call(ctx, 'catalog.kinds', {})}['commode'] == 2
     assert call(ctx, 'furniture.add', {'item': cabinet['id'], 'x': 2.0, 'z': 0.15})['object']['y'] == 1.4
@@ -80,6 +81,24 @@ def test_passage_door_snap_and_rotation(ctx):
     assert call(ctx, 'furniture.rotate', {'id': 1, 'rot': -90})['object']['rot'] == 270
     assert F.bounds(F.outline(F.get(ctx.project, 1))[0]) == pytest.approx((0.9 - 0.24, 0.9 + 0.24, 0.6 - 0.4, 0.6 + 0.4))
     with pytest.raises(RpcError): call(ctx, 'furniture.move', {'id': 9, 'x': 0, 'z': 0})
+
+
+def test_door_swing_window_access_and_height(ctx):
+    lamp = add(ctx, 'lampe', 1.3, 0.85)['object']['id']
+    assert codes(call(ctx, 'furniture.check', {})) == ['porte']
+    for sens, expected in [('interieur_gauche', []), ('interieur_droite', ['porte']), ('exterieur_droite', [])]:
+        call(ctx, 'components.remove', {'id': 'p1'}); call(ctx, 'components.add', {'type': 'porte', 'id': 'p1', 'options': {'mur': 'm1', 'pos': 0.45, 'l': 0.95, 'sens': sens}})
+        assert codes(call(ctx, 'furniture.check', {})) == expected, sens
+    with pytest.raises(ValueError): call(ctx, 'components.add', {'type': 'porte', 'id': 'p2', 'options': {'mur': 'm3', 'sens': 'dedans'}})
+    with pytest.raises(ValueError): call(ctx, 'components.add', {'type': 'fenetre', 'id': 'f2', 'options': {'mur': 'm3', 'sens': 'interieur_gauche'}})
+    call(ctx, 'furniture.remove', {'id': lamp})
+    shelf = add(ctx, 'etagere', 4.70, 1.5, 90)
+    assert messages(shelf) == ['Étagère / bibliothèque gêne l’accès à Fenêtre f1']
+    call(ctx, 'furniture.remove', {'id': shelf['object']['id']})
+    stool = add(ctx, 'tabouret', 4.65, 1.5)['object']; assert codes(call(ctx, 'furniture.check', {})) == []
+    raised = call(ctx, 'furniture.move', {'id': stool['id'], 'x': 4.65, 'z': 1.5, 'y': 0.6, 'snap_walls': False})
+    assert raised['object']['y'] == 0.6 and codes(raised) == ['fenetre']
+    assert all(s['objet']['x'] == 4.65 for s in call(ctx, 'furniture.geometry', {}))
 
 
 def test_update_reports_furniture(ctx):

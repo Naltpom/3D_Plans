@@ -6,8 +6,9 @@ IKEA_URL = 'https://raw.githubusercontent.com/Nutlope/bygga/main/src/data/ikea-r
 FOLDER = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), '3D_Plans', 'catalog')
 SCHEMA = 'create table if not exists furniture(id integer primary key autoincrement, item text, x real, z real, rot real, y real, options text)'
 COLOR, LIGHT = '#8c949c', {'puissance': 60, 'teinte': '#ffd8a8'}
-SNAP, NARROW, PASSAGE, WALKING, TOLERANCE = 0.10, 0.10, 0.80, 1.0, 1e-4
+SNAP, NARROW, PASSAGE, WALKING, TOLERANCE, ACCESS = 0.10, 0.10, 0.80, 1.0, 1e-4, 0.6
 FIXED, DOORS, LIGHTS = ('mur', 'escalier', 'boite'), ('porte', 'porte_fenetre'), ('suspension', 'lampadaire', 'lampe')
+SWING, HINGE = {'interieur': -1, 'exterieur': 1}, {'gauche': -1, 'droite': 1}
 
 
 def part(kind, x, y0, z, lx, ly, lz, light=False): return kind, (x, y0 + ly / 2, z), (lx, ly, lz), light
@@ -67,6 +68,21 @@ IKEA_KINDS = {k: kind for kind, names in {
     'etagere': 'open bookcase bookrow mixed wallshelf cube extension shoerack divider clothesrack coatstand hatrack airer',
     'tabouret': 'stool pouffe lidbox', 'banc': 'bench backbench shelfbench lounger'}.items() for k in names.split()}
 WALL_MOUNTED = {'wallcab', 'wallshelf'}
+IKEA_LABELS = {
+    'airer': 'Séchoir', 'appliance': 'Meuble bas électroménager', 'armchair': 'Fauteuil', 'backbench': 'Banc à dossier', 'bar': 'Table haute', 'bed': 'Lit',
+    'bench': 'Banc', 'bookcase': 'Bibliothèque', 'bookrow': 'Rangement combiné', 'boxdesk': 'Bureau avec rangements', 'bunk': 'Lits superposés',
+    'cabinet': 'Caisson', 'cabrow': 'Rangement combiné', 'chair': 'Chaise', 'chairbed': 'Fauteuil convertible', 'chaise': 'Canapé avec méridienne',
+    'changing': 'Table à langer', 'chest': 'Commode', 'clothesrack': 'Portant', 'coatstand': 'Portemanteau', 'coffee': 'Table basse', 'conference': 'Chaise de réunion',
+    'conftable': 'Table de réunion', 'console': 'Console', 'corner': 'Canapé d’angle', 'cornercab': 'Meuble d’angle', 'cornerdesk': 'Bureau d’angle',
+    'cornerrobe': 'Armoire d’angle', 'cot': 'Lit bébé', 'cube': 'Étagère à cases', 'daybed': 'Lit gigogne', 'desk': 'Bureau', 'deskdraw': 'Table à tiroir',
+    'dining': 'Table à manger', 'divider': 'Séparateur de pièce', 'dropleaf': 'Table à rabats', 'extension': 'Surmeuble', 'gateleg': 'Table pliante',
+    'hatrack': 'Patère', 'highchair': 'Chaise haute', 'junior': 'Chaise junior', 'kidschair': 'Chaise enfant', 'kidstable': 'Table enfant',
+    'kitchen': 'Meuble bas de cuisine', 'lidbox': 'Pouf coffre', 'loft': 'Lit mezzanine', 'lounge': 'Fauteuil d’extérieur', 'lounger': 'Bain de soleil',
+    'mixed': 'Armoire combinée', 'nightstand': 'Table de chevet', 'office': 'Chaise de bureau', 'open': 'Étagère', 'pouffe': 'Pouf', 'riser': 'Support d’écran',
+    'section': 'Élément de canapé', 'shelfbench': 'Banc de rangement', 'shoe': 'Meuble à chaussures', 'shoerack': 'Range-chaussures', 'side': 'Table d’appoint',
+    'sideboard': 'Buffet', 'sinkcab': 'Meuble sous évier', 'slidecab': 'Meuble à portes coulissantes', 'sliding': 'Armoire à portes coulissantes', 'sofa': 'Canapé',
+    'stool': 'Tabouret', 'swivel': 'Fauteuil pivotant', 'trolley': 'Desserte', 'tv': 'Meuble TV', 'usofa': 'Canapé en U', 'wallcab': 'Élément mural',
+    'wallshelf': 'Étagère murale', 'wardrobe': 'Armoire', 'washstand': 'Meuble lavabo', 'workbench': 'Établi'}
 
 
 def plain(text): return unicodedata.normalize('NFKD', str(text)).encode('ascii', 'ignore').decode().lower()
@@ -82,9 +98,9 @@ def parse_ikea(text):
         try: w, h, d = (float(v) / 100 for v in f[3:6])
         except (ValueError, IndexError): continue
         params = dict(kv.partition('=')[::2] for kv in (f[6] if len(f) > 6 else '').split(',') if '=' in kv)
-        items.append({'id': 'ikea:' + (f[8] if len(f) > 8 and f[8] else re.sub(r'[^a-z0-9]+', '-', plain(' '.join(f[:6])))), 'label': f'{f[0]} — {f[2]}',
+        items.append({'id': 'ikea:' + (f[8] if len(f) > 8 and f[8] else re.sub(r'[^a-z0-9]+', '-', plain(' '.join(f[:6])))), 'label': f"{f[0]} — {IKEA_LABELS.get(f[1], f[2])}",
                       'kind': IKEA_KINDS.get(f[1], 'commode'), 'size': [w, h, d], 'params': {k: number(v) for k, v in params.items()},
-                      'keywords': ' '.join([f[1], *f[7:8]]), 'source': 'ikea', **({'y': 1.4} if f[1] in WALL_MOUNTED else {})})
+                      'keywords': ' '.join([f[1], f[2], *f[7:8]]), 'source': 'ikea', **({'y': 1.4} if f[1] in WALL_MOUNTED else {})})
     return items
 
 
@@ -170,10 +186,10 @@ def cylinder(center, size, a, n=16):
     return {'kind': 'mesh', 'vertices': vertices, 'faces': faces + [[o, o + k, o + k + 1] for o in (0, n) for k in range(1, n - 1)]}
 
 
-def geometry(project):
+def geometry(objects):
     shapes = []
-    for obj in load(project):
-        common = {'id': ref(obj), 'type': 'meuble', 'label': obj['label'], 'sigma_max': 0.0}
+    for obj in objects:
+        common = {'id': ref(obj), 'type': 'meuble', 'label': obj['label'], 'sigma_max': 0.0, 'objet': {k: obj[k] for k in ('x', 'z', 'rot', 'size')}}
         for kind, center, size, a, light in placed(obj):
             shape = C.box_shape(center, size, a) if kind == 'box' else cylinder(center, size, a)
             lit = {'color': obj['params'].get('teinte', LIGHT['teinte']), 'light': {k: obj['params'].get(k, v) for k, v in LIGHT.items()}} if light else {'color': COLOR}
@@ -208,23 +224,42 @@ def gap(first, second):
     return min(to_segment(p, q, r) for a, b in ((first, second), (second, first)) for p, q in zip(a, a[1:] + a[:1]) for r in b)
 
 
+def fixed_part(s):
+    top, height = s['center'][1] + s['size'][1] / 2, s['size'][1]
+    return C.footprint(s), top - (height / s['part'] if s['type'] == 'escalier' else height), top
+
+
 def fixed(shapes):
     groups = {}
     for s in shapes:
-        if s['type'] not in FIXED or s['kind'] != 'box': continue
-        top, height = s['center'][1] + s['size'][1] / 2, s['size'][1]
-        groups.setdefault(s['id'], (s['label'], []))[1].append((C.footprint(s), top - (height / s['part'] if s['type'] == 'escalier' else height), top))
+        if s['type'] in FIXED and s['kind'] == 'box': groups.setdefault(s['id'], (s['label'], []))[1].append(fixed_part(s))
     return list(groups.values())
 
 
 def door_zones(shape):
-    (x, y, z), (l, h, ep), a = shape['center'], shape['size'], shape['rotY']; offset = (ep - 0.02) / 2 + l / 2
-    return [(rect([x + side * offset * math.sin(a), 0, z + side * offset * math.cos(a)], [l, 0, l], a), y - h / 2, y + h / 2) for side in (1, -1)]
+    (x, y, z), (l, h, ep), a = shape['center'], shape['size'], shape['rotY']; t, sens = (ep - 0.02) / 2, shape.get('sens')
+    (nx, nz), ux, uz = shape.get('normal') or (math.sin(a), math.cos(a)), math.cos(a), -math.sin(a)
+    if not sens: return [(rect([x + side * (t + l / 2) * nx, 0, z + side * (t + l / 2) * nz], [l, 0, l], a), y - h / 2, y + h / 2) for side in (1, -1)]
+    swing, hinge = (names[key] for names, key in zip((SWING, HINGE), sens.split('_')))
+    hx, hz = x + swing * t * nx + hinge * l / 2 * ux, z + swing * t * nz + hinge * l / 2 * uz
+    arc = [(hx + l * (swing * nx * math.sin(q) - hinge * ux * math.cos(q)), hz + l * (swing * nz * math.sin(q) - hinge * uz * math.cos(q))) for q in (k * math.pi / 12 for k in range(7))]
+    return [([(hx, hz)] + arc, y - h / 2, y + h / 2)]
 
 
-def warnings(project, result=None):
-    objects, shapes, found = load(project), C.geometry(project, result), []
-    walls, doors = fixed(shapes), [(s['label'], door_zones(s)) for s in shapes if s['type'] in DOORS]
+def window_zones(shape):
+    (x, y, z), (l, h, ep), a = shape['center'], shape['size'], shape['rotY']; t = (ep - 0.02) / 2 + ACCESS / 2
+    return [(rect([x + side * t * math.sin(a), 0, z + side * t * math.cos(a)], [l, 0, ACCESS], a), y - h / 2, y + h / 2) for side in (1, -1)]
+
+
+def openings(shapes):
+    return [(s['label'], 'porte', door_zones(s)) if s['type'] in DOORS else (s['label'], 'fenetre', window_zones(s)) for s in shapes if s['type'] in DOORS + ('fenetre',)]
+
+
+def warnings(project, result=None): return conflicts(load(project), C.geometry(project, result))
+
+
+def conflicts(objects, shapes):
+    found, walls, gates = [], fixed(shapes), openings(shapes)
     hulls = [outline(o) for o in objects]; walking = [h[1] < WALKING and o['kind'] not in LIGHTS for o, h in zip(objects, hulls)]
     for i, obj in enumerate(objects):
         def warn(code, message): found.append({'code': code, 'component': ref(obj), 'meuble': obj['id'], 'message': message})
@@ -235,8 +270,8 @@ def warnings(project, result=None):
             near = [q[0] for q in near if not overlap(hull[0], q[0])]
             if walking[i] and near and NARROW < (g := min(gap(hull[0], q) for q in near)) < PASSAGE:
                 warn('passage', f"Passage de {round(g * 100)} cm entre {obj['label']} et {label} (minimum {round(PASSAGE * 100)} cm)")
-        door = next((label for label, zones in doors if any(meets(hull, zone) for zone in zones)), None)
-        if door: warn('porte', f"{obj['label']} gêne l’ouverture de {door}")
+        for label, code, zones in gates:
+            if any(meets(hull, zone) for zone in zones): warn(code, f"{obj['label']} gêne {'l’ouverture de' if code == 'porte' else 'l’accès à'} {label}")
     return found
 
 
@@ -275,7 +310,7 @@ def add(ctx, item=None, custom=None, x=0.0, z=0.0, rot=0.0, y=None, options=None
 def move(ctx, id, x, z, y=None, snap_walls=True):
     project = ctx.require_project(); obj = {**get(project, id), 'x': float(x), 'z': float(z)}
     x, z = snap(C.geometry(project, ctx.result), obj) if snap_walls else (obj['x'], obj['z'])
-    project.db.execute('update furniture set x=?, z=?, y=coalesce(?, y) where id=?', (x, z, y, int(id))); project.db.commit()
+    project.db.execute('update furniture set x=?, z=?, y=coalesce(?, y) where id=?', (x, z, None if y is None else float(y), int(id))); project.db.commit()
     return report(ctx, id)
 
 
@@ -302,4 +337,4 @@ def list_(ctx): return [summary(o) for o in load(ctx.require_project())]
 
 
 @rpc('furniture.geometry')
-def rpc_geometry(ctx): return geometry(ctx.require_project())
+def rpc_geometry(ctx): return geometry(load(ctx.require_project()))

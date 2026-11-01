@@ -3,14 +3,16 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 export type Shape = {
   id: string; type: string; label: string; color: string | null; sigma_max: number | null;
-  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; light?: { puissance: number; teinte: string };
+  kind: "box" | "polygon" | "mesh"; center: Vec; size: Vec; rotY: number; vertices: number[][]; faces: number[][]; y?: number; light?: { puissance: number; teinte: string }; objet?: Pose;
 };
+type Pose = { x: number; z: number; rot: number; size: number[] };
 type Vec = [number, number, number];
 type Range = [number, number];
 
 const OPACITY: Record<string, number> = { mur: 0.45, fenetre: 0.6, porte_fenetre: 0.6, parcelle: 0.3, toit: 0.7 };
 const EDGES = { ok: 0x202020, large: 0xe8953a, unknown: 0xf07a72 };
 const VIEWS: Record<string, Vec> = { dessus: [0, 1, 1e-4], face: [0, 0, 1], "3d": [0.6, 0.5, 0.8] };
+const SNAP = 0.1;
 
 const canvas = document.querySelector<HTMLCanvasElement>("#scene")!;
 const legend = document.querySelector<HTMLElement>("#legend")!;
@@ -24,6 +26,7 @@ sun.position.set(5, 10, 7);
 const model = new THREE.Group();
 const photos = new THREE.Group();
 const furniture = new THREE.Group();
+let walls: Shape[] = [];
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
 scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos, furniture);
 
@@ -76,6 +79,7 @@ function mesh(shape: Shape) {
     new THREE.LineBasicMaterial({ color: EDGES[status(shape.sigma_max)], transparent: terrain, opacity: terrain ? 0.25 : 1 })));
   result.userData.id = shape.id;
   result.userData.known = shape.sigma_max !== null;
+  result.userData.objet = shape.objet;
   return result;
 }
 
@@ -88,6 +92,7 @@ function clear(group: THREE.Group) {
 
 export function show(shapes: Shape[], frame = false) {
   const empty = !model.children.length;
+  walls = shapes.filter((s) => s.type === "mur" && s.kind === "box");
   clear(model);
   for (const shape of corners(shapes)) model.add(mesh(shape));
   legend.hidden = shapes.every((s) => status(s.sigma_max) === "ok");
@@ -130,7 +135,7 @@ export function showCameras(cameras: { name: string; center: Vec; R: number[][] 
 
 document.addEventListener("plans3d:highlight", (event) => highlight((event as CustomEvent<string[]>).detail, 0x8a4a12));
 
-function setView(name: string) {
+export function setView(name: string) {
   const known = model.children.filter((o) => o.userData.known), box = new THREE.Box3();
   for (const o of known.length ? known : model.children) box.expandByObject(o);
   if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2.5, 2));
@@ -147,7 +152,21 @@ document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => 
 const raycaster = new THREE.Raycaster();
 const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let down = [0, 0];
-let drag: { id: string; from: THREE.Vector3; parts: [THREE.Object3D, THREE.Vector3][] } | null = null;
+let drag: { id: string; from: THREE.Vector3; pose: Pose; parts: [THREE.Object3D, THREE.Vector3][] } | null = null;
+
+function snap({ size: [w, , d], rot }: Pose, x: number, z: number) {
+  const a = rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const extent = (px: number, pz: number) => w / 2 * Math.abs(c * px - s * pz) + d / 2 * Math.abs(s * px + c * pz);
+  for (const wall of walls) {
+    const r = wall.rotY, nx = Math.sin(r), nz = Math.cos(r), ux = Math.cos(r), uz = -Math.sin(r);
+    const px = x - wall.center[0], pz = z - wall.center[2], across = px * nx + pz * nz, gap = Math.abs(across) - wall.size[2] / 2 - extent(nx, nz);
+    if (Math.abs(gap) >= SNAP || Math.abs(px * ux + pz * uz) >= wall.size[0] / 2 + extent(ux, uz)) continue;
+    const side = across < 0 ? -1 : 1;
+    x -= side * gap * nx;
+    z -= side * gap * nz;
+  }
+  return [x, z];
+}
 
 function aim(event: PointerEvent) {
   const rect = canvas.getBoundingClientRect();
@@ -157,15 +176,17 @@ function aim(event: PointerEvent) {
 
 canvas.addEventListener("pointerdown", (event) => {
   down = [event.clientX, event.clientY];
-  const from = event.button === 0 ? aim(event) : null, id = from && raycaster.intersectObjects(furniture.children, false)[0]?.object.userData.id;
-  if (!id) return;
-  drag = { id, from, parts: furniture.children.filter((o) => o.userData.id === id).map((o) => [o, o.position.clone()]) };
+  const from = event.button === 0 ? aim(event) : null, hit = from && raycaster.intersectObjects(furniture.children, false)[0]?.object.userData;
+  if (!from || !hit?.id || !hit.objet) return;
+  drag = { id: hit.id, from, pose: hit.objet, parts: furniture.children.filter((o) => o.userData.id === hit.id).map((o) => [o, o.position.clone()]) };
   controls.enabled = false;
   canvas.setPointerCapture(event.pointerId);
 }, { capture: true });
 canvas.addEventListener("pointermove", (event) => {
   const at = drag && aim(event);
-  if (drag && at) for (const [o, base] of drag.parts) o.position.set(base.x + at.x - drag.from.x, base.y, base.z + at.z - drag.from.z);
+  if (!drag || !at) return;
+  const { x, z } = drag.pose, [sx, sz] = snap(drag.pose, x + at.x - drag.from.x, z + at.z - drag.from.z);
+  for (const [o, base] of drag.parts) o.position.set(base.x + sx - x, base.y, base.z + sz - z);
 });
 canvas.addEventListener("pointerup", (event) => {
   const moved = Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 4;

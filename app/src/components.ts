@@ -10,9 +10,11 @@ type Param = { name: string; init: number; label: string; axis?: string };
 type Model = { params: Record<string, { value: number; sigma: number | null }> };
 
 const OPTIONS: Record<string, string[]> = {
-  mur: ["sens"], porte: ["mur"], fenetre: ["mur"], porte_fenetre: ["mur"], escalier: ["axe", "sens", "cote", "n"], boite: ["nature"],
+  mur: ["sens"], porte: ["mur", "sens"], fenetre: ["mur"], porte_fenetre: ["mur", "sens"], escalier: ["axe", "sens", "cote", "n"], boite: ["nature"],
 };
 const CHOICES: Record<string, string[]> = { axe: ["x", "z"], sens: ["1", "-1"], cote: ["1", "-1"] };
+const OPENING: [string, string][] = [["", "deux côtés (non précisé)"], ["interieur_gauche", "vers l'intérieur, charnières côté a"], ["interieur_droite", "vers l'intérieur, charnières côté b"],
+  ["exterieur_gauche", "vers l'extérieur, charnières côté a"], ["exterieur_droite", "vers l'extérieur, charnières côté b"]];
 const NATURES = ["meuble", "placard", "poteau", "potager", "lit"];
 
 const section = $("#components");
@@ -84,15 +86,16 @@ async function select(id: string | null) {
     component.params.length ? table : el("p", "", "Aucun paramètre libre"), el("h4", "", "Ancres"), anchorList);
 }
 
-function control(key: string, description = "") {
-  const choices = key === "mur" ? components.filter((c) => c.type === "mur").map((c) => c.id) : CHOICES[key];
+function control(type: string, key: string, description = "") {
+  const choices = key === "mur" ? components.filter((c) => c.type === "mur").map((c): [string, string] => [c.id, c.id])
+    : key === "sens" && type !== "mur" ? OPENING : CHOICES[key]?.map((c): [string, string] => [c, c]);
   if (!choices) {
     const input = Object.assign(el("input"), { name: key, placeholder: description, title: description, value: key === "nature" ? NATURES[0] : "" });
     if (key === "nature") input.setAttribute("list", natures.id);
     return input;
   }
   const dropdown = Object.assign(el("select"), { name: key, title: description });
-  dropdown.append(...choices.map((choice) => new Option(choice, choice)));
+  dropdown.append(...choices.map(([value, text]) => new Option(text, value)));
   return dropdown;
 }
 
@@ -102,7 +105,7 @@ function fillForm() {
   while (components.some((c) => c.id === `${type.type}${n}`)) n++;
   idInput.value = `${type.type}${n}`;
   fields.replaceChildren(
-    ...(OPTIONS[type.type] ?? []).flatMap((key) => labelled(key, control(key, type.options[key]))),
+    ...(OPTIONS[type.type] ?? []).flatMap((key) => labelled(key === "sens" && type.type !== "mur" ? "ouverture" : key, control(type.type, key, type.options[key]))),
     ...type.fields.flatMap((field) => labelled(field.label, Object.assign(el("input", field.unit === "m" ? "cm" : ""), {
       name: field.name, title: `valeur initiale en ${field.unit === "m" ? "cm" : field.unit}, ou expression de paramètres (en ${field.unit})`,
       placeholder: typeof field.default === "string" ? `fixé à ${field.default}` : field.unit === "m" ? cm(field.default) : `${field.default} ${field.unit}` }))));

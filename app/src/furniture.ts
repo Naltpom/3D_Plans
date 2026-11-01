@@ -3,7 +3,7 @@ import { $, button, el, number, run, warn } from "./ui";
 import { focusPoint, highlight, showFurniture, type Shape } from "./view3d";
 
 type Item = { id: string; label: string; kind: string; size: number[]; source: string };
-type Placed = { id: number; ref: string; label: string; kind: string; size: number[]; x: number; z: number; rot: number };
+type Placed = { id: number; ref: string; label: string; kind: string; size: number[]; x: number; z: number; y: number; rot: number };
 type Warning = { code: string; message: string; component?: string; meuble?: number };
 type Report = { object: Placed | null; warnings: Warning[] };
 
@@ -16,6 +16,7 @@ const kind = $<HTMLSelectElement>("#gallery-kind");
 const count = $("#gallery-count");
 const tools = $("#furniture-tools");
 const angle = $<HTMLInputElement>("#furniture-angle");
+const height = $<HTMLInputElement>("#furniture-y");
 
 let placed: Placed[] = [];
 let selected: number | null = null;
@@ -28,6 +29,7 @@ async function refresh(report?: Report) {
   const [list, shapes] = await Promise.all([call<Placed[]>("furniture.list"), call<Shape[]>("furniture.geometry")]);
   placed = list;
   showFurniture(shapes);
+  document.dispatchEvent(new CustomEvent("plans3d:furniture-list", { detail: placed }));
   if (report) warn("meubles", report.warnings);
   select(current()?.id ?? null);
 }
@@ -50,6 +52,7 @@ function render() {
   if (obj) {
     $("#furniture-name").textContent = obj.label;
     angle.value = String(Math.round(obj.rot));
+    height.value = String(Math.round(obj.y * 100));
   }
   placedList.replaceChildren(...placed.map((p) => {
     const item = el("li", p.id === selected ? "current" : "");
@@ -95,6 +98,10 @@ search.oninput = () => run(find);
 kind.onchange = () => run(find);
 tools.querySelectorAll<HTMLButtonElement>("[data-turn]").forEach((b) => { b.onclick = () => turn((current()?.rot ?? 0) + Number(b.dataset.turn)); });
 angle.onchange = () => Number.isFinite(angle.valueAsNumber) && turn(angle.valueAsNumber);
+height.onchange = () => {
+  const obj = current();
+  if (obj && Number.isFinite(height.valueAsNumber)) act("furniture.move", { id: obj.id, x: obj.x, z: obj.z, y: height.valueAsNumber / 100, snap_walls: false });
+};
 $("#furniture-remove").onclick = () => selected !== null && act("furniture.remove", { id: selected });
 $("#furniture-close").onclick = () => select(null);
 
@@ -109,6 +116,7 @@ document.addEventListener("plans3d:updated", (event) => {
   warn("meubles", ((event as CustomEvent).detail.warnings as Warning[] ?? []).filter((w) => w.meuble !== undefined));
 });
 document.addEventListener("plans3d:pick", () => { selected = null; render(); });
+document.addEventListener("plans3d:furniture-refresh", (event) => run(() => refresh((event as CustomEvent<Report | undefined>).detail)));
 document.addEventListener("plans3d:furniture", (event) => select(placed.find((p) => p.ref === (event as CustomEvent).detail.id)?.id ?? null));
 document.addEventListener("plans3d:furniture-move", (event) => {
   const { id, dx, dz } = (event as CustomEvent<{ id: string; dx: number; dz: number }>).detail, obj = placed.find((p) => p.ref === id);

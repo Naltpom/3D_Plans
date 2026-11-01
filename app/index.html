@@ -89,6 +89,26 @@
         <h2>Objets placés</h2>
         <ul id="furniture-list" class="list"></ul>
       </section>
+      <section id="layout" hidden>
+        <div class="head">
+          <h2>Agencement</h2>
+          <button id="rule-add-button" class="small">Ajouter une règle</button>
+        </div>
+        <ul id="rule-list" class="list"></ul>
+        <form id="rule-form" hidden>
+          <div class="fields"><label for="rule-type">Règle</label><select id="rule-type"></select></div>
+          <div id="rule-fields" class="fields"></div>
+          <div class="row">
+            <button type="button" id="rule-cancel">Annuler</button>
+            <button type="submit" class="primary">Ajouter</button>
+          </div>
+        </form>
+        <button id="layout-propose" class="primary" title="Collisions, passages de 80 cm, portes et fenêtres dégagées, puis vos règles">Proposer 3 agencements</button>
+        <progress id="layout-progress" max="1" hidden></progress>
+        <small id="layout-state"></small>
+        <button id="layout-current" class="link fit" hidden>Revenir à l'agencement actuel</button>
+        <ul id="proposal-list" class="list"></ul>
+      </section>
     </aside>
     <main id="viewport">
       <canvas id="scene" aria-label="Vue 3D du modèle"></canvas>
@@ -99,6 +119,7 @@
         <button data-turn="-15" class="small" title="Tourner de −15°">−15°</button>
         <label>Angle<input id="furniture-angle" type="number" step="1" /></label>
         <button data-turn="15" class="small" title="Tourner de +15°">+15°</button>
+        <label title="Hauteur du bas de l'objet au-dessus du sol">Hauteur (cm)<input id="furniture-y" type="number" step="1" min="0" /></label>
         <button id="furniture-remove" class="small">Supprimer</button>
         <button id="furniture-close" class="remove" title="Désélectionner" aria-label="Désélectionner">×</button>
       </div>

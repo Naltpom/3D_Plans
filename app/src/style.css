@@ -151,7 +151,17 @@ form { display: flex; flex-direction: column; gap: 8px; }
 #cote-form { display: grid; grid-template-columns: auto 1fr 1fr; align-items: center; gap: 4px 8px; font-size: 12px; }
 #cote-form > :is(input, small, .row), #cote-form > select[name="axis"] { grid-column: 2 / span 2; }
 #cote-form .row { justify-content: flex-end; }
-#component-fields { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--soft); }
+#component-fields, #rule-form .fields { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--soft); }
+#rule-list li > span { min-width: 0; overflow-wrap: anywhere; }
+#rule-list .remove { grid-column: 3; }
+#proposal-list > li:not(.empty) { display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+#proposal-list > li.current { border-color: var(--accent); }
+#proposal-list .action { align-self: flex-start; }
+#proposal-list ul { margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 16px; }
+#proposal-list ul li { display: block; padding: 0 0 0 12px; border: 0; border-radius: 0; color: var(--soft); text-indent: -12px; }
+#proposal-list ul li::before { content: "●"; display: inline-block; width: 12px; text-indent: 0; font-size: 8px; color: var(--accent); }
+#proposal-list ul li.warn::before { color: var(--warn); }
+#proposal-list ul li.warn { color: var(--warn-text); }
 
 #viewport { grid-area: view; position: relative; min-width: 0; min-height: 0; background: var(--view); }
 #scene { display: block; width: 100%; height: 100%; }
