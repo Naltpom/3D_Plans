@@ -4,93 +4,81 @@
     <meta charset="UTF-8" />
     <title>3D_Plans</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <link rel="stylesheet" href="/src/view3d.css" />
-    <link rel="stylesheet" href="/src/cotes.css" />
-    <link rel="stylesheet" href="/src/photos.css" />
   </head>
   <body>
     <header id="toolbar">
-      <strong>3D_Plans</strong>
+      <div class="brand">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z" /><path d="M3 7l9 5 9-5M12 12v10" /></svg>
+        3D_Plans
+      </div>
       <span id="project-name"></span>
-      <button id="update-button" disabled>Mettre à jour</button>
+      <span class="spacer"></span>
+      <span id="summary" class="row" hidden>
+        <span id="chi2-chip" class="chip"></span>
+        <button id="conflict-chip" class="chip" type="button" title="Voir les contradictions"></button>
+        <span id="scale-chip" class="chip"></span>
+      </span>
+      <button id="update-button" class="primary" disabled>Mettre à jour</button>
     </header>
     <aside id="sidebar">
       <section>
-        <h2>Projets</h2>
-        <ul id="project-list" class="list"></ul>
-        <div class="row">
-          <button id="new-project-button">Nouveau projet</button>
-          <button id="open-project-button">Ouvrir…</button>
+        <div class="head">
+          <h2>Projets</h2>
+          <button id="new-project-button" class="small">Nouveau</button>
+          <button id="open-project-button" class="small">Ouvrir…</button>
         </div>
+        <ul id="project-list" class="list"></ul>
         <form id="new-project-form" hidden>
-          <input id="new-project-name" placeholder="Nom du projet" required autocomplete="off" />
+          <label>Nom du projet<input id="new-project-name" required autocomplete="off" /></label>
           <small id="new-project-path"></small>
           <div class="row">
             <button type="button" id="parent-button">Dossier…</button>
             <button type="button" id="cancel-button">Annuler</button>
-            <button type="submit">Créer</button>
+            <button type="submit" class="primary">Créer</button>
           </div>
         </form>
       </section>
       <section id="sources" hidden>
-        <h2>Sources</h2>
+        <div class="head">
+          <h2>Sources</h2>
+          <button id="add-source-button" class="small">Ajouter</button>
+        </div>
         <ul id="source-list" class="list"></ul>
-        <button id="add-source-button">Ajouter…</button>
-        <small class="hint">ou glissez des fichiers, photos ou dossiers ici</small>
+        <div id="photos" hidden>
+          <select id="photo-source" aria-label="Source photo" hidden></select>
+          <div id="photo-tools">
+            <small id="photo-state"></small>
+            <progress id="photo-progress" max="1" hidden></progress>
+            <div class="row">
+              <button id="photo-install" hidden>Installer les outils photo (≈ 400 Mo)</button>
+              <button id="photo-extract" class="primary" hidden>Calculer les positions</button>
+              <button id="photo-open" hidden>Atelier photo</button>
+              <button id="photo-densify" hidden title="Optionnel : nuage dense, plus de plans détectés">Densifier (≈ 30 min)</button>
+            </div>
+          </div>
+        </div>
+        <small>Glissez ici photos, dossiers, PDF, GeoJSON, CSV ou grille d'altitudes.</small>
       </section>
       <section id="components" hidden>
-        <h2>Composants</h2>
+        <div class="head">
+          <h2>Composants</h2>
+          <button id="add-component-button" class="small">Ajouter</button>
+        </div>
         <ul id="component-list" class="list"></ul>
-        <button id="add-component-button">Ajouter…</button>
         <form id="component-form" hidden>
-          <select id="component-type"></select>
-          <input id="component-id" placeholder="Identifiant" required pattern="[A-Za-z][A-Za-z0-9_]*" autocomplete="off" />
+          <label>Type<select id="component-type"></select></label>
+          <label>Identifiant<input id="component-id" required pattern="[A-Za-z][A-Za-z0-9_]*" autocomplete="off" /></label>
           <div id="component-fields"></div>
           <div class="row">
             <button type="button" id="component-cancel">Annuler</button>
-            <button type="submit">Ajouter</button>
+            <button type="submit" class="primary">Ajouter</button>
           </div>
         </form>
       </section>
-      <section id="photos" hidden>
-        <h2>Photos</h2>
-        <select id="photo-source" hidden></select>
-        <small id="photo-state"></small>
-        <progress id="photo-progress" max="1" hidden></progress>
-        <div class="row">
-          <button id="photo-install" hidden>Installer les outils photo (≈ 400 Mo)</button>
-          <button id="photo-extract" hidden>Calculer les positions</button>
-          <button id="photo-open" hidden>Atelier photo</button>
-          <button id="photo-densify" hidden title="Optionnel : nuage dense, plus de plans détectés">Densifier (≈ 30 min)</button>
-        </div>
-        <div id="photo-details" hidden>
-          <h3>Clics</h3>
-          <ul id="click-list" class="list"></ul>
-          <h3>Plans détectés</h3>
-          <label>Axes photo → projet <select id="photo-axes" title="Correspondance des axes du repère photo avec ceux du projet"></select></label>
-          <ul id="plane-list" class="list"></ul>
-        </div>
-      </section>
     </aside>
     <main id="viewport">
-      <div id="banner" role="alert" hidden><span></span><button title="Fermer">×</button></div>
-      <canvas id="scene"></canvas>
-      <div id="photo-view" hidden>
-        <div id="photo-strip"></div>
-        <div id="photo-stage">
-          <div id="photo-frame"><img id="photo-image" alt="Aperçu indisponible (format non affichable)" draggable="false" /><svg id="photo-overlay"></svg></div>
-        </div>
-        <button id="photo-close" title="Fermer l'atelier photo">×</button>
-        <form id="anchor-form" hidden>
-          <select name="comp" title="Composant"></select>
-          <select name="anchor" title="Ancre"></select>
-          <input name="expr" placeholder="expression (m)" autocomplete="off" title="Expression de la coordonnée du plan, en paramètres du modèle" />
-          <button type="button" id="anchor-cancel">Annuler</button>
-          <button type="submit">Valider</button>
-          <small id="anchor-hint"></small>
-        </form>
-      </div>
-      <div id="views"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
+      <canvas id="scene" aria-label="Vue 3D du modèle"></canvas>
+      <div id="views" class="row" role="group" aria-label="Point de vue"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
       <aside id="info" hidden></aside>
       <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
       <div id="warnings" role="status" hidden></div>
@@ -103,20 +91,20 @@
       <section>
         <h2>Cotes</h2>
         <ul id="cote-list" class="list"></ul>
-        <button id="add-cote-button">Ajouter une cote</button>
+        <button id="add-cote-button" class="fit">Ajouter une cote</button>
         <form id="cote-form" hidden>
-          <label>De</label><select name="comp-a"></select><select name="a"></select>
-          <label>À</label><select name="comp-b"></select><select name="b"></select>
-          <label>Axe</label>
-          <select name="axis"><option value="dist">distance</option><option value="x">x</option><option value="y">y (hauteur)</option><option value="z">z</option></select>
-          <label>Expression</label><input name="expr" required autocomplete="off" placeholder="paramètres en m" />
-          <label>Valeur</label><input name="value" required inputmode="decimal" pattern="-?\d+([.,]\d+)?" placeholder="cm" autocomplete="off" />
-          <label>± σ</label><input name="sigma" required inputmode="decimal" pattern="\d+([.,]\d+)?" value="1" placeholder="cm" />
-          <label>Libellé</label><input name="label" autocomplete="off" />
+          <label for="cote-comp-a">De</label><select id="cote-comp-a" name="comp-a"></select><select name="a" aria-label="Ancre de départ"></select>
+          <label for="cote-comp-b">À</label><select id="cote-comp-b" name="comp-b"></select><select name="b" aria-label="Ancre d'arrivée"></select>
+          <label for="cote-axis">Axe</label>
+          <select id="cote-axis" name="axis"><option value="dist">distance</option><option value="x">x</option><option value="y">y (hauteur)</option><option value="z">z</option></select>
+          <label for="cote-expr">Expression</label><input id="cote-expr" name="expr" required autocomplete="off" placeholder="paramètres en m" />
+          <label for="cote-value">Valeur</label><input id="cote-value" name="value" required inputmode="decimal" pattern="-?\d+([.,]\d+)?" placeholder="cm" autocomplete="off" />
+          <label for="cote-sigma">± σ</label><input id="cote-sigma" name="sigma" required inputmode="decimal" pattern="\d+([.,]\d+)?" value="1" placeholder="cm" />
+          <label for="cote-label">Libellé</label><input id="cote-label" name="label" autocomplete="off" />
           <small id="cote-hint"></small>
           <div class="row">
             <button type="button" id="cote-cancel">Annuler</button>
-            <button type="submit">Ajouter</button>
+            <button type="submit" class="primary">Ajouter</button>
           </div>
         </form>
       </section>
@@ -132,7 +120,50 @@
     <footer id="statusbar">
       <progress id="progress" max="1" hidden></progress>
       <span id="status"></span>
+      <span class="spacer"></span>
+      <span id="tools-state"></span>
     </footer>
+    <div id="photo-view" hidden>
+      <header id="photo-bar">
+        <button id="photo-close">← Modèle 3D</button>
+        <strong>Atelier photo</strong>
+        <span id="photo-title"></span>
+        <span class="spacer"></span>
+      </header>
+      <div id="photo-stage">
+        <div id="photo-frame"><img id="photo-image" alt="Aperçu indisponible (format non affichable)" draggable="false" /><svg id="photo-overlay" aria-hidden="true"></svg></div>
+      </div>
+      <div id="photo-zoom" class="row" role="group" aria-label="Zoom">
+        <button data-zoom="1.25" aria-label="Zoom avant">+</button><button data-zoom="0.8" aria-label="Zoom arrière">−</button><button data-zoom="0">Ajuster</button>
+      </div>
+      <aside id="photo-details">
+        <section>
+          <h2>Clics</h2>
+          <ul id="click-list" class="list"></ul>
+        </section>
+        <section>
+          <h2>Surfaces détectées</h2>
+          <ul id="plane-list" class="list"></ul>
+        </section>
+        <section>
+          <h2>Axes photo</h2>
+          <label>Repère photo → projet<select id="photo-axes"></select></label>
+        </section>
+      </aside>
+      <div id="photo-strip"></div>
+      <form id="anchor-form" hidden>
+        <strong>Point cliqué</strong>
+        <label>Composant<select name="comp"></select></label>
+        <label>Ancre<select name="anchor"></select></label>
+        <input name="expr" placeholder="expression (m)" autocomplete="off" aria-label="Expression de la coordonnée du plan (m)" title="Expression de la coordonnée du plan, en paramètres du modèle" />
+        <small id="anchor-hint"></small>
+        <div class="row">
+          <button type="submit" class="primary">Valider</button>
+          <button type="button" id="anchor-cancel">Annuler</button>
+        </div>
+      </form>
+    </div>
+    <div id="banner" role="alert" hidden><span></span><button aria-label="Fermer" title="Fermer">×</button></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

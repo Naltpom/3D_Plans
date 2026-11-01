@@ -1,5 +1,6 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
+import { refreshSources } from "./projects";
 import { showCameras, type Shape } from "./view3d";
 
 type UV = [number, number];
@@ -36,6 +37,11 @@ const installButton = $<HTMLButtonElement>("#photo-install");
 const extractButton = $<HTMLButtonElement>("#photo-extract");
 const densifyButton = $<HTMLButtonElement>("#photo-densify");
 const openButton = $<HTMLButtonElement>("#photo-open");
+const tools = $("#photo-tools");
+const photoBar = $("#photo-bar");
+const title = $("#photo-title");
+const toolsState = $("#tools-state");
+const canvas = $("#scene");
 const details = $("#photo-details");
 const clickList = $("#click-list");
 const axesSelect = $<HTMLSelectElement>("#photo-axes");
@@ -54,7 +60,7 @@ const hint = $("#anchor-hint");
 const [wire, outline, marks] = ["wire", "plane", "marks"].map((name) => overlay.appendChild(svg("g", { class: name })));
 
 let source: string | null = null;
-let tools = true;
+let installed = true;
 let located: Located | null = null;
 let planes: Planes | null = null;
 let clicks: Click[] = [];
@@ -91,7 +97,7 @@ async function refresh() {
     ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", [])]);
   if (found) await host.allowAssets(found.cameras.map((c) => c.path)).catch(report);
   if (n !== sequence) return;
-  [source, tools, located, planes, clicks] = [id, status.colmap, found, detected, listed];
+  [source, installed, located, planes, clicks] = [id, status.colmap, found, detected, listed];
   sourceSelect.replaceChildren(...sources.map((s) => new Option(s.id, s.id)));
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
@@ -103,13 +109,15 @@ async function refresh() {
 
 function render() {
   const count = cameras().length, plural = count > 1 ? "s" : "";
-  installButton.hidden = tools;
-  extractButton.hidden = !tools || Boolean(located);
-  densifyButton.hidden = openButton.hidden = details.hidden = !located;
+  installButton.hidden = installed;
+  extractButton.hidden = !installed || Boolean(located);
+  densifyButton.hidden = openButton.hidden = !located;
+  title.textContent = `${source} · photo ${cameras().findIndex((c) => c.name === image) + 1} / ${count}`;
+  toolsState.textContent = source ? `Outils photo : ${installed ? "COLMAP installé" : "non installés"}` : "";
   for (const b of [installButton, extractButton, densifyButton]) b.disabled = Boolean(busy);
   const stopped = interrupted();
   if (stopped) state.replaceChildren(`Calcul interrompu (${TASKS[stopped].toLowerCase()}) — `, button("relancer", "link", "Relancer le calcul", () => run(() => longTask(stopped))));
-  else if (!busy) state.textContent = !tools ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
+  else if (!busy) state.textContent = !installed ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
     located.solved ? "" : "à recaler : mettre à jour", dirty ? "modifications à intégrer : mettre à jour" : ""].filter(Boolean).join(" · ");
   renderStrip();
   renderClicks();
@@ -121,8 +129,11 @@ function renderStrip() {
   const key = cameras().map((c) => c.path).join("|");
   if (key !== stripKey) {
     stripKey = key;
-    strip.replaceChildren(...cameras().map((camera) => Object.assign(el("img"), {
-      src: host.photoUrl(camera.path), title: camera.name, alt: camera.name, loading: "lazy", decoding: "async", onclick: () => run(() => openPhoto(camera.name)) })));
+    strip.replaceChildren(...cameras().map((camera) => {
+      const thumb = button("", "", camera.name, () => run(() => openPhoto(camera.name)));
+      thumb.append(Object.assign(el("img"), { src: host.photoUrl(camera.path), alt: camera.name, loading: "lazy", decoding: "async" }));
+      return thumb;
+    }));
   }
   [...strip.children].forEach((thumb, i) => thumb.classList.toggle("current", cameras()[i]?.name === image));
 }
@@ -140,7 +151,7 @@ function renderClicks() {
       await refresh();
     })));
     if (!face || sorted[i - 1]?.anchor === c.anchor) return [item];
-    const group = el("li", "group");
+    const group = el("li", `group ${alone ? "alone" : ""}`);
     group.append(el("strong", "", `${c.anchor} · face · même point`),
       el("small", alone ? "large" : "", alone ? "à cliquer aussi sur une 2e photo" : `${c.photos_for_anchor} photos`));
     return [group, item];
@@ -204,14 +215,15 @@ async function choose(id: string) {
   anchors = list.filter((a) => !plane || Object.keys(a.axes).length === 1).sort((a, b) => score(b) - score(a));
   anchorSelect.replaceChildren(...anchors.map((a) => new Option(`${a.label} (${KINDS[Object.keys(a.axes).length] ?? "point"})`, a.ref)));
   sync();
+  place();
 }
 
 function sync() {
   const plane = target(), anchor = anchors.find((a) => a.ref === anchorSelect.value), [axis] = Object.keys(anchor?.axes ?? {});
   hint.replaceChildren();
   if (!plane) return void (hint.textContent = anchor && Object.keys(anchor.axes).length === 1
-    ? "Face : cliquez le même point (repère net) sur au moins 2 photos." : "Ancre visible au point cliqué : dans la liste, ou clic sur le composant dans la vue 3D.");
-  if (!anchor) return void (hint.textContent = "Face qui porte ce plan : dans la liste, ou clic sur le composant dans la vue 3D.");
+    ? "Face : cliquez le même point (repère net) sur au moins 2 photos." : "Ancre visible au point cliqué : dans la liste, ou clic sur le composant dans la vue 3D à droite.");
+  if (!anchor) return void (hint.textContent = "Face qui porte ce plan : dans la liste, ou clic sur le composant dans la vue 3D à droite.");
   if (axis === plane.proj_axis) return void (exprInput.value = anchor.axes[axis]);
   const i = "xyz".indexOf(plane.axis), rotation = Object.keys(ROTATIONS).find((r) => r.slice(2 * i, 2 * i + 2) === `+${axis}`);
   hint.append(`Plan selon ${plane.proj_axis}, face selon ${axis}${rotation ? " : repère photo tourné ? " : " : choisissez une autre face."}`,
@@ -238,17 +250,19 @@ async function openPhoto(name: string) {
   overlay.setAttribute("viewBox", `0 0 ${size[0]} ${size[1]}`);
   picture.src = host.photoUrl(camera.path);
   view.hidden = false;
-  viewport.classList.add("photo-mode");
+  photoBar.append(tools);
+  details.prepend(canvas);
   fit();
   render();
   await draw();
 }
 
 function closePhoto() {
-  image = pending = null;
+  image = null;
   view.hidden = true;
-  viewport.classList.remove("photo-mode");
-  if (!targetId) form.hidden = true;
+  section.append(tools);
+  viewport.prepend(canvas);
+  closeForm();
   render();
 }
 
@@ -261,6 +275,16 @@ function apply(next: typeof zoom) {
   zoom = next;
   frame.style.transform = `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.k})`;
   drawMarks();
+}
+
+const scaleAt = (f: number, x: number, y: number) => apply({ k: zoom.k * f, x: x - (x - zoom.x) * f, y: y - (y - zoom.y) * f });
+
+function place() {
+  if (!pending || form.parentElement !== view) return;
+  const rect = stage.getBoundingClientRect(), x = rect.left + zoom.x + pending[0] * zoom.k, y = rect.top + zoom.y + pending[1] * zoom.k;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+  form.style.left = `${clamp(x + 16, rect.left + 8, rect.right - form.offsetWidth - 8)}px`;
+  form.style.top = `${clamp(y - 28, rect.top + 8, rect.bottom - form.offsetHeight - 8)}px`;
 }
 
 function edges(shapes: Shape[]): Point[][] {
@@ -322,6 +346,7 @@ function drawMarks() {
     return group;
   };
   marks.replaceChildren(...clicks.filter((c) => c.image === image).map((c) => mark([c.u, c.v], c.anchor)), ...pending ? [mark(pending, "?", "pending")] : []);
+  place();
 }
 
 async function draw() {
@@ -332,7 +357,7 @@ async function draw() {
 function interrupted() {
   const saved = JSON.parse(localStorage.getItem(TASK_KEY) ?? "null") as { method: string; project: string; source: string } | null;
   if (busy || !saved || saved.method !== "tools.install" && (saved.project !== projectPath || saved.source !== source)) return "";
-  if (!({ "tools.install": tools, "photos.extract": Boolean(located) } as Record<string, boolean>)[saved.method]) return saved.method;
+  if (!({ "tools.install": installed, "photos.extract": Boolean(located) } as Record<string, boolean>)[saved.method]) return saved.method;
   localStorage.removeItem(TASK_KEY);
   return "";
 }
@@ -368,8 +393,8 @@ async function longTask(method: string) {
     busy = "";
     for (const bar of bars) bar.hidden = true;
     render();
+    await Promise.all([refresh(), refreshSources()]).catch(report);
   }
-  await refresh();
 }
 
 let drag: { x: number; y: number; moved: boolean } | null = null;
@@ -395,9 +420,13 @@ stage.onpointerup = (event) => {
 };
 stage.onwheel = (event) => {
   event.preventDefault();
-  const rect = stage.getBoundingClientRect(), f = Math.exp(-event.deltaY / 500), x = event.clientX - rect.left, y = event.clientY - rect.top;
-  apply({ k: zoom.k * f, x: x - (x - zoom.x) * f, y: y - (y - zoom.y) * f });
+  const rect = stage.getBoundingClientRect();
+  scaleAt(Math.exp(-event.deltaY / 500), event.clientX - rect.left, event.clientY - rect.top);
 };
+document.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((zoomButton) => {
+  const f = Number(zoomButton.dataset.zoom);
+  zoomButton.onclick = () => f ? scaleAt(f, stage.clientWidth / 2, stage.clientHeight / 2) : fit();
+});
 new ResizeObserver(() => { if (image) fit(); }).observe(stage);
 
 installButton.onclick = () => run(() => longTask("tools.install"));

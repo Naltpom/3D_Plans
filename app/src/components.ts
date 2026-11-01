@@ -1,5 +1,5 @@
 import { call } from "./host";
-import { $, cm, el, number, run } from "./ui";
+import { $, button, cm, el, number, run } from "./ui";
 import { highlight, show, status, type Shape } from "./view3d";
 
 type Field = { name: string; label: string; unit: string; default: number | string };
@@ -34,6 +34,7 @@ let selected: string | null = null;
 const degrees = (x: number) => `${number(x)} °`;
 const sigmaText = (sigma: number | null | undefined, unit = cm) => sigma === null ? "σ non déterminé" : sigma === undefined ? "" : `± ${unit(sigma)}`;
 const typeLabel = (type: string) => types.find((t) => t.type === type)?.label ?? type;
+const labelled = (text: string, input: HTMLInputElement | HTMLSelectElement) => [Object.assign(el("label", "", text), { htmlFor: input.id = `field-${input.name}` }), input];
 
 async function refresh(frame = false) {
   [components, shapes, types] = await Promise.all([
@@ -46,13 +47,9 @@ function renderList() {
   list.replaceChildren(...components.map((component) => {
     const sigma = shapes.find((s) => s.id === component.id)?.sigma_max;
     const item = el("li", component.id === selected ? "current" : "");
-    const open = el("button", "item");
-    open.append(el("strong", "", component.label), el("small", status(sigma), [typeLabel(component.type), sigmaText(sigma)].filter(Boolean).join(" · ")));
-    open.onclick = () => run(() => select(component.id));
-    const remove = el("button", "remove", "×");
-    remove.title = "Supprimer le composant";
-    remove.onclick = () => run(async () => { await call("components.remove", { id: component.id }); await refresh(); });
-    item.append(open, remove);
+    const open = button("", "item", `${typeLabel(component.type)} · ${component.id}`, () => run(() => select(component.id)));
+    open.append(el("span", "", component.label), el("span", `value ${status(sigma)}`, sigmaText(sigma)));
+    item.append(open, button("×", "remove", "Supprimer le composant", () => run(async () => { await call("components.remove", { id: component.id }); await refresh(); })));
     return item;
   }));
   if (!components.length) list.append(el("li", "empty", "Aucun composant"));
@@ -76,9 +73,7 @@ async function select(id: string | null) {
     const unit = param?.axis === "angle" ? degrees : cm;
     row.insertCell().append(el("span", status(sigma), `${unit(solved?.value ?? param?.init ?? NaN)} ${sigmaText(sigma, unit)}`));
   }
-  const close = el("button", "remove", "×");
-  close.title = "Fermer";
-  close.onclick = () => run(() => select(null));
+  const close = button("×", "remove", "Fermer", () => run(() => select(null)));
   const anchorList = el("ul");
   anchorList.append(...anchors.map((anchor) => {
     const item = el("li");
@@ -107,10 +102,10 @@ function fillForm() {
   while (components.some((c) => c.id === `${type.type}${n}`)) n++;
   idInput.value = `${type.type}${n}`;
   fields.replaceChildren(
-    ...(OPTIONS[type.type] ?? []).flatMap((key) => [el("label", "", key), control(key, type.options[key])]),
-    ...type.fields.flatMap((field) => [el("label", "", field.label), Object.assign(el("input", field.unit === "m" ? "cm" : ""), {
+    ...(OPTIONS[type.type] ?? []).flatMap((key) => labelled(key, control(key, type.options[key]))),
+    ...type.fields.flatMap((field) => labelled(field.label, Object.assign(el("input", field.unit === "m" ? "cm" : ""), {
       name: field.name, title: `valeur initiale en ${field.unit === "m" ? "cm" : field.unit}, ou expression de paramètres (en ${field.unit})`,
-      placeholder: typeof field.default === "string" ? `fixé à ${field.default}` : field.unit === "m" ? cm(field.default) : `${field.default} ${field.unit}` })]));
+      placeholder: typeof field.default === "string" ? `fixé à ${field.default}` : field.unit === "m" ? cm(field.default) : `${field.default} ${field.unit}` }))));
 }
 
 function wallAxis({ x0, z0, x1, z1, ...rest }: Record<string, unknown>) {

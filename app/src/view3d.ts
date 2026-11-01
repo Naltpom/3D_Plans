@@ -9,7 +9,7 @@ type Vec = [number, number, number];
 type Range = [number, number];
 
 const OPACITY: Record<string, number> = { mur: 0.45, fenetre: 0.6, porte_fenetre: 0.6, parcelle: 0.3 };
-const EDGES = { ok: 0x202020, large: 0xff9800, unknown: 0xe53935 };
+const EDGES = { ok: 0x202020, large: 0xe8953a, unknown: 0xf07a72 };
 const VIEWS: Record<string, Vec> = { dessus: [0, 1, 1e-4], face: [0, 0, 1], "3d": [0.6, 0.5, 0.8] };
 
 const canvas = document.querySelector<HTMLCanvasElement>("#scene")!;
@@ -18,13 +18,13 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x1e1f22);
+scene.background = new THREE.Color(0x101318);
 const sun = new THREE.DirectionalLight(0xffffff, 1.5);
 sun.position.set(5, 10, 7);
 const model = new THREE.Group();
 const photos = new THREE.Group();
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(new THREE.GridHelper(20, 20, 0x666666, 0x3a3a3a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos);
+scene.add(new THREE.GridHelper(20, 20, 0x4a5260, 0x2a303a), new THREE.AxesHelper(1), new THREE.HemisphereLight(0xffffff, 0x444444, 2), sun, model, photos);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -88,7 +88,7 @@ export function show(shapes: Shape[], frame = false) {
   if (frame || empty) setView("3d");
 }
 
-export function highlight(id: string | string[] | null, color = 0x3355aa) {
+export function highlight(id: string | string[] | null, color = 0x1f6f8a) {
   const ids = [id ?? []].flat();
   for (const o of model.children as THREE.Mesh<THREE.BufferGeometry, THREE.MeshLambertMaterial>[])
     o.material.emissive.set(ids.includes(o.userData.id) ? color : 0x000000);
@@ -98,7 +98,7 @@ export function showCameras(cameras: { name: string; center: Vec; R: number[][] 
   photos.children.forEach((o) => ((o as THREE.Mesh).material as THREE.Material).dispose());
   photos.clear();
   for (const { name, center, R } of cameras) {
-    const cone = new THREE.Mesh(CONE, new THREE.MeshBasicMaterial({ color: name === current ? 0xffd54f : 0x4dd0e1, wireframe: true, side: THREE.DoubleSide }));
+    const cone = new THREE.Mesh(CONE, new THREE.MeshBasicMaterial({ color: name === current ? 0xf5c451 : 0x3fb6d9, wireframe: true, side: THREE.DoubleSide }));
     const column = (j: number) => new THREE.Vector3(R[0][j], R[1][j], R[2][j]);
     cone.matrixAutoUpdate = false;
     cone.matrix.makeBasis(column(0), column(1), column(2)).setPosition(...center);
@@ -107,7 +107,7 @@ export function showCameras(cameras: { name: string; center: Vec; R: number[][] 
   }
 }
 
-document.addEventListener("plans3d:highlight", (event) => highlight((event as CustomEvent<string[]>).detail, 0x992222));
+document.addEventListener("plans3d:highlight", (event) => highlight((event as CustomEvent<string[]>).detail, 0x8a4a12));
 
 function setView(name: string) {
   const box = new THREE.Box3().setFromObject(model);
@@ -117,6 +117,7 @@ function setView(name: string) {
   controls.target.copy(sphere.center);
   camera.position.copy(sphere.center).addScaledVector(new THREE.Vector3(...VIEWS[name]).normalize(), sphere.radius / Math.sin(half));
   controls.update();
+  document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => { button.ariaPressed = String(button.dataset.view === name); });
 }
 
 document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => { button.onclick = () => setView(button.dataset.view!); });

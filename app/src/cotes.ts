@@ -41,10 +41,16 @@ function fill(list: HTMLElement, items: HTMLElement[], empty: string) {
   if (!items.length) list.append(el("li", "empty", empty));
 }
 
-function line(title: string, detail: string, className = "", action?: HTMLButtonElement, tip = "") {
+function line(title: string, detail: string, className = "", action?: HTMLButtonElement, tip = "", value?: HTMLElement) {
   const item = Object.assign(el("li", className), { title: tip });
-  item.append(el("strong", "", title), ...(action ? [action] : []), el("small", "", detail));
+  item.append(el("strong", "", title), ...(value ? [value] : []), ...(action ? [action] : []), el("small", "", detail));
   return item;
+}
+
+function amount(value: string, sigma = "") {
+  const span = el("span", "value", value);
+  if (sigma) span.append(el("span", "muted", ` ± ${sigma}`));
+  return span;
 }
 
 function removable(id: string) {
@@ -62,10 +68,12 @@ function renderCotes() {
   const marked = new Set(focused?.map((c) => c.id));
   fill(coteList, [
     ...obs.map((o) => line(o.label || o.id,
-      `${cm(o.value)} ± ${cm(o.sigma)} · ${o.status} · ${o.source} · écart ${o.resid > 0 ? "+" : ""}${cm(o.resid)} (w ${number(o.w)})`,
-      `${flagged.has(o.id) ? "conflict" : ""} ${marked.has(o.id) ? "current" : ""}`, removable(o.id), `${o.id} = ${o.expr}`)),
+      `${o.status} · ${o.source} · écart ${o.resid > 0 ? "+" : ""}${cm(o.resid)} (w ${number(o.w)})`,
+      `${flagged.has(o.id) ? "conflict" : ""} ${marked.has(o.id) ? "current" : ""}`, removable(o.id), `${o.id} = ${o.expr}`,
+      amount(number(o.value * 100), `${number(o.sigma * 100)} cm`))),
     ...cotes.filter((c) => !obs.some((o) => o.id === `cotes:${c.id}`)).map((c) => line(c.label || c.id,
-      `${number(c.value)} ± ${number(c.sigma)} ${c.unit} · ${c.status} · à intégrer : mettre à jour`, "pending", removable(`cotes:${c.id}`), `cotes:${c.id} = ${c.expr}`)),
+      `${c.status} · à intégrer : mettre à jour`, "pending", removable(`cotes:${c.id}`), `cotes:${c.id} = ${c.expr}`,
+      amount(number(c.value), `${number(c.sigma)} ${c.unit}`))),
   ], "Aucune cote");
   coteList.querySelector(".current")?.scrollIntoView({ block: "nearest" });
 }
@@ -75,9 +83,12 @@ function renderConflicts() {
   $("#conflicts").hidden = !groups.length;
   conflictList.replaceChildren(...groups.map((group) => {
     const item = el("li", group === focused ? "current" : "");
-    const open = button("", "item", "Mettre en évidence", () => run(() => focus(group === focused ? null : group)));
-    open.append(el("strong", "", group.map((c) => c.id).join(" ↔ ")), el("small", "", group.map((c) => `${c.label || c.id} (w ${number(c.w)})`).join(" · ")));
-    item.append(open);
+    item.append(...group.map((c) => {
+      const row = Object.assign(el("div"), { title: c.id });
+      row.append(el("span", "", c.label || c.id), amount(`w ${c.w > 0 ? "+" : ""}${number(c.w)}`));
+      return row;
+    }), Object.assign(button("Voir", "small", "Mettre en évidence dans la vue 3D", () => run(() => focus(group === focused ? null : group))),
+      { ariaPressed: String(group === focused) }));
     return item;
   }));
 }
@@ -92,11 +103,12 @@ function render() {
     return item;
   }));
   const idle = result ? "Aucune proposition" : "Mettez à jour pour obtenir des propositions";
-  fill(nextList, candidates.map((c) => line(c.label, `gain ${cm(c.gain)} sur les marges · actuellement ± ${cm(c.sigma)}`, "",
+  fill(nextList, candidates.map((c) => line(c.label, `marge actuelle ± ${cm(c.sigma)} · gain total ${cm(c.gain)}`, "",
     button("J'ai mesuré", "action", c.expr, () => run(() => prefill(c))))), idle);
   fill(factorList, factors.map((f) => line(Object.values(f.group).join(" · "),
-    f.factor === null ? `${f.n} obs. · redondance insuffisante` : `σ réel ≈ ${number(f.factor, 2)} × σ annoncé · ${f.n} obs.`,
-    f.factor !== null && f.factor > 1.5 ? "large" : "")), result ? "Aucun groupe" : "Mettez à jour pour estimer");
+    f.factor === null ? `${f.n} obs. · redondance insuffisante` : `σ réel / σ annoncé · ${f.n} obs.`,
+    f.factor !== null && f.factor > 1.5 ? "large" : "", undefined, "", amount(f.factor === null ? "—" : `${number(f.factor, 2)} × annoncé`))),
+    result ? "Aucun groupe" : "Mettez à jour pour estimer");
   renderConflicts();
   renderCotes();
 }
