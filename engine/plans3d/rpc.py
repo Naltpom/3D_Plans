@@ -94,6 +94,14 @@ def project_info(ctx):
             'model': os.path.exists(os.path.join(project.folder, 'model.json'))}
 
 
+@rpc('project.guide')
+def project_guide(ctx, guide):
+    path = os.path.join(ctx.require_project().folder, 'project.json')
+    meta = json.load(open(path, encoding='utf-8')) if os.path.exists(path) else {}
+    with open(path, 'w', encoding='utf-8') as fh: json.dump({**meta, 'guide': guide}, fh, ensure_ascii=False, indent=1)
+    return guide
+
+
 @rpc('params.list')
 def params_list(ctx):
     return [{'name': n, 'init': init, 'axis': axis, 'label': label} for n, (init, axis, label) in ctx.require_project().params().items()]

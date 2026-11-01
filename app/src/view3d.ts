@@ -35,9 +35,11 @@ const model = new THREE.Group();
 const photos = new THREE.Group();
 const furniture = new THREE.Group();
 const swings = new THREE.Group();
+const cloud = new THREE.Group();
+const overlays = new THREE.Group();
 let walls: Shape[] = [];
 const CONE = new THREE.ConeGeometry(0.14, 0.2, 4, 1, true).rotateY(Math.PI / 4).translate(0, -0.1, 0).rotateX(-Math.PI / 2);
-scene.add(...helpers, neutral, model, photos, furniture, swings);
+scene.add(...helpers, neutral, model, photos, furniture, swings, cloud, overlays);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 1000);
 camera.position.set(6, 5, 8);
@@ -115,7 +117,8 @@ function mesh(shape: Shape, openings: Shape[] = []) {
 
 function clear(group: THREE.Group) {
   group.traverse((o) => {
-    if (o instanceof THREE.Mesh || o instanceof THREE.Line) { o.geometry.dispose(); (o.userData.material ?? o.material).dispose(); }
+    if (o instanceof THREE.Mesh || o instanceof THREE.Line || o instanceof THREE.Points) { o.geometry.dispose(); (o.userData.material ?? o.material).dispose(); }
+    if (o instanceof THREE.Sprite) { o.material.map?.dispose(); o.material.dispose(); }
     if (o instanceof THREE.Light) o.dispose();
   });
   group.clear();
@@ -198,7 +201,7 @@ document.addEventListener("plans3d:highlight", (event) => highlight((event as Cu
 
 export function setView(name: string) {
   const known = model.children.filter((o) => o.userData.known), box = new THREE.Box3();
-  for (const o of known.length ? known : model.children) box.expandByObject(o);
+  for (const o of known.length ? known : model.children.length ? model.children : cloud.children) box.expandByObject(o);
   if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2.5, 2));
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const half = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect));
@@ -275,6 +278,47 @@ new ResizeObserver(() => {
   camera.updateProjectionMatrix();
 }).observe(canvas);
 
-export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings] };
+export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings, cloud, overlays] };
 export const hooks = { frame: () => renderer.render(scene, camera) };
 renderer.setAnimationLoop(() => hooks.frame());
+
+const TONES: Record<string, number> = { sure: 0x3fb6d9, doubt: 0xe8953a, measure: 0xf5c451 };
+
+function tag(text: string, color: number) {
+  const canvas = Object.assign(document.createElement("canvas"), { width: 512, height: 128 }), context = canvas.getContext("2d")!;
+  context.font = "600 64px Inter, sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
+  context.fillText(text, 256, 64);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false }));
+  sprite.scale.set(1.6, 0.4, 1);
+  sprite.renderOrder = 1;
+  return sprite;
+}
+
+export function showCloud(points: number[]) {
+  const first = !cloud.children.length;
+  clear(cloud);
+  if (!points.length) return;
+  const material = new THREE.PointsMaterial({ color: 0x8b95a3, size: 2, sizeAttenuation: false });
+  const dots = new THREE.Points(new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(points, 3)), material);
+  dots.userData.material = material;
+  cloud.add(dots);
+  if (first && !model.children.length) setView("3d");
+}
+
+export function showWalls(walls: { a: number[]; b: number[]; height: number; tone: string; on: boolean; text: string }[]) {
+  clear(overlays);
+  for (const { a: [x0, z0], b: [x1, z1], height, tone, on, text } of walls) {
+    const thick = tone === "measure", material = new THREE.MeshBasicMaterial({ color: TONES[tone], transparent: true, opacity: on ? thick ? 0.6 : 0.35 : 0.1, depthWrite: false, side: THREE.DoubleSide });
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(x1 - x0, z1 - z0), height, thick ? 0.15 : 0.06), material);
+    panel.position.set((x0 + x1) / 2, height / 2, (z0 + z1) / 2);
+    panel.rotation.y = Math.atan2(z0 - z1, x1 - x0);
+    panel.userData.material = material;
+    panel.add(new THREE.LineSegments(new THREE.EdgesGeometry(panel.geometry), new THREE.LineBasicMaterial({ color: TONES[tone], transparent: true, opacity: on ? 1 : 0.4 })));
+    const label = tag(text, TONES[tone]);
+    label.position.set((x0 + x1) / 2, height + 0.4, (z0 + z1) / 2);
+    overlays.add(panel, label);
+  }
+}

@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
 import { refreshSources } from "./projects";
-import { showCameras, type Shape } from "./view3d";
+import { showCameras, showCloud, type Shape } from "./view3d";
 
 type UV = [number, number];
 type Point = number[];
@@ -12,6 +12,7 @@ type Planes = { axes: Record<string, string>; planes: Plane[] };
 type Click = { id: number; image: string; u: number; v: number; anchor: string; kind: string; photos_for_anchor: number };
 type Anchor = { ref: string; label: string; axes: Record<string, string> };
 type Model = { params: Record<string, { value: number }> };
+type Guided = { anchor: string; text: string; points: Point[]; photos: string[] };
 
 const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "-x+y-z": "180°", "-z+y+x": "270°" };
 const KINDS = ["point", "face", "arête", "point"];
@@ -57,7 +58,9 @@ const form = $<HTMLFormElement>("#anchor-form");
 const [compSelect, anchorSelect] = ["comp", "anchor"].map((name) => form.elements.namedItem(name) as HTMLSelectElement);
 const exprInput = form.elements.namedItem("expr") as HTMLInputElement;
 const hint = $("#anchor-hint");
-const [wire, outline, marks] = ["wire", "plane", "marks"].map((name) => overlay.appendChild(svg("g", { class: name })));
+const [wire, outline, aim, marks] = ["wire", "plane", "aim", "marks"].map((name) => overlay.appendChild(svg("g", { class: name })));
+const guideBox = $("#photo-guide");
+const undoButton = $<HTMLButtonElement>("#photo-guide-undo");
 
 let source: string | null = null;
 let installed = true;
@@ -78,8 +81,13 @@ let shown: string | null = null;
 let stripKey = "";
 let sequence = 0;
 let timer = 0;
+let guided: Guided | null = null;
 
 const cameras = () => located?.cameras ?? [];
+const guidedClicks = () => clicks.filter((c) => c.anchor === guided?.anchor);
+const signal = () => document.dispatchEvent(new CustomEvent("plans3d:photos"));
+
+export const photoInfo = () => ({ source, installed, count: cameras().length, busy, ...step });
 const target = () => planes?.planes.find((p) => p.id === targetId);
 
 const schedule = () => {
@@ -92,9 +100,9 @@ async function refresh() {
   const sources = (await call<{ id: string; kind: string }[]>("sources.list")).filter((s) => s.kind === "photos_colmap");
   const id = sources.some((s) => s.id === source) ? source : sources[0]?.id ?? null;
   const ask = <T>(method: string, fallback: T) => id ? call<T>(method, { source: id }).catch(() => fallback) : Promise.resolve(fallback);
-  const [status, found, detected, listed] = await Promise.all([
+  const [status, found, detected, listed, cloud] = await Promise.all([
     id ? call<{ colmap: boolean }>("tools.status").catch(() => ({ colmap: true })) : { colmap: true },
-    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", [])]);
+    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), ask("photos.cloud", { points: [] as number[] })]);
   if (found) await host.allowAssets(found.cameras.map((c) => c.path)).catch(report);
   if (n !== sequence) return;
   [source, installed, located, planes, clicks] = [id, status.colmap, found, detected, listed];
@@ -102,6 +110,7 @@ async function refresh() {
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
+  showCloud(cloud.points);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
   if (image) await draw();
@@ -116,26 +125,40 @@ function render() {
   toolsState.textContent = source ? `Outils photo : ${installed ? "COLMAP installé" : "non installés"}` : "";
   for (const b of [installButton, extractButton, densifyButton]) b.disabled = Boolean(busy);
   const stopped = interrupted();
-  if (stopped) state.replaceChildren(`Calcul interrompu (${TASKS[stopped].toLowerCase()}) — `, button("relancer", "link", "Relancer le calcul", () => run(() => longTask(stopped))));
+  if (stopped) state.replaceChildren(`Calcul interrompu (${TASKS[stopped].toLowerCase()}) — `, button("relancer", "link", "Relancer le calcul", () => run(() => photoTask(stopped))));
   else if (!busy) state.textContent = !installed ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
     located.solved ? "" : "à recaler : mettre à jour", dirty ? "modifications à intégrer : mettre à jour" : ""].filter(Boolean).join(" · ");
   renderStrip();
   renderClicks();
   renderPlanes();
+  renderGuide();
   showCameras(cameras(), image);
+  signal();
+}
+
+function renderGuide() {
+  guideBox.hidden = !guided;
+  if (!guided) return;
+  const done = new Set(guidedClicks().map((c) => c.image)).size;
+  $("#photo-guide-text").textContent = done >= 2 ? "C'est bon : l'angle est vu sur 2 photos. Tu peux revenir au parcours." : guided.text;
+  $("#photo-guide-count").textContent = `${Math.min(done, 2)} / 2 photos`;
+  $("#photo-guide-done").textContent = done >= 2 ? "Revenir au parcours" : "Annuler";
+  $("#photo-guide-done").classList.toggle("primary", done >= 2);
+  undoButton.hidden = !guidedClicks().length;
 }
 
 function renderStrip() {
-  const key = cameras().map((c) => c.path).join("|");
+  const shown = guided ? guided.photos.flatMap((name) => cameras().filter((c) => c.name === name)) : cameras();
+  const key = shown.map((c) => c.path).join("|");
   if (key !== stripKey) {
     stripKey = key;
-    strip.replaceChildren(...cameras().map((camera) => {
+    strip.replaceChildren(...shown.map((camera) => {
       const thumb = button("", "", camera.name, () => run(() => openPhoto(camera.name)));
       thumb.append(Object.assign(el("img"), { src: host.photoUrl(camera.path), alt: camera.name, loading: "lazy", decoding: "async" }));
       return thumb;
     }));
   }
-  [...strip.children].forEach((thumb, i) => thumb.classList.toggle("current", cameras()[i]?.name === image));
+  [...strip.children].forEach((thumb, i) => thumb.classList.toggle("current", shown[i]?.name === image));
 }
 
 function renderClicks() {
@@ -250,7 +273,7 @@ async function openPhoto(name: string) {
   overlay.setAttribute("viewBox", `0 0 ${size[0]} ${size[1]}`);
   picture.src = host.photoUrl(camera.path);
   view.hidden = false;
-  photoBar.append(tools);
+  if (!guided) photoBar.append(tools);
   details.prepend(canvas);
   fit();
   render();
@@ -258,12 +281,31 @@ async function openPhoto(name: string) {
 }
 
 function closePhoto() {
-  image = null;
+  const wasGuided = Boolean(guided);
+  [image, guided] = [null, null];
+  view.classList.remove("guided");
   view.hidden = true;
   section.append(tools);
   viewport.prepend(canvas);
   closeForm();
   render();
+  if (wasGuided) document.dispatchEvent(new CustomEvent("plans3d:clicked"));
+}
+
+export async function openGuided(task: Guided) {
+  guided = task;
+  view.classList.add("guided");
+  stripKey = "";
+  const done = new Set(guidedClicks().map((c) => c.image));
+  await openPhoto(task.photos.find((name) => !done.has(name)) ?? task.photos[0]);
+}
+
+async function guidedClick(u: number, v: number) {
+  await call("photos.click", { source, image, u, v, anchor: guided!.anchor });
+  dirty = true;
+  await refresh();
+  const done = new Set(guidedClicks().map((c) => c.image)), next = guided?.photos.find((name) => !done.has(name));
+  if (done.size < 2 && next) await openPhoto(next);
 }
 
 function fit() {
@@ -309,7 +351,15 @@ function runs(uv: (UV | null)[]) {
 
 const project = (name: string, points: Point[]) => call<{ uv: (UV | null)[] }>("photos.project_points", { source, image: name, points_xyz_m: points });
 
+async function drawAim() {
+  const name = image;
+  if (!guided || !name) return void aim.replaceChildren();
+  const { uv } = await project(name, subdivide(guided.points[0], guided.points[1]));
+  if (name === image) aim.replaceChildren(...runs(uv).map((run) => svg("polyline", { points: run.map((p) => p.join(",")).join(" ") })));
+}
+
 async function drawWire() {
+  if (guided) return void wire.replaceChildren();
   const name = image, lines = edges(await call<Shape[]>("components.geometry")).map(([a, b]) => subdivide(a, b));
   const uv = name && lines.length ? (await project(name, lines.flat())).uv : [];
   if (name !== image) return;
@@ -351,7 +401,7 @@ function drawMarks() {
 }
 
 async function draw() {
-  await Promise.all([drawWire(), drawPlane()]);
+  await Promise.all([drawWire(), drawPlane(), drawAim()]);
   drawMarks();
 }
 
@@ -372,9 +422,10 @@ function showStep() {
   }
   state.textContent = status.textContent = `${TASKS[busy]}${step.message ? ` : ${step.message}` : "…"}${known ? ` (${Math.round(step.fraction * 100)} %)` : ""}`
     + ` · ${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+  signal();
 }
 
-async function longTask(method: string) {
+export async function photoTask(method: string) {
   const label = TASKS[method];
   busy = method;
   step = { fraction: NaN, message: "", started: Date.now() };
@@ -415,6 +466,7 @@ stage.onpointerup = (event) => {
   if (!clicked) return;
   const rect = frame.getBoundingClientRect(), u = (event.clientX - rect.left) / rect.width * size[0], v = (event.clientY - rect.top) / rect.height * size[1];
   if (u < 0 || v < 0 || u > size[0] || v > size[1]) return;
+  if (guided) return void run(() => guidedClick(u, v));
   pending = [u, v];
   drawMarks();
   if (form.hidden || targetId) run(() => openForm(null));
@@ -430,11 +482,18 @@ document.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((zoomButton)
 });
 new ResizeObserver(() => { if (image) fit(); }).observe(stage);
 
-installButton.onclick = () => run(() => longTask("tools.install"));
-extractButton.onclick = () => run(() => longTask("photos.extract"));
-densifyButton.onclick = () => run(() => longTask("photos.densify"));
+installButton.onclick = () => run(() => photoTask("tools.install"));
+extractButton.onclick = () => run(() => photoTask("photos.extract"));
+densifyButton.onclick = () => run(() => photoTask("photos.densify"));
 openButton.onclick = () => view.hidden ? run(() => openPhoto(cameras()[0]?.name ?? "")) : closePhoto();
 $("#photo-close").onclick = closePhoto;
+$("#photo-guide-done").onclick = closePhoto;
+undoButton.onclick = () => run(async () => {
+  const last = guidedClicks().at(-1);
+  if (last) await call("photos.unclick", { id: last.id });
+  dirty = true;
+  await refresh();
+});
 sourceSelect.onchange = () => {
   source = sourceSelect.value;
   closeForm();
@@ -479,4 +538,6 @@ document.addEventListener("plans3d:pick", (event) => {
   const id = (event as CustomEvent<string | null>).detail;
   if (!form.hidden && id) run(() => choose(id));
 });
-document.addEventListener("plans3d:photo", (event) => run(() => openPhoto((event as CustomEvent<string>).detail)));
+document.addEventListener("plans3d:photo", (event) => {
+  if (!document.body.classList.contains("guided")) run(() => openPhoto((event as CustomEvent<string>).detail));
+});

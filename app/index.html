@@ -19,6 +19,7 @@
         <span id="scale-chip" class="chip"></span>
       </span>
       <button id="update-button" class="primary" disabled>Mettre à jour</button>
+      <button id="mode-button" class="small" type="button">Mode expert</button>
     </header>
     <aside id="sidebar">
       <section>
@@ -167,6 +168,11 @@
         <ul id="proposal-list" class="list"></ul>
       </section>
     </aside>
+    <nav id="rail" aria-label="Parcours">
+      <div id="rail-title"></div>
+      <div id="rail-steps"></div>
+    </nav>
+    <aside id="step" aria-live="polite"></aside>
     <main id="viewport">
       <canvas id="scene" aria-label="Vue 3D du modèle"></canvas>
       <div id="views" class="row" role="group" aria-label="Point de vue"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
@@ -258,6 +264,12 @@
         </section>
       </aside>
       <div id="photo-strip"></div>
+      <div id="photo-guide" role="status" hidden>
+        <span id="photo-guide-text"></span>
+        <span id="photo-guide-count" class="chip"></span>
+        <button id="photo-guide-undo" class="small">Effacer le dernier clic</button>
+        <button id="photo-guide-done" class="small">Annuler</button>
+      </div>
       <form id="anchor-form" hidden>
         <strong>Point cliqué</strong>
         <label>Composant<select name="comp"></select></label>

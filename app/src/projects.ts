@@ -1,9 +1,10 @@
 import { call, host, onEvent } from "./host";
 import { $, button, el, number, report, run as runTask } from "./ui";
 
-type Project = { name: string; path: string };
+type Project = { name: string; path: string; guide?: unknown };
 type Source = { id: string; path: string; kind: string; extracted: boolean; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
-type UpdateResult = { chi2: number; dof: number; params: { sigma: number | null; axis: string }[]; conflicts: unknown[][]; warnings?: { code: string; message: string }[] };
+export type UpdateResult = { chi2: number; dof: number; params: { name: string; value: number; sigma: number | null; axis: string; label: string }[];
+  conflicts: { id: string; label: string }[][]; warnings?: { code: string; message: string }[] };
 
 const RECENT = "plans3d.recent";
 const KINDS: Record<string, string> = { cotes_csv: "Cotes", photos_colmap: "Photos", cadastre_pdf: "Cadastre PDF", cadastre_geojson: "Cadastre GeoJSON", grille_alti: "Terrain" };
@@ -26,7 +27,7 @@ let current: Project | null = null;
 let updating = false;
 let parent = "";
 
-const recent = (): Project[] => JSON.parse(localStorage.getItem(RECENT) ?? "[]");
+export const recent = (): Project[] => JSON.parse(localStorage.getItem(RECENT) ?? "[]");
 const saveRecent = (list: Project[]) => localStorage.setItem(RECENT, JSON.stringify(list.slice(0, 12)));
 const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? "s" : ""}`;
 const target = () => `${parent.replace(/[\\/]+$/, "")}\\${nameInput.value.trim().replace(/[<>:"/\\|?*]+/g, "_")}`;
@@ -52,14 +53,14 @@ function render() {
   $("#project-name").textContent = current?.name ?? "";
 }
 
-async function openProject(method: string, params: Record<string, unknown>) {
+export async function openProject(method: string, params: Record<string, unknown>) {
   const info = await call<Project | null>(method, params);
   current = info && { name: info.name, path: info.path };
   if (current) saveRecent([current, ...recent().filter((p) => p.path !== current!.path)]);
   status.textContent = "";
   summary.hidden = true;
   render();
-  document.dispatchEvent(new CustomEvent("plans3d:opened", { detail: current }));
+  document.dispatchEvent(new CustomEvent("plans3d:opened", { detail: info }));
   await refreshSources();
 }
 
@@ -78,10 +79,11 @@ export async function refreshSources() {
     if (source.photos) item.append(Object.assign(el("progress"), { max: source.photos, value: source.registered ?? 0, ariaLabel: "Photos positionnées" }));
     return item;
   }));
-  if (!sources.length) sourceList.append(el("li", "empty", "Aucune source"));
+  if (!sources.length) sourceList.append(el("li", "empty", "Aucune source : glisse ici un dossier de photos, un PDF ou un CSV de cotes."));
+  document.dispatchEvent(new CustomEvent("plans3d:sources", { detail: sources }));
 }
 
-async function addSources(paths: string[]) {
+export async function addSources(paths: string[]) {
   if (!current) return report("Ouvrez ou créez un projet avant d'ajouter des sources.");
   const errors: string[] = [];
   for (const path of paths) await call("sources.add_auto", { path }).catch((error: Error) => errors.push(error.message));
@@ -110,7 +112,7 @@ onEvent((event) => {
   status.textContent = String(event.message ?? "");
 });
 
-updateButton.onclick = () => run(async () => {
+export async function update() {
   updating = true;
   render();
   progress.hidden = false;
@@ -119,7 +121,9 @@ updateButton.onclick = () => run(async () => {
   const start = performance.now();
   const polling = setInterval(() => refreshSources().catch(() => {}), 2000);
   try {
-    summarize(await call<UpdateResult>("update"), (performance.now() - start) / 1000);
+    const result = await call<UpdateResult>("update");
+    summarize(result, (performance.now() - start) / 1000);
+    return result;
   } catch (error) {
     status.textContent = "Échec de la mise à jour";
     throw error;
@@ -130,7 +134,9 @@ updateButton.onclick = () => run(async () => {
     render();
     await refreshSources().catch(() => {});
   }
-});
+}
+
+updateButton.onclick = () => run(update);
 
 $("#new-project-button").onclick = () => run(async () => {
   parent ||= `${await host.documents()}\\3D_Plans`;

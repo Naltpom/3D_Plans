@@ -5,3 +5,4 @@ import "./layout";
 import "./lumiere";
 import "./photos";
 import "./projects";
+import "./guide";

@@ -356,7 +356,9 @@ def add(project, type, id, options=None, label=None):
               if options.get('a_priori', True) and own & set(NAME.findall(str(comp['expressions'][name])))]
     index = {n: i for i, n in enumerate([*existing, *(n for n, *_ in created)])}
     for expr in comp['expressions'].values(): compile_expr(str(expr), index)
-    comp['params'] = [n for n, *_ in created]; source = f'comp:{id}'; db = project.db
+    owned = {n for c in components.values() for n in c['params']}
+    comp['params'] = [n for n, *_ in created] + sorted(n for n in param_names(comp) if n.startswith(f'{id}_') and n in existing and n not in owned)
+    source = f'comp:{id}'; db = project.db
     db.executemany('insert into params values (?,?,?,?)', created)
     db.executemany('insert or replace into obs values (?,?,?,?,?,?,?)',
                    [(f'{source}:{id}_{name}', source, str(expr), initial(expr) if value is None else value, sigma, PRIOR_STATUS,
@@ -365,15 +367,15 @@ def add(project, type, id, options=None, label=None):
     return comp
 
 
-def remove(project, comp_id):
-    components = load(project); comp = components.pop(comp_id, None)
-    if comp is None: raise ValueError(f'composant inconnu : {comp_id}')
-    own, source = set(comp['params']), f'comp:{comp_id}'
+def remove(project, *ids):
+    components = load(project); removed = [components.pop(comp_id, None) for comp_id in ids]
+    if None in removed: raise ValueError(f'composant inconnu : {ids[removed.index(None)]}')
+    own, sources = {n for comp in removed for n in comp['params']}, {f'comp:{comp_id}' for comp_id in ids}
     users = [k for k, other in components.items() if own & param_names(other)]
-    users += [o.id for o in project.observations() if o.source != source and own & set(NAME.findall(o.expr))]
-    if users: raise ValueError(f'{comp_id} est utilisé par : {", ".join(users[:5])}' + (f', … ({len(users)} au total)' if len(users) > 5 else ''))
+    users += [o.id for o in project.observations() if o.source not in sources and own & set(NAME.findall(o.expr))]
+    if users: raise ValueError(f'{", ".join(ids)} {"est utilisé" if len(ids) == 1 else "sont utilisés"} par : {", ".join(users[:5])}' + (f', … ({len(users)} au total)' if len(users) > 5 else ''))
     db = project.db; db.executemany('delete from params where name=?', [(n,) for n in own])
-    db.execute('delete from obs where source=?', (source,)); db.execute('delete from components where id=?', (comp_id,)); db.commit()
+    db.executemany('delete from obs where source=?', [(s,) for s in sources]); db.executemany('delete from components where id=?', [(i,) for i in ids]); db.commit()
 
 
 def obs_unit(obs): return '°' if obs.source.startswith('comp:') and obs.id.rpartition('_')[2] in ANGLE_PRIORS else 'm'

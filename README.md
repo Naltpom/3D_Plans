@@ -8,6 +8,7 @@ Application Windows : sources hétérogènes (cotes, photos, cadastre, relevé d
 
 ## Fonctions
 
+- Parcours guidé (par défaut) : projet → sources → positions des photos (nuage de points épars et caméras) → murs proposés à cocher → une mesure au mètre pour l'échelle → vérification (précision, contradictions, mesure utile) → meubler. Un panneau par étape, état enregistré dans `project.json` ; « Mode expert » affiche l'interface complète. L'atelier photo s'ouvre en mode guidé seulement pour cliquer un angle désigné sur 2 photos.
 - Sources : cotes, photos (COLMAP), cadastre, relevé d'altitudes ; contradictions signalées.
 - Composants : murs, sols, plafonds, portes, fenêtres, portes-fenêtres, escalier, boîte, zone extérieure, toit ; arc d'ouverture des portes affiché selon le côté et les charnières.
 - Terrain : maillage du relevé d'altitudes, parcelle cadastrale.
@@ -51,6 +52,7 @@ cd app; npx tsc --noEmit
 - Toute observation porte une valeur et un σ en unités physiques ; contradiction si résidu normalisé > 3.
 - L'IA propose, le solveur tranche, l'utilisateur valide. L'IA ne produit jamais de coordonnées ; aucune règle n'est ajoutée sans validation.
 - Cache par source : seules les sources modifiées sont ré-extraites ; le solveur est relancé en entier à chaque mise à jour.
+- Murs proposés : plans verticaux regroupés (écart ≤ 10 cm), d'au moins 0,8 m de haut et atteignant 1,3 m ; incertains si peu de points, courts ou devant un autre mur. À la validation : murs perpendiculaires reliés par leurs angles (≤ 75 cm), premier mur de chaque direction à 0, sol et plafond associés ; une nouvelle validation remplace les murs proposés et la cote d'échelle.
 - Outils photo : COLMAP, téléchargé au premier usage dans `%LOCALAPPDATA%\3D_Plans\tools`.
 - Aucune photo ni donnée de projet dans le dépôt.
 - Usage personnel.

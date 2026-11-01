@@ -674,3 +674,25 @@ def unclick(ctx, id):
     if not row: raise ValueError(f'clic inconnu : {id}')
     project.db.execute('delete from photos_clicks where id=?', (id,)); invalidate(project, row[0])
     return {'id': id}
+
+
+@rpc('photos.cloud')
+def cloud(ctx, source='photos', limit=20000):
+    project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False)
+    linear_map, shift, _ = project_transform(project, source, frame); points = load_model(cache)['P'] @ linear_map.T + shift
+    low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
+    points = points[np.all((points > low - margin) & (points < high + margin), 1)]
+    return {'points': points[np.random.default_rng(0).permutation(len(points))[:int(limit)]].round(3).ravel().tolist()}
+
+
+@rpc('photos.visible')
+def visible(ctx, source, points_xyz_m, limit=8):
+    project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False); model = load_model(cache)
+    linear_map, shift, _ = project_transform(project, source, frame); centers = camera_centers(model) @ linear_map.T + shift; scored, chosen = [], []
+    for i in range(len(model['names'])):
+        uv, (width, height), _ = project_to_display(model, i, linear_map, shift, points_xyz_m)
+        if all(p and 0.05 < p[0] / width < 0.95 and 0.05 < p[1] / height < 0.95 for p in uv):
+            scored.append((max(abs(p[0] / width - 0.5) + abs(p[1] / height - 0.5) for p in uv), i))
+    for _, i in sorted(scored):
+        if all(np.linalg.norm(centers[i] - centers[j]) > 0.5 for j in chosen): chosen.append(i)
+    return [str(model['names'][i]) for i in chosen[:int(limit)]]
