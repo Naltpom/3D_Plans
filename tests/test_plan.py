@@ -72,3 +72,32 @@ def test_cadastre_walls_and_parcel(ctx, tmp_path):
     for wall in plan.walls(ctx):
         line, box = np.mean([wall['a'], wall['b']], 0), np.array(found[wall['id']]['center'])[[0, 2]]
         assert np.linalg.norm(box - middle) < np.linalg.norm(line - middle)
+
+
+def test_read_sketch_with_fake_server(ctx, tmp_path, monkeypatch):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from PIL import Image
+    from plans3d import ai
+    from test_ai import Fake
+    replies = {'corner': [{'point_2d': [100, 100], 'label': 'corner'}, {'point_2d': [602, 98], 'label': 'corner'}, {'point_2d': [600, 500], 'label': 'corner'},
+                          {'point_2d': [100, 503], 'label': 'corner'}, {'point_2d': [101, 100], 'label': 'corner'}],
+               'dimension': [{'bbox_2d': [300, 60, 380, 90], 'text_content': '5,00 m'}, {'bbox_2d': [620, 280, 680, 320], 'text_content': '3 m'}],
+               'doors': [{'bbox_2d': [300, 480, 400, 520], 'label': 'door'}, {'bbox_2d': [1, 1, 5, 5], 'label': 'fireplace'}]}
+    reply = lambda body: {'choices': [{'message': {'content': '```json\n' + json.dumps(next(v for k, v in replies.items() if k in body['messages'][0]['content'][1]['text'])) + '\n```'}}]}
+    httpd = ThreadingHTTPServer(('127.0.0.1', 0), Fake); httpd.seen = []
+    httpd.routes = {'/v1/chat/completions': reply}
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    monkeypatch.setattr(ai, 'SETTINGS', str(tmp_path / 'settings.json')); monkeypatch.setattr(ai, 'URL', f'http://127.0.0.1:{httpd.server_port}/v1')
+    Image.new('RGB', (1000, 800), 'white').save(tmp_path / 'croquis.png')
+    plan.sketch(ctx, str(tmp_path / 'croquis.png')); plan.sketch(ctx, points=[[100, 100], [600, 100]], length=5.0, size=[1000, 800])
+    found = plan.read_sketch(ctx); httpd.shutdown(); httpd.server_close()
+    body = httpd.seen[0][2]
+    assert len(httpd.seen) == 3 and body['model'] == ai.VISION and body['messages'][0]['content'][0]['image_url']['url'].startswith('data:image/png;base64,')
+    wall = found['walls'][0]
+    assert wall['closed'] and np.allclose(wall['points'], [[0, 0], [5, 0], [5, 4], [0, 4]], atol=0.03) and wall['length'] == pytest.approx(18, abs=0.1)
+    good, bad = found['cotes']
+    assert good['ok'] and (good['wall'], good['edge']) == (0, 0) and not bad['ok'] and 'écart' in bad['message'] and bad['value_cm'] == 300
+    assert found['openings'] == [{'type': 'porte', 'point': pytest.approx([2.5, 4.0], abs=0.03)}]
+    plan.rpc_trace(ctx, wall['points'], True, [5.0, None, None, None], 'lu', 2.0)
+    assert [(row['status'], row['sigma']) for row in read_cotes(ctx.project)] == [('lu', 2.0)]

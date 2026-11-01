@@ -48,7 +48,7 @@ def server(ctx, monkeypatch):
 
 
 def test_settings_and_status(server, ctx):
-    assert call(ctx, 'ai.status', {}) | {'url': ''} == {'url': '', 'model': ai.MODEL, 'key': False, 'local': True, 'installed': bool(ai.installed()), 'server': True, 'ready': True}
+    assert call(ctx, 'ai.status', {}) | {'url': ''} == {'url': '', 'model': ai.MODEL, 'vision': ai.VISION, 'key': False, 'local': True, 'installed': bool(ai.installed()), 'server': True, 'ready': True, 'vision_ready': False}
     assert call(ctx, 'ai.settings', {'model': 'autre', 'key': 'secret'})['key'] is True
     assert json.load(open(ai.SETTINGS, encoding='utf-8'))['ai']['model'] == 'autre' and not call(ctx, 'ai.status', {})['ready']
     with pytest.raises(RpcError, match='URL http'): call(ctx, 'ai.settings', {'url': 'ftp://x'})

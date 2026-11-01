@@ -1,4 +1,4 @@
-import { call, host } from "./host";
+import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, recent, refreshSources, update, type UpdateResult } from "./projects";
 import { openGuided, photoInfo, photoTask } from "./photos";
@@ -12,6 +12,8 @@ type End = "a" | "b";
 type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; component: string | null; angles: Record<End, string | null> };
 type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number };
 type Candidate = { label: string; expr: string; sigma: number };
+type Reading = { walls: { points: number[][]; closed: boolean; length: number }[]; openings: { type: string; point: number[] }[];
+  cotes: { texte: string; value_cm: number; drawn_m: number | null; ok: boolean; message: string; wall: number | null; edge: number | null }[] } | null;
 type Built = { id: string; label: string; source: string; uses: string[]; a: number[]; b: number[]; height: number };
 type Cadastre = { house: { walls: number; perimeter: number; points: number[][] } | null; parcel: { area: number } | null; created: string[] } | null;
 
@@ -56,6 +58,10 @@ let next: Candidate | null = null;
 let phase = 0;
 let pending = "";
 let fresh = "";
+let reading: Reading = null;
+let kept = new Set<number>();
+let vision: { vision_ready?: boolean } | null = null;
+let detail = "";
 let everything = false;
 let fitted: { pairs: string[][]; scale_known: boolean } | null = null;
 const shown = () => everything ? walls() : walls().filter((w, i, all) => w.component || checked.has(w.id) || [...all].sort((a, b) => Number(b.sure) - Number(a.sure) || b.n - a.n).indexOf(w) < 6);
@@ -317,6 +323,7 @@ function wallsStep() {
       button("Tracer une pièce", built.length || fromPhotos || house ? "" : "primary", "Tracer des murs dans la vue de dessus", () => trace(() => built, render, refreshPlan)),
       ...sketch ? [button(sketch.points ? "Recaler le croquis" : "Caler le croquis", sketch.points ? "" : "primary", "2 points du croquis et leur distance", () => calibrate(sketch!, async () => { await loadPlan(); setView("dessus"); render(); }))] : []),
     ...sketch?.points ? [opacity(sketch)] : [],
+    ...sketchReading(),
     ...built.length ? [card("Portes et fenêtres", "Choisis le type, puis clique sur un mur dans la vue.",
       ...OPENINGS.map(([id, label]) => button(label, "", `Poser : ${label.toLowerCase()}`, () => place(id, () => built, render, refreshPlan))))] : [],
   ];
@@ -336,6 +343,50 @@ function fitCard() {
   button("Tourner de 180°", "", "Autre sens possible", run2(2)), button("Tourner de 90°", "", "Autre sens possible", run2(1)));
 }
 
+function sketchReading() {
+  if (!sketch?.points) return [];
+  if (!reading) return [card("Lire le croquis avec l'IA", "L'IA locale relève les murs, les cotes écrites et les portes du croquis calé ; tu choisis ce que tu gardes.",
+    button("Lire le croquis", "primary", "Lecture par le modèle vision local", () => run(() => act("Lecture du croquis par l'IA", readSketch))),
+    ...vision && !vision.vision_ready ? [button("Télécharger le modèle vision (≈ 6 Go)", "", "qwen2.5vl:7b, une seule fois", () => run(() => act("Téléchargement du modèle vision", pullVision)))] : [])];
+  const box = el("div", "card");
+  box.append(el("b", "", "Lu sur le croquis"));
+  for (const [i, wall] of reading.walls.entries()) {
+    const check = Object.assign(el("input"), { type: "checkbox", checked: kept.has(i) });
+    check.onchange = () => { if (check.checked) kept.add(i); else kept.delete(i); paint(); };
+    const line = el("label", "wall");
+    line.append(check, el("span", "", `Pièce ${i + 1} · ${plural(wall.points.length, "mur")} · ${number(wall.length)} m${wall.closed ? " · fermée" : ""}`));
+    box.append(line);
+  }
+  for (const c of reading.cotes) box.append(el("span", c.ok ? "" : "warn", `${c.ok ? "✓" : "⚠"} « ${c.texte} »${c.ok ? ` : ${number(c.drawn_m ?? 0)} m dessinés, cote gardée` : ` : ${c.message}, ignorée`}`));
+  if (reading.openings.length) box.append(el("span", "", `${plural(reading.openings.length, "ouverture")} : ${reading.openings.map((o) => OPENINGS.find(([id]) => id === o.type)?.[1].toLowerCase()).join(", ")}`));
+  if (!reading.walls.length) box.append(el("span", "warn", "Aucun mur reconnu : trace-les à la main sur le croquis."));
+  box.append(row(button("Créer les murs cochés", "primary", "Murs, cotes « lu » et ouvertures", () => run(() => act("Création des murs du croquis", createRead))),
+    button("Oublier la lecture", "", "Revenir au tracé", () => { reading = null; render(); paint(); })));
+  return [box];
+}
+
+async function readSketch() {
+  reading = await call<Reading>("plan.read_sketch");
+  kept = new Set(reading!.walls.map((_, i) => i));
+}
+
+async function pullVision() {
+  await call("ai.pull", { vision: true });
+  vision = await call("ai.status");
+}
+
+async function createRead() {
+  for (const [i, wall] of reading!.walls.entries()) {
+    if (!kept.has(i)) continue;
+    const lengths = wall.points.map((_, e) => (reading!.cotes.find((c) => c.ok && c.wall === i && c.edge === e)?.value_cm ?? 0) / 100 || null);
+    await call("plan.trace", { points: wall.points, closed: wall.closed, lengths, cote_status: "lu", cote_sigma: 2, prior: 0.3 });
+  }
+  await update();
+  for (const opening of reading!.openings) await call("plan.place", { type: opening.type, point: opening.point }).catch(() => {});
+  reading = null;
+  await refreshPlan();
+}
+
 async function refreshPlan() {
   await update();
   await loadPlan();
@@ -351,6 +402,7 @@ async function loadPlan() {
   if (!info) return;
   [built, land, sketch] = await Promise.all([call<Built[]>("plan.walls"), call<Cadastre>("plan.cadastre"), call<Sketch>("plan.sketch")]);
   if (sketch) await host.allowAssets([sketch.path]).catch(() => {});
+  if (sketch?.points && !vision) vision = await call<{ vision_ready?: boolean }>("ai.status").catch(() => null);
   placeSketch(sketch);
   paint();
 }
@@ -368,8 +420,9 @@ async function act(text: string, task: () => Promise<unknown>) {
   try {
     await task();
   } finally {
-    pending = "";
+    pending = detail = "";
     render();
+    paint();
   }
 }
 
@@ -509,7 +562,9 @@ function paint() {
   const step = mode === "guide" ? guide.step : 0;
   const measured = walls().filter((w) => w.component && w.component === proposal?.measure), house = land?.created.length ? [] : land?.house?.points ?? [];
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
-  showWalls(step === 4 && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline]
+  const read = (reading?.walls ?? []).flatMap((wall, w) => wall.points.slice(0, wall.closed ? undefined : -1).map((a, i) => ({
+    a, b: wall.points[(i + 1) % wall.points.length], height: 2.5, tone: "doubt", on: kept.has(w), text: i ? "" : `Croquis ${w + 1}` })));
+  showWalls(step === 4 && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline, ...read]
     : step === 5 ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
   if (step) highlight(step === 5 ? proposal?.measure ?? null : null, 0xf5c451);
 }
@@ -525,7 +580,7 @@ function render() {
   if (!guided) return;
   renderRail();
   const bar = Object.assign(el("progress"), { max: 1, ariaLabel: "Calcul en cours" });
-  panel.replaceChildren(...pending ? [intro(guide.step, pending, "Un instant : l'appli calcule le plan."), bar] : VIEWS[(info && !creating ? guide.step : 1) - 1]());
+  panel.replaceChildren(...pending ? [intro(guide.step, pending, detail || "Un instant : l'appli calcule le plan."), bar] : VIEWS[(info && !creating ? guide.step : 1) - 1]());
 }
 
 async function save(change: Partial<Guide> = {}) {
@@ -600,5 +655,10 @@ document.addEventListener("plans3d:clicked", () => run(async () => {
   render();
 }));
 document.addEventListener("plans3d:scene", () => setTimeout(paint));
+onEvent((event) => {
+  if (!pending || event.event !== "progress" || !["ai.pull", "plan.read_sketch"].includes(String(event.method))) return;
+  detail = String(event.message ?? "");
+  render();
+});
 
 render();

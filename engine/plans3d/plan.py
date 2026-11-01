@@ -1,4 +1,4 @@
-import os, shutil
+import io, json, os, re, shutil
 import numpy as np
 from . import cadastre, components
 from .rpc import cotes_add, project_meta, rpc
@@ -27,7 +27,7 @@ def wall_ends(comp, values):
     return [np.array([components.evaluate(comp['expressions'][f'{end}_{axis}'], values) for axis in 'xz']) for end in ('start', 'end')]
 
 
-def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward=False, sigma=CLICK_SIGMA_M, source='tracé'):
+def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward=False, sigma=CLICK_SIGMA_M, source='tracé', cote_status='mesuré', cote_sigma=TYPED_SIGMA_CM):
     project = ctx.require_project(); points = np.asarray(points, float).reshape(-1, 2); n = len(points)
     edges = list(range(n if closed else n - 1)); after = lambda e: (e + 1) % n
     if len(edges) < (3 if closed else 1): raise ValueError('tracé : au moins 2 points, 3 pour une pièce fermée')
@@ -63,13 +63,13 @@ def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward
     project.db.commit(); values = current_values(project); loaded = components.load(project); os.makedirs(os.path.join(project.folder, 'sources'), exist_ok=True)
     for e, length in zip(edges, lengths or []):
         if length: cotes_add(ctx, f'trace_{ids[e]}', components.measure_expr((loaded[ids[e]], 'a'), (loaded[ids[e]], 'b'), values=values), float(length) * 100,
-                             TYPED_SIGMA_CM, label=f'{labels[e]} — longueur saisie')
+                             float(cote_sigma), label=f"{labels[e]} — longueur {'lue sur le croquis' if cote_status == 'lu' else 'saisie'}", status=cote_status)
     return {'created': ids}
 
 
 @rpc('plan.trace')
-def rpc_trace(ctx, points, closed=True, lengths=None):
-    return trace(ctx, points, closed, lengths)
+def rpc_trace(ctx, points, closed=True, lengths=None, cote_status='mesuré', cote_sigma=TYPED_SIGMA_CM, prior=CLICK_SIGMA_M):
+    return trace(ctx, points, closed, lengths, sigma=float(prior), cote_status=cote_status, cote_sigma=cote_sigma)
 
 
 @rpc('plan.place')
@@ -151,3 +151,90 @@ def from_cadastre(ctx, create=False):
         for name in comp['params']: prior(project, comp_id, name, project.params()[name][0], CADASTRE_SIGMA_M, f'{name} (cadastre)')
         project.db.commit(); summary['created'].append(comp_id)
     return summary
+
+
+SKETCH_PIXELS, SKETCH_TOLERANCE, STRAIGHT_DEG, TEXT_M = 1280, 0.2, 6.0, 1.5
+SKETCH_ASK = {
+    'corners': 'Locate every corner of the drawn walls, following the outline in order. Output JSON: [{"point_2d": [x, y], "label": "corner"}]',
+    'texts': 'Locate the handwritten dimension texts (lengths such as 4 m or 350). Output JSON: [{"bbox_2d": [x1, y1, x2, y2], "text_content": "..."}]',
+    'openings': 'Locate the doors and windows drawn on the plan. Output JSON: [{"bbox_2d": [x1, y1, x2, y2], "label": "door"}] with label door, window or french window.'}
+OPENING_LABELS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre'}
+
+
+def calibration(found):
+    (u0, v0), (u1, v1) = found['points']; k = found['length'] / np.hypot(u1 - u0, v1 - v0); angle = np.arctan2(v1 - v0, u1 - u0); c, s = np.cos(angle), np.sin(angle)
+    return lambda u, v: np.array([k * (c * (u - u0) + s * (v - v0)), k * (c * (v - v0) - s * (u - u0))])
+
+
+def listed(content):
+    found = re.search(r'\[.*\]', str(content), re.S)
+    try: data = json.loads(found[0]) if found else []
+    except ValueError: data = []
+    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+
+def numbers(value, count):
+    try: values = [float(v) for v in value]
+    except (TypeError, ValueError): return None
+    return values if len(values) == count else None
+
+
+def straighten(points):
+    points = [p.copy() for p in points]; n = len(points)
+    for e in range(n):
+        a, b = points[e], points[(e + 1) % n]; angle = abs(np.degrees(np.arctan2(b[1] - a[1], b[0] - a[0]))) % 180
+        if min(angle, 180 - angle) < STRAIGHT_DEG: a[1] = b[1] = (a[1] + b[1]) / 2
+        elif abs(angle - 90) < STRAIGHT_DEG: a[0] = b[0] = (a[0] + b[0]) / 2
+    return points
+
+
+def written(text):
+    found = re.search(r'(\d+(?:[.,]\d+)?)\s*(cm|m)?', str(text))
+    if not found: return None
+    number = float(found[1].replace(',', '.'))
+    return number * 100 if found[2] == 'm' or (found[2] is None and number < 30) else number
+
+
+def nearest_edge(points, point):
+    best = None
+    for e in range(len(points)):
+        p, q = points[e], points[(e + 1) % len(points)]; t = np.clip((point - p) @ (q - p) / ((q - p) @ (q - p)), 0, 1)
+        distance = np.linalg.norm(point - p - t * (q - p))
+        if distance < TEXT_M and (best is None or distance < best[0]): best = (distance, e, float(np.linalg.norm(q - p)))
+    return best
+
+
+@rpc('plan.read_sketch', long=True)
+def read_sketch(ctx, progress=None):
+    from PIL import Image
+    from . import ai
+    found, progress = sketch(ctx), progress or (lambda *a: None)
+    if not found or not found.get('points'): raise ValueError('croquis : cale-le d’abord (2 points et leur distance)')
+    with Image.open(found['path']) as image:
+        image = image.convert('RGB'); k = min(1.0, SKETCH_PIXELS / max(image.size))
+        small = image.resize((round(image.width * k), round(image.height * k))) if k < 1 else image
+        buffer = io.BytesIO(); small.save(buffer, 'PNG')
+    to_m = calibration(found); metres = lambda u, v: to_m(u / k, v / k); answers, model = {}, ''
+    for step, (key, question) in enumerate(SKETCH_ASK.items()):
+        progress(step / 3, ('Lecture des murs', 'Lecture des cotes', 'Lecture des portes et fenêtres')[step])
+        content, model = ai.ask_image(question, buffer.getvalue(), lambda *a: None); answers[key] = listed(content)
+    corners = [metres(*xy) for xy in (numbers(item.get('point_2d'), 2) for item in answers['corners']) if xy]
+    corners = [p for i, p in enumerate(corners) if all(np.linalg.norm(p - q) >= 0.05 for q in corners[:i])]
+    walls, cotes, openings = [], [], []
+    if len(corners) >= 3:
+        middle = np.mean(corners, 0); corners = straighten(sorted(corners, key=lambda p: np.arctan2(p[1] - middle[1], p[0] - middle[0])))
+        walls.append({'points': [p.round(3).tolist() for p in corners], 'closed': True,
+                      'length': float(sum(np.linalg.norm(corners[(e + 1) % len(corners)] - corners[e]) for e in range(len(corners))))})
+    for item in answers['texts']:
+        box, value = numbers(item.get('bbox_2d'), 4), written(item.get('text_content', ''))
+        if not box or not value: continue
+        edge = nearest_edge(corners, metres((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)) if walls else None
+        gap = abs(value / 100 - edge[2]) / (value / 100) if edge else 1.0; ok = bool(edge) and gap <= SKETCH_TOLERANCE
+        message = '' if ok else f"{value:g} cm écrits pour {edge[2]:.2f} m dessinés ({gap:.0%} d'écart)".replace('.', ',') if edge else 'aucun mur dessiné à côté'
+        cotes.append({'texte': str(item.get('text_content', ''))[:40], 'value_cm': float(value), 'drawn_m': edge and edge[2], 'ok': ok, 'message': message,
+                      'wall': 0 if edge else None, 'edge': edge and edge[1]})
+    for item in answers['openings']:
+        box, kind = numbers(item.get('bbox_2d'), 4), OPENING_LABELS.get(str(item.get('label', '')).lower())
+        if box and kind: openings.append({'type': kind, 'point': metres((box[0] + box[2]) / 2, (box[1] + box[3]) / 2).round(3).tolist()})
+    progress(1.0, 'Croquis lu')
+    return {'walls': walls, 'cotes': cotes, 'openings': openings, 'model': model}

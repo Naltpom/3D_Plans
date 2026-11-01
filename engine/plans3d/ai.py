@@ -1,8 +1,8 @@
-import json, math, os, re, shutil, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+import base64, json, math, os, re, shutil, subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from . import furniture as F, layout as L
 from .rpc import RpcError, rpc
 
-URL, MODEL = 'http://127.0.0.1:11434/v1', 'qwen2.5:7b-instruct'
+URL, MODEL, VISION = 'http://127.0.0.1:11434/v1', 'qwen2.5:7b-instruct', 'qwen2.5vl:7b'
 SETTINGS = os.path.join(os.path.dirname(F.FOLDER), 'settings.json')
 OLLAMA = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe')
 WINGET = ['winget', 'install', '--id', 'Ollama.Ollama', '-e', '--silent', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity']
@@ -38,11 +38,11 @@ def read():
 
 def settings():
     saved = read().get('ai')
-    return {'url': URL, 'model': MODEL, 'key': '', **{k: v for k, v in (saved if isinstance(saved, dict) else {}).items() if k in ('url', 'model', 'key') and isinstance(v, str)}}
+    return {'url': URL, 'model': MODEL, 'vision': VISION, 'key': '', **{k: v for k, v in (saved if isinstance(saved, dict) else {}).items() if k in ('url', 'model', 'vision', 'key') and isinstance(v, str)}}
 
 
 def local(s): return urllib.parse.urlsplit(s['url']).hostname in LOCAL
-def public(s): return {'url': s['url'], 'model': s['model'], 'key': bool(s['key']), 'local': local(s)}
+def public(s): return {'url': s['url'], 'model': s['model'], 'vision': s['vision'], 'key': bool(s['key']), 'local': local(s)}
 def installed(): return shutil.which('ollama') or (OLLAMA if os.path.exists(OLLAMA) else None)
 
 
@@ -61,8 +61,8 @@ def request(s, path, body=None, timeout=5.0):
 
 
 @rpc('ai.settings')
-def settings_(ctx, url=None, model=None, key=None):
-    s, changes = settings(), {k: str(v).strip() for k, v in (('url', url), ('model', model), ('key', key)) if v is not None}
+def settings_(ctx, url=None, model=None, key=None, vision=None):
+    s, changes = settings(), {k: str(v).strip() for k, v in (('url', url), ('model', model), ('key', key), ('vision', vision)) if v is not None}
     if changes.get('url', s['url']).rstrip('/') != s['url'].rstrip('/'): changes.setdefault('key', '')
     if changes:
         s.update(changes)
@@ -78,7 +78,7 @@ def status(ctx):
     try: data = request(s, '/models', timeout=3)
     except RpcError as e: return {**out, 'error': str(e)}
     models = {m.get('id') for m in (data.get('data') if isinstance(data, dict) else None) or [] if isinstance(m, dict)}
-    return {**out, 'server': True, 'ready': s['model'] in models or f"{s['model']}:latest" in models}
+    return {**out, 'server': True, 'ready': s['model'] in models or f"{s['model']}:latest" in models, 'vision_ready': s['vision'] in models or f"{s['vision']}:latest" in models}
 
 
 def winget(progress):
@@ -114,11 +114,11 @@ def install(ctx, progress=None):
 
 
 @rpc('ai.pull', long=True)
-def pull(ctx, progress=None):
+def pull(ctx, vision=False, progress=None):
     with LOCK:
-        s = settings(); totals, done = {}, {}
-        req = urllib.request.Request(re.sub(r'/v1$', '', s['url'].rstrip('/')) + '/api/pull', json.dumps({'model': s['model']}).encode(), {'Content-Type': 'application/json'})
-        progress(0.0, f"Téléchargement de {s['model']}…")
+        s = settings(); totals, done = {}, {}; name = s['vision' if vision else 'model']
+        req = urllib.request.Request(re.sub(r'/v1$', '', s['url'].rstrip('/')) + '/api/pull', json.dumps({'model': name}).encode(), {'Content-Type': 'application/json'})
+        progress(0.0, f"Téléchargement de {name}…")
         try:
             with opener(s).open(req, timeout=600) as response:
                 for line in filter(bytes.strip, response):
@@ -126,7 +126,7 @@ def pull(ctx, progress=None):
                     if event.get('error'): raise RpcError(f"téléchargement du modèle : {event['error']}")
                     if event.get('total'): totals[event.get('digest')], done[event.get('digest')] = event['total'], event.get('completed', 0)
                     total = sum(totals.values())
-                    if total: progress(0.99 * sum(done.values()) / total, f"Téléchargement de {s['model']} : {sum(done.values()) >> 20} / {total >> 20} Mo")
+                    if total: progress(0.99 * sum(done.values()) / total, f"Téléchargement de {name} : {sum(done.values()) >> 20} / {total >> 20} Mo")
                     else: progress(0.0, str(event.get('status', '')))
         except RpcError: raise
         except (OSError, ValueError) as e: raise RpcError(f"téléchargement du modèle impossible : {getattr(e, 'reason', e)}") from None
@@ -225,6 +225,15 @@ def ask(system, text, progress):
             'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}]}
     answer = request(s, '/chat/completions', body, timeout=600)
     try: return answer['choices'][0]['message']['content'], s['model']
+    except (KeyError, IndexError, TypeError): raise RpcError('réponse du serveur IA inattendue') from None
+
+
+def ask_image(text, png, progress):
+    s = settings(); progress(0.1, f"Lecture par {s['vision']}…")
+    image = {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png).decode()}}
+    body = {'model': s['vision'], 'temperature': 0, 'stream': False, 'messages': [{'role': 'user', 'content': [image, {'type': 'text', 'text': text}]}]}
+    answer = request(s, '/chat/completions', body, timeout=900)
+    try: return answer['choices'][0]['message']['content'], s['vision']
     except (KeyError, IndexError, TypeError): raise RpcError('réponse du serveur IA inattendue') from None
 
 
