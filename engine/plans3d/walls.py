@@ -139,7 +139,7 @@ def create_walls(ctx, source, walls):
     return {'created': list(ids.values())}
 
 
-FIT_M, FIT_SCALE, FIT_WALLS, FIT_DEG = 0.15, (0.5, 2.0), 6, 5.0
+FIT_M, FIT_SCALE, FIT_WALLS, FIT_DEG, FIT_TIE = 0.15, (0.5, 2.0), 6, 5.0, 0.02
 
 
 def turn_matrix(angle):
@@ -176,11 +176,21 @@ def matches(segments, traced, scale, shift):
     return found
 
 
-def best_fit(photo, traced, turn):
+def inside_share(points, traced):
+    if not len(points): return 1.0
+    inside = np.zeros(len(points), bool)
+    for t in traced:
+        (ax, az), (bx, bz) = t['a'], t['b']; x, z = points[:, 0], points[:, 1]
+        crossing = ((az > z) != (bz > z)) & (x < (bx - ax) * (z - az) / np.where(bz == az, 1e-300, bz - az) + ax)
+        inside ^= crossing
+    return float(inside.mean())
+
+
+def best_fit(photo, traced, turn, cameras=np.zeros((0, 2))):
     angles = {round(float(wrap(direction(s['a'], s['b']) - direction(t['a'], t['b']) + flip)), 3) for s in photo for t in traced for flip in (0, np.pi)}
     if turn is not None: angles = {a for a in angles if abs(wrap(a - turn * np.pi / 2)) < np.radians(20)}
-    best = (0.0, None)
-    for angle in angles:
+    best, rank = (0.0, None), (False, 0.0)
+    for angle in sorted(angles, key=abs):
         segments = [{**w, 'a': rotate(np.array(w['a']), angle), 'b': rotate(np.array(w['b']), angle)} for w in photo]
         pairs = [(s, t) for s in segments for t in traced if abs(wrap(direction(s['a'], s['b']) - direction(t['a'], t['b']), np.pi)) < np.radians(FIT_DEG)]
         normal = lambda t: np.array([-(t['b'] - t['a'])[1], (t['b'] - t['a'])[0]]) / np.linalg.norm(t['b'] - t['a'])
@@ -193,8 +203,11 @@ def best_fit(photo, traced, turn):
                     n1, n3 = normal(t), normal(t3)
                     if abs(n1[0] * n3[1] - n1[1] * n3[0]) < 0.3: continue
                     shift = np.linalg.solve(np.array([n1, n3]), [n1 @ t['a'] - scale * n1 @ s['a'], n3 @ t3['a'] - scale * n3 @ s3['a']])
-                    found = matches(segments, traced, scale, shift); score = sum(fit for *_, fit in found)
-                    if score > best[0]: best = (score, (angle, scale, shift, found))
+                    found = matches(segments, traced, scale, shift)
+                    if not found: continue
+                    score = sum(fit for *_, fit in found) * (0.2 + 0.8 * inside_share(scale * np.array([rotate(c, angle) for c in cameras]).reshape(-1, 2) + shift, traced))
+                    order = (any(seg['id'] == photo[0]['id'] and t is traced[0] for seg, t, _ in found), -abs(angle))
+                    if score > best[0] * (1 + FIT_TIE) or score >= best[0] * (1 - FIT_TIE) and order > rank: best, rank = (score, (angle, scale, shift, found)), order
     return best[1]
 
 
@@ -202,7 +215,9 @@ def best_fit(photo, traced, turn):
 def fit_walls(ctx, source='photos', turn=None):
     project = ctx.require_project(); found = proposals(project, source); traced = traced_walls(project, source)
     photo = sorted((w for w in found['walls'] if w['sure'] and not w['component']), key=lambda w: -w['length'])[:FIT_WALLS]
-    fit = best_fit(photo, traced, None if turn is None else int(turn)) if photo and traced else None
+    _, frame, cache = photos.photo_state(project, source, compute=False); linear_map, offset, _ = photos.project_transform(project, source, frame)
+    cameras = (photos.camera_centers(photos.load_model(cache)) @ linear_map.T + offset)[:, [0, 2]]
+    fit = best_fit(photo, traced, None if turn is None else int(turn), cameras) if photo and traced else None
     if not fit or not any(abs(np.sin(direction(t['a'], t['b']) - direction(u['a'], u['b']))) > 0.5 for _, t, _ in fit[3] for _, u, _ in fit[3]):
         raise ValueError('appariement impossible : il faut au moins 2 murs non parallèles vus sur les photos et tracés')
     angle, factor, shift, paired = fit

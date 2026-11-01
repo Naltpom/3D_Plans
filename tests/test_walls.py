@@ -146,3 +146,13 @@ def test_fit_photos_on_slanted_walls(setup):
     assert np.isfinite(result.sigma[[result.names.index(n) for n in ('photos_s', 'photos_yaw', 'photos_tx', 'photos_tz')]]).all()
     center = photos.cameras(ctx)['cameras'][0]['center'][0::2]
     assert any(center == pytest.approx(turn(*spot), abs=0.05) for spot in (SPOTS[0], (4 - SPOTS[0][0], 5 - SPOTS[0][1])))
+
+
+def test_fit_keeps_cameras_inside(setup):
+    from plans3d import plan
+    ctx, project = setup; plan.rpc_trace(ctx, [[0, 0], [4, 0], [4, 5], [0, 5]], True, [4.0, 5.0, None, None])
+    traced = walls.traced_walls(project, 'photos'); spots = np.array(SPOTS, float)
+    assert walls.inside_share(spots, traced) == 1.0 and walls.inside_share(spots + [10, 0], traced) == 0.0
+    walls.fit_walls(ctx); project.update()
+    centers = np.array([c['center'] for c in photos.cameras(ctx)['cameras']])[:, [0, 2]]
+    assert walls.inside_share(centers, traced) == 1.0 and centers[:, 0].min() > 0 and centers[:, 1].max() < 5
