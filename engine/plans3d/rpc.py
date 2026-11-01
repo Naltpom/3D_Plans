@@ -1,4 +1,5 @@
 import csv, inspect, json, os, re, threading
+import numpy as np
 from datetime import datetime
 from .core import FUNCS, STATUS, compile_expr, next_best as core_next_best, variance_factors as core_variance_factors
 from .project import EXTRACTORS, UNITS, Project, undetermined
@@ -7,6 +8,7 @@ METHODS, LONG_METHODS = {}, set()
 ID_PATTERN = re.compile(r'[\w\-.]+')
 COTES_COLUMNS = ['id', 'expr', 'value', 'sigma', 'unit', 'status', 'label']
 GROUP_FIELDS = {'source', 'status', 'label'}
+MAX_CANDIDATES = 20000
 IMAGE_MAGIC, TIFF_MAGIC = (b'\xff\xd8\xff', b'\x89PNG'), (b'II*\x00', b'MM\x00*')
 HEIC_BRANDS = (b'ftypheic', b'ftypheix', b'ftyphevc', b'ftypmif1', b'ftypmsf1')
 
@@ -241,20 +243,36 @@ def predict(ctx, expr):
     return {'value': value, 'sigma': None if undetermined(result, g) else sigma}
 
 
+
+def default_targets(project, result, components):
+    from .cadastre import cached_sources, param_prefix
+    sources = cached_sources(project.folder); sources = [s for s in sources if s['georeference']] or sources
+    main = next(((param_prefix(s['source']), e) for s in sources for e in s['entites'] if e['type'] == 'parcelle' and e['principal']), None)
+    refs = (main[1].get('refs') or [f"{main[1]['id']}_{i}" for i in range(len(main[1]['pts']))]) if main else []
+    names = {n for c in components if c['type'] != 'terrain' for n in c['params']} | {f'{main[0]}_{r}_{a}' for r in refs for a in 'xz'}
+    return names & set(result.names)
+
+
 @rpc('next_best')
 def next_best(ctx, k=5, targets=None, sigma=0.01):
-    result = require_result(ctx); params = ctx.project.params()
-    if targets is None: targets = sorted({n for g in result.conflicts() for o, _ in g for n in re.findall(r'[A-Za-z_]\w*', o.expr) if n in result._idx}) or None
+    from .components import load
+    result = require_result(ctx); params = ctx.project.params(); components = load(ctx.project).values()
     unknown = sorted(set(targets or ()) - set(result.names))
     if unknown: raise RpcError(f'paramètre inconnu : {", ".join(unknown)}')
+    terrain = {n for c in components if c['type'] == 'terrain' for n in c['params']}
+    if targets is None:
+        scope = default_targets(ctx.project, result, components) or set(result.names) - terrain
+        targets = scope & {n for g in result.conflicts() for o, _ in g for n in re.findall(r'[A-Za-z_]\w*', o.expr)} or scope
+    idx, label = result._idx, lambda n: params[n][2] or n
     by_axis = {}
-    for n in result.names:
-        if n in params and params[n][1] in ('x', 'y', 'z'): by_axis.setdefault(params[n][1], []).append(n)
-    label = lambda n: params[n][2] or n
-    candidates = [(label(n), n, sigma) for names in by_axis.values() for n in names]
-    candidates += [(f'{label(a)} → {label(b)}', f'{a} - {b}', sigma) for names in by_axis.values() for i, a in enumerate(names) for b in names[i + 1:]]
+    for n in sorted(result.names, key=lambda n: -np.nan_to_num(result.sigma[idx[n]], posinf=0)):
+        if n in params and params[n][1] in ('x', 'y', 'z') and n not in terrain: by_axis.setdefault(params[n][1], []).append(n)
+    m = int(np.sqrt(2 * MAX_CANDIDATES / max(len(by_axis), 1)))
+    candidates = [(label(n), n, sigma) for v in by_axis.values() for n in v]
+    candidates += [(f'{label(a)} → {label(b)}', f'{a} - {b}', sigma) for v in by_axis.values() for p, x in enumerate(v[:m]) for y in v[p + 1:m]
+                   for a, b in [sorted((x, y), key=idx.get)]]
     return [{'gain': gain, 'label': lab, 'expr': expr, 'sigma': current}
-            for gain, lab, expr, current in core_next_best(result, candidates, targets, int(k))]
+            for gain, lab, expr, current in core_next_best(result, candidates[:MAX_CANDIDATES], sorted(targets), int(k))]
 
 
 @rpc('variance_factors')

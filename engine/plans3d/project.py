@@ -79,8 +79,9 @@ class Project:
         progress(0.5, 'Résolution')
         P, last = self.params(), self.last_solution()
         res = solve({n: last.get(n, v[0]) for n, v in P.items()}, self.observations(exclude)); t2 = time.perf_counter()
-        from .components import inclusion_warnings
-        res.warnings = scale_guard(res, P) + determination_warnings(res, P) + inclusion_warnings(self, res) + ([] if res.converged else [{'code': 'non_converge', 'message': NOT_CONVERGED}])
+        from .components import inclusion_warnings, load
+        owned = {n for c in load(self).values() for n in c['params']}
+        res.warnings = scale_guard(res, P) + determination_warnings(res, P, owned) + inclusion_warnings(self, res) + ([] if res.converged else [{'code': 'non_converge', 'message': NOT_CONVERGED}])
         progress(0.9, 'Export')
         self.export(res, P)
         res.timing = {'extract_s': t1 - t0, 'solve_s': t2 - t1, 'reextracted': done}
@@ -142,10 +143,11 @@ def scale_guard(res, P):
             [{'code': 'echelle_fragile', 'param': res.names[i], 'obs': o.id, 'message': FRAGILE_WARNING.format(o.label or o.id)} for i, o in fragile])
 
 
-def determination_warnings(res, P):
+def determination_warnings(res, P, owned):
     used = {j for d in res.deps for j in d}
     free = [res.names[j] for j in sorted(used) if not np.isfinite(res.sigma[j])]
     if not free: return []
     ex = ', '.join(P[n][2] or n for n in free[:3]) + (', …' if len(free) > 3 else ''); s = 's' if len(free) > 1 else ''
     return [{'code': 'non_determines', 'params': free, 'inutilises': len(res.x) - len(used),
+             'sans_observation': [n for j, n in enumerate(res.names) if j not in used and n in owned],
              'message': f'{len(free)} paramètre{s} non déterminé{s} (ex. {ex}) : ajoute une cote ou fixe une origine.'}]

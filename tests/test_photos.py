@@ -93,15 +93,15 @@ def test_associate_scale(setup):
     photos.associate(ctx, 'photos', near['id'], '0'); photos.associate(ctx, 'photos', far['id'], 'w')
     result = project.update(); assert 'photos' in result.timing['reextracted']
     assert result.value('photos_s')[0] == pytest.approx(SCALE, rel=1e-3) and result.value('w')[0] == pytest.approx(5.0, abs=1e-4)
-    assert len([o for o in result.obs if o.source == 'photos']) == 2 and not result.contradictions
-    photos.invalidate(project, 'photos'); sigmas = {o.sigma for o in project.update().obs if o.source == 'photos'}
+    assert len([o for o in result.obs if o.source == 'photos' and o.status == 'photo']) == 2 and not result.contradictions
+    photos.invalidate(project, 'photos'); sigmas = {o.sigma for o in project.update().obs if o.source == 'photos' and o.status == 'photo'}
     assert len(sigmas) == 1 and sigmas.pop() == pytest.approx(photos.PLANE_SIGMA_M / result.value('photos_s')[0])
     with pytest.raises(ValueError): photos.associate(ctx, 'photos', far['id'], 'w', sigma=0)
     photos.associate(ctx, 'photos', far['id'], 'w', sigma=0.05); scale = result.value('photos_s')[0]
-    assert sorted(o.sigma * scale for o in project.update().obs if o.source == 'photos') == pytest.approx([photos.PLANE_SIGMA_M, 0.05], rel=1e-3)
+    assert sorted(o.sigma * scale for o in project.update().obs if o.source == 'photos' and o.status == 'photo') == pytest.approx([photos.PLANE_SIGMA_M, 0.05], rel=1e-3)
     assert photos.cameras(ctx)['cameras'][0]['center'][1:] == pytest.approx([CAMERA_HEIGHT, 1.0], abs=0.01)
     photos.unassociate(ctx, 'photos', far['id']); result = project.update()
-    assert [o.id for o in result.obs if o.source == 'photos'] == [f"photos:{near['id']}"]
+    assert [o.id for o in result.obs if o.source == 'photos' and o.status == 'photo'] == [f"photos:{near['id']}"]
 
 
 def test_clicks_point_edge_face(setup, monkeypatch):
@@ -180,3 +180,28 @@ def test_axis_offset_and_old_caches(tmp_path):
     assert list(photos.load_model(str(tmp_path))['orientation']) == [o for _, o in CAMERA_SPOTS]
     project = Project(str(tmp_path)); project.db.execute('create table photos_assoc(source text, plane_id text, expr text, primary key(source, plane_id))')
     photos.ensure_schema(project); assert 'sigma' in [row[1] for row in project.db.execute('pragma table_info(photos_assoc)')]
+
+
+def test_link_images_without_spaces(tmp_path):
+    folder = tmp_path / 'a b' / '28-08-26 part 2'; folder.mkdir(parents=True)
+    for name in ('photo 1.JPG', 'photo 2.jpg'): (folder / name).write_bytes(b'x')
+    image_dir, names = photos.link_images([str(folder / 'photo 1.JPG'), str(folder / 'photo 2.jpg')], str(tmp_path / 'cache dir' / 'images'))
+    assert names == ['00000.jpg', '00001.jpg'] and all(os.path.exists(os.path.join(image_dir, name)) for name in names)
+
+
+def test_yaw_from_clicks(setup, monkeypatch):
+    ctx, project, model, _ = setup; yaw = np.radians(2.6)
+    turn = np.array([[np.cos(yaw), 0, np.sin(yaw)], [0, 1, 0], [-np.sin(yaw), 0, np.cos(yaw)]])
+    known = {'k1:coin': [2.5, 1.0, 3.0], 'k2:coin': [3.0, 0.5, 2.0], 'k3:coin': [1.5, 1.8, 3.5]}
+    anchors = {name: {axis: number for axis, number in zip('xyz', map(photos.number, turn @ point))} for name, point in known.items()}
+    anchors['q:coin'] = {'x': 'qx', 'y': 'qy', 'z': 'qz'}; monkeypatch.setattr(photos, 'anchor_coordinates', lambda project, anchor: anchors[anchor])
+    for name in ('qx', 'qy', 'qz'): project.add_param(name, 2.0, name[1], name)
+    project.db.execute("update params set init=0.45 where name='photos_s'"); project.db.commit()
+    room_q = [3.5, 1.1, 2.6]; known['q:coin'] = room_q
+    for anchor, point in known.items():
+        for i in (0, 3): photos.click(ctx, 'photos', f'img{i}.jpg', *display_pixel(model, i, point), anchor)
+    result = project.update()
+    assert np.degrees(result.value('photos_yaw')[0]) == pytest.approx(2.6, abs=0.1) and result.value('photos_s')[0] == pytest.approx(SCALE, rel=1e-3)
+    assert [result.value(name)[0] for name in ('qx', 'qy', 'qz')] == pytest.approx(turn @ room_q, abs=0.003)
+    project.db.execute("delete from params where name='photos_yaw'"); project.db.commit(); photos.invalidate(project, 'photos')
+    assert not any('yaw' in o.expr for o in project.update().obs)

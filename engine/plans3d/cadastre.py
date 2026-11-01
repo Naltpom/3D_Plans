@@ -6,7 +6,7 @@ from .core import Obs
 from .project import extractor, file_hash
 from .rpc import rpc
 
-SIGMA_COORDINATE, SIGMA_HEIGHT = 0.3, 0.5
+SIGMA_COORDINATE, SIGMA_BDTOPO, SIGMA_HEIGHT = 0.3, 0.5, 0.5
 PDF_POINT_M = 0.0254 / 72
 CROSS_ARM_M, GRID_M, TOUCH_M, SHARED_M = 10.0, 100.0, 0.1, 0.05
 KIND_BY_EXTENSION = {'.pdf': 'cadastre_pdf', '.geojson': 'cadastre_geojson', '.json': 'cadastre_geojson'}
@@ -108,7 +108,7 @@ def read_geojson(path):
             if len(ring) >= 3:
                 entities_found.append(entity(kind, ('léger' if props.get('construction_legere') or props.get('type') == '02' else 'dur') if kind == 'bati' else '',
                                              ring, label, height=props.get('hauteur'),
-                                             sigma=float(props.get('precision_planimetrique') or SIGMA_COORDINATE),
+                                             sigma=SIGMA_BDTOPO if 'precision_planimetrique' in props else SIGMA_COORDINATE,
                                              contenance=(props.get('contenance') or props.get('surface')) if kind == 'parcelle' and len(polygons) == len(polygon) == 1 else None))
     return entities_found, epsg
 
@@ -240,7 +240,7 @@ def extract(path, source_id, kind=None, folder=None):
     prefix, observations, params, counters = param_prefix(source_id), [], {}, {'parcelle': 0, 'bati': 0}
     for e in found:
         e['id'] = ('p' if e['type'] == 'parcelle' else 'b') + str(counters[e['type']]); counters[e['type']] += 1
-        e['observe'] = e['type'] == 'parcelle' or (main_parcel is not None and polygons_gap(e['pts'], main_parcel) <= TOUCH_M)
+        e['observe'] = e['type'] == 'parcelle' and kind != 'cadastre_pdf' or (main_parcel is not None and polygons_gap(e['pts'], main_parcel) <= TOUCH_M)
         e['refs'] = [f"{e['id']}_{i}" for i in range(len(e['pts']))]
     vertices = [(e, i) for e in found if e['observe'] for i, observed in enumerate(e['observed']) if observed]
     points = np.array([e['pts'][i] for e, i in vertices]).reshape(-1, 2)

@@ -7,7 +7,8 @@ from .core import Obs, compile_expr
 from .project import Project, extractor, file_hash
 from .rpc import rpc
 
-PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 4
+YAW_PRIOR_RAD = np.radians(5)
+PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 5
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
@@ -90,14 +91,23 @@ def read_text_model(folder):
     return model, float((errors * tracks).sum() / max(tracks.sum(), 1))
 
 
+def link_images(paths, image_dir):
+    shutil.rmtree(image_dir, ignore_errors=True); os.makedirs(image_dir); names = []
+    for i, path in enumerate(paths):
+        names.append(f'{i:05d}{os.path.splitext(path)[1].lower()}')
+        try: os.link(path, os.path.join(image_dir, names[-1]))
+        except OSError: shutil.copy2(path, os.path.join(image_dir, names[-1]))
+    return image_dir, names
+
+
 def reconstruct(paths, cache, progress=no_progress):
     in_cache = lambda *parts: os.path.join(cache, *parts)
     if os.path.exists(in_cache('meta.json')): return load_json(in_cache('meta.json'))
     os.makedirs(cache, exist_ok=True); timings = {}; started = time.perf_counter()
     lap = lambda key: timings.__setitem__(key, time.perf_counter() - started - sum(timings.values()))
     exif = {path: read_exif(path) for path in paths}; paths = sorted(paths, key=lambda path: (exif[path]['date'], path)); count = len(paths)
-    root = os.path.commonpath([os.path.dirname(path) for path in paths]); names = [os.path.relpath(path, root).replace('\\', '/') for path in paths]
-    database = in_cache('database.db')
+    root = os.path.commonpath([os.path.dirname(path) for path in paths]); originals = [os.path.relpath(path, root).replace('\\', '/') for path in paths]
+    image_dir, names = link_images(paths, in_cache('images')); database = in_cache('database.db')
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
     shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse')); write_lines(in_cache('images.txt'), names)
@@ -105,7 +115,7 @@ def reconstruct(paths, cache, progress=no_progress):
     if len(sizes) == 1 and None not in sizes:
         (width, height), = sizes; focal = (exif[paths[0]]['focal35'] or 26.0) * np.hypot(width, height) / 43.267
         camera = ['--ImageReader.single_camera', '1', '--ImageReader.camera_params', f'{focal:.1f},{focal:.1f},{width / 2},{height / 2},0,0,0,0']
-    run_colmap(['feature_extractor', '--database_path', database, '--image_path', root, '--image_list_path', in_cache('images.txt'),
+    run_colmap(['feature_extractor', '--database_path', database, '--image_path', image_dir, '--image_list_path', in_cache('images.txt'),
                 '--ImageReader.camera_model', 'OPENCV', *camera, '--FeatureExtraction.use_gpu', '1', '--SiftExtraction.max_num_features', '16384'],
                in_cache('features.log'), progress, 0, .1, 'points clés', count)
     lap('features_s')
@@ -120,16 +130,17 @@ def reconstruct(paths, cache, progress=no_progress):
         matcher = ['matches_importer', '--match_list_path', in_cache('pairs.txt'), '--match_type', 'pairs']
     run_colmap([*matcher, '--database_path', database, '--FeatureMatching.use_gpu', '1'], in_cache('matching.log'), progress, .13, .3, 'appariement')
     lap('matching_s')
-    run_colmap(['mapper', '--database_path', database, '--image_path', root, '--output_path', in_cache('sparse')], in_cache('mapper.log'), progress, .3, .95, 'poses', count)
+    run_colmap(['mapper', '--database_path', database, '--image_path', image_dir, '--output_path', in_cache('sparse')], in_cache('mapper.log'), progress, .3, .95, 'poses', count)
     lap('mapper_s'); models = []
     for name in os.listdir(in_cache('sparse')):
         run_colmap(['model_converter', '--input_path', in_cache('sparse', name), '--output_path', in_cache('sparse', name), '--output_type', 'TXT'],
                    in_cache('convert.log'), progress, .95, .95, 'lecture')
         models.append((*read_text_model(in_cache('sparse', name)), name))
     if not models: raise ValueError('COLMAP : aucune photo positionnée')
-    model, reprojection_px, best = max(models, key=lambda item: len(item[0]['names'])); path_of = dict(zip(names, paths))
-    model['orientation'] = np.array([exif[path_of[name]]['orientation'] for name in model['names']]); np.savez(in_cache('model.npz'), **model)
-    meta = {'root': root, 'photos': count, 'registered': len(model['names']), 'models': len(models), 'model': best, 'points': len(model['P']),
+    model, reprojection_px, best = max(models, key=lambda item: len(item[0]['names'])); index = {name: i for i, name in enumerate(names)}
+    model['orientation'] = np.array([exif[paths[index[name]]]['orientation'] for name in model['names']])
+    model['names'] = np.array([originals[index[name]] for name in model['names']]); np.savez(in_cache('model.npz'), **model)
+    meta = {'root': root, 'image_dir': image_dir, 'photos': count, 'registered': len(model['names']), 'models': len(models), 'model': best, 'points': len(model['P']),
             'pairs': pair_count, 'reproj_px': reprojection_px, 'timings': timings}
     json.dump(meta, open(in_cache('meta.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
     return meta
@@ -258,7 +269,8 @@ def plane_summary(axis, normal, members, framed):
     offset = center @ fitted if axis is None else center[axis]
     return {'axis': 'xyz'[axis] if axis is not None else '', 'normal': fitted.round(5).tolist(), 'offset': float(offset),
             'tilt_deg': round(float(np.degrees(np.arccos(min(1.0, abs(fitted[component]))))), 2), 'n': len(members), 'sigma': float(distances.std()),
-            'sigma_offset': float(distances.std() / np.sqrt(len(members))), 'bbox': [inliers.min(0).round(4).tolist(), inliers.max(0).round(4).tolist()]}
+            'sigma_offset': float(distances.std() / np.sqrt(len(members))), 'center': center.round(5).tolist(),
+            'bbox': [inliers.min(0).round(4).tolist(), inliers.max(0).round(4).tolist()]}
 
 
 def plane_center(plane):
@@ -404,8 +416,26 @@ def triangulate(model, cameras, group):
     return np.linalg.solve(sum(projectors), sum(p @ centers[i] for p, (_, i, *_) in zip(projectors, group))), spread
 
 
+def yaw_name(project, source):
+    return f'{source}_yaw' if project.db.execute('select 1 from params where name=?', (f'{source}_yaw',)).fetchone() else '0'
+
+
+def axis_expression(source, yaw, expr, axis, along, across=0.0):
+    position = f'(({expr}) - {source}_t{axis}) / {source}_s'
+    if axis == 'y' or yaw == '0': return position, float(along)
+    turn = f' - (cos({yaw}) - 1) * {number(along)}'
+    if across: turn += f' {"-" if axis == "x" else "+"} sin({yaw}) * ({number(across)})'
+    return position + turn, float(along)
+
+
+def rotated_terms(source, yaw, coordinates):
+    delta = {axis: f'(({coordinates[axis]}) - {source}_t{axis})' if axis in coordinates else '0' for axis in 'xyz'}
+    if yaw == '0': return [delta['x'], delta['y'], delta['z'], f'{source}_s']
+    return [f'(cos({yaw}) * {delta["x"]} - sin({yaw}) * {delta["z"]})', delta['y'], f'(sin({yaw}) * {delta["x"]} + cos({yaw}) * {delta["z"]})', f'{source}_s']
+
+
 def click_observations(project, source, model, frame, scale_estimate):
-    rotation, offset = mapped_frame(project, source, frame); cameras = rotation_matrices(model['q']); clicks = {}
+    rotation, offset = mapped_frame(project, source, frame); cameras = rotation_matrices(model['q']); clicks = {}; yaw = yaw_name(project, source)
     for click_id, image, u, v, anchor in project.db.execute('select id, image, u, v, anchor from photos_clicks where source=? order by id', (source,)):
         try: coordinates = anchor_coordinates(project, anchor); i = image_index(model, image)
         except ValueError: continue
@@ -414,44 +444,50 @@ def click_observations(project, source, model, frame, scale_estimate):
     observations = []
     for anchor, group in clicks.items():
         coordinates = group[0][4]; known = [axis for axis in 'xyz' if axis in coordinates]
-        terms = [f'(({coordinates[axis]}) - {source}_t{axis})' for axis in known] + [f'{source}_s']
         point, spread = triangulate(model, cameras, group) if len(known) != 2 else (None, 0.0)
         if len(known) == 1:
-            if point is not None: observations.append(face_observation(source, anchor, group, model, rotation, offset, known[0], terms, point, spread, scale_estimate))
+            if point is not None: observations.append(face_observation(source, yaw, anchor, group, model, rotation, offset, known[0], coordinates[known[0]], point, spread, scale_estimate))
             continue
+        terms = rotated_terms(source, yaw, coordinates)
         for click_id, i, x, y, _ in group:
-            to_camera = cameras[i] @ rotation.T; columns = np.column_stack([to_camera[:, 'xyz'.index(axis)] for axis in known] + [model['t'][i] - to_camera @ offset])
+            to_camera = cameras[i] @ rotation.T; columns = np.column_stack([to_camera, model['t'][i] - to_camera @ offset])
             depth_m = scale_estimate * ((cameras[i] @ point + model['t'][i])[2] if point is not None else scene_depth(model, i))
             fx, fy = model['K'][i][:2]; label = f'clic {click_id} sur {anchor}'
             if len(known) == 3:
                 observations += [Obs(f'{source}:clic{click_id}:u', linear(fx / depth_m * (columns[0] - x * columns[2]), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label),
                                  Obs(f'{source}:clic{click_id}:v', linear(fy / depth_m * (columns[1] - y * columns[2]), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label)]
-            else:
-                ray = np.array([x, y, 1.0]); direction = to_camera[:, 'xyz'.index(next(a for a in 'xyz' if a not in known))]
-                normal = -skew(direction) @ columns; scale = depth_m * np.linalg.norm(np.cross(ray, direction)[:2])
-                observations.append(Obs(f'{source}:clic{click_id}:ligne', linear(fx / scale * (ray @ normal), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label))
+                continue
+            ray = np.array([x, y, 1.0]); missing = next(axis for axis in 'xyz' if axis not in known); by_axis = dict(zip('xyz', to_camera.T))
+            parts = {'y': [('', by_axis['y'])], 'x': [(f'cos({yaw})', by_axis['x']), (f'sin({yaw})', by_axis['z'])],
+                     'z': [(f'cos({yaw})', by_axis['z']), (f'sin({yaw})', -by_axis['x'])]}[missing]
+            scale = depth_m * np.linalg.norm(np.cross(ray, parts[0][1])[:2])
+            distance = ' + '.join(f'{factor} * ({linear(fx / scale * (ray @ (-skew(direction) @ columns)), terms)})' if factor else linear(fx / scale * (ray @ (-skew(direction) @ columns)), terms)
+                                  for factor, direction in (parts if yaw != '0' else parts[:1]))
+            observations.append(Obs(f'{source}:clic{click_id}:ligne', distance, 0.0, CLICK_SIGMA_PX, source, 'photo', label))
     return observations
 
 
-def face_observation(source, anchor, group, model, rotation, offset, axis, terms, point, spread, scale_estimate):
+def face_observation(source, yaw, anchor, group, model, rotation, offset, axis, expr, point, spread, scale_estimate):
     centers = camera_centers(model); depth = np.mean([np.linalg.norm(point - centers[i]) for _, i, *_ in group])
     focal = np.mean([model['K'][i][0] for _, i, *_ in group]); sigma = max(CLICK_SIGMA_PX * depth / focal / spread, 0.005 / scale_estimate)
-    return Obs(f'{source}:face:{anchor}', f'({terms[0]}) / {source}_s', float((rotation @ point + offset)['xyz'.index(axis)]), sigma, source, 'photo',
-               f'face {anchor} ({len(group)} clics)')
+    mapped = rotation @ point + offset; other = 'z' if axis == 'x' else 'x'
+    expression, value = axis_expression(source, yaw, expr, axis, mapped['xyz'.index(axis)], mapped['xyz'.index(other)])
+    return Obs(f'{source}:face:{anchor}', expression, value, sigma, source, 'photo', f'face {anchor} ({len(group)} clics)')
 
 
 @extractor('photos_colmap')
 def photos_colmap(path, source):
     project = Project(os.path.dirname(os.path.dirname(os.path.abspath(path))))
     _, frame, cache = photo_state(project, source); mapping = axis_mapping(project, source); scale = resolved_scale(project, source, frame['s_est'])
+    yaw = yaw_name(project, source)
     planes = {name: plane for plane in frame['planes'] for name in [plane['id'], *plane.get('aliases', [])]}; observations, seen = [], set()
     for plane_id, expr, sigma_m in project.db.execute('select plane_id, expr, sigma from photos_assoc where source=? order by plane_id', (source,)):
         plane = planes.get(plane_id)
         if not plane or not plane['axis'] or (plane['id'], expr) in seen: continue
-        axis, sign = mapping[plane['axis']]; seen.add((plane['id'], expr))
-        observations.append(Obs(f'{source}:{plane_id}', f'(({expr}) - {source}_t{axis}) / {source}_s', sign * plane['offset'],
-                                (sigma_m or PLANE_SIGMA_M) / scale, source, 'photo', f'plan {plane["id"]} ({axis})'))
+        axis, sign = mapping[plane['axis']]; seen.add((plane['id'], expr)); expression, value = axis_expression(source, yaw, expr, axis, sign * plane['offset'])
+        observations.append(Obs(f'{source}:{plane_id}', expression, value, (sigma_m or PLANE_SIGMA_M) / scale, source, 'photo', f'plan {plane["id"]} ({axis})'))
     observations += click_observations(project, source, load_model(cache), frame, scale)
+    if yaw != '0': observations.append(Obs(f'{source}:lacet', yaw, 0.0, YAW_PRIOR_RAD, source, 'supposé', 'lacet des photos a priori'))
     project.db.close(); return observations
 
 
@@ -462,14 +498,15 @@ def resolved_scale(project, source, fallback):
 
 def current_values(project, source):
     values = {name: init for name, init in project.db.execute('select name, init from params where name like ?', (f'{source}%',))}
-    model = project.model()
-    if model: values.update({name: p['value'] for name, p in model['params'].items() if name in values})
-    return values.get(f'{source}_s', 1.0), np.array([values.get(f'{source}_t{axis}', 0.0) for axis in 'xyz']), model is not None
+    solved = os.path.exists(model_path := os.path.join(project.folder, 'model.json'))
+    if solved: values.update({name: p['value'] for name, p in load_json(model_path)['params'].items() if name in values})
+    yaw = values.get(f'{source}_yaw', 0.0); turn = np.array([[np.cos(yaw), 0, np.sin(yaw)], [0, 1, 0], [-np.sin(yaw), 0, np.cos(yaw)]])
+    return values.get(f'{source}_s', 1.0), np.array([values.get(f'{source}_t{axis}', 0.0) for axis in 'xyz']), turn, solved
 
 
 def project_transform(project, source, frame):
-    scale, translation, solved = current_values(project, source); rotation, offset = mapped_frame(project, source, frame)
-    return scale * rotation, scale * offset + translation, solved
+    scale, translation, turn, solved = current_values(project, source); rotation, offset = mapped_frame(project, source, frame)
+    return scale * turn @ rotation, scale * turn @ offset + translation, solved
 
 
 def project_to_display(model, i, linear_map, shift, points_m):
@@ -482,15 +519,21 @@ def project_to_display(model, i, linear_map, shift, points_m):
     return [[float(a), float(b)] if d > 0 else None for a, b, d in zip(u, v, depth)], size, orientation
 
 
+def ensure_params(project, source):
+    existing = project.params()
+    for name, axis, label, init in [(f'{source}_s', 'échelle', 'm par unité photo', 1.0), (f'{source}_yaw', 'photo', 'lacet des photos (rad)', 0.0)] + [
+            (f'{source}_t{a}', 'photo', f'translation {a} des photos', 0.0) for a in 'xyz']:
+        if name not in existing: project.add_param(name, init, axis, label)
+
+
 @rpc('photos.add')
 def add(ctx, paths, source='photos'):
     project = ctx.require_project(); source = re.sub(r'\W', '_', source); os.makedirs(os.path.join(project.folder, 'sources'), exist_ok=True)
     manifest = os.path.join(project.folder, 'sources', f'{source}.photos.txt'); old = read_manifest(manifest) if os.path.exists(manifest) else []
     photos = old + [path for path in dict.fromkeys(expand_paths(paths)) if path not in old]
     if not photos: raise ValueError('aucune photo')
-    write_lines(manifest, photos); project.add_source(source, manifest, 'photos_colmap'); existing = project.params()
-    for name, axis, label, init in [(f'{source}_s', 'échelle', 'm par unité photo', 1.0)] + [(f'{source}_t{a}', 'photo', f'translation {a} des photos', 0.0) for a in 'xyz']:
-        if name not in existing: project.add_param(name, init, axis, label)
+    write_lines(manifest, photos); project.add_source(source, manifest, 'photos_colmap')
+    ensure_params(project, source)
     return {'source': source, 'manifest': manifest, 'photos': len(photos)}
 
 
@@ -505,7 +548,7 @@ def extract(ctx, source='photos', progress=no_progress):
 def densify(ctx, source='photos', max_size=1000, progress=no_progress):
     project = ctx.require_project(); meta, _, cache = photo_state(project, source, compute=False); started = time.perf_counter()
     dense = lambda *parts: os.path.join(cache, 'dense', *parts)
-    run_colmap(['image_undistorter', '--image_path', meta['root'], '--input_path', os.path.join(cache, 'sparse', meta['model']), '--output_path', dense(),
+    run_colmap(['image_undistorter', '--image_path', meta.get('image_dir', meta['root']), '--input_path', os.path.join(cache, 'sparse', meta['model']), '--output_path', dense(),
                 '--max_image_size', str(max_size)], os.path.join(cache, 'undistort.log'), progress, 0, .03, 'redressement')
     run_colmap(['patch_match_stereo', '--workspace_path', dense(), '--PatchMatchStereo.geom_consistency', '1'], os.path.join(cache, 'patchmatch.log'),
                progress, .03, .95, 'profondeurs', line_total=2 * meta['registered'])
@@ -518,13 +561,14 @@ def densify(ctx, source='photos', max_size=1000, progress=no_progress):
 def planes(ctx, source='photos'):
     project = ctx.require_project(); _, frame, _ = photo_state(project, source, compute=False); mapping = axis_mapping(project, source)
     associated = {plane_id: (expr, sigma_m) for plane_id, expr, sigma_m in project.db.execute('select plane_id, expr, sigma from photos_assoc where source=?', (source,))}
-    scale, translation, solved = current_values(project, source); listed = []
+    linear_map, shift, solved = project_transform(project, source, frame); listed = []
     for plane in frame['planes']:
         expr, sigma_m = next((associated[name] for name in [plane['id'], *plane.get('aliases', [])] if name in associated), (None, None))
         entry = {**plane, 'expr': expr, 'expr_sigma_m': sigma_m}
         if plane['axis']:
             axis, sign = mapping[plane['axis']]
-            entry.update(proj_axis=axis, proj_offset=sign * plane['offset'], position_m=scale * sign * plane['offset'] + translation['xyz'.index(axis)] if solved else None)
+            center = linear_map @ np.linalg.solve(np.array(frame['R']), np.array(plane.get('center', plane_center(plane))) - frame['t']) + shift
+            entry.update(proj_axis=axis, proj_offset=sign * plane['offset'], position_m=float(center['xyz'.index(axis)]) if solved else None)
         listed.append(entry)
     return {'R': frame['R'], 't': frame['t'], 's_est': frame['s_est'], 'axes': {a: f"{'+' if s > 0 else '-'}{b}" for a, (b, s) in mapping.items()}, 'planes': listed}
 
@@ -538,6 +582,7 @@ def associate(ctx, source, plane_id, expr, sigma=None):
     try: compile_expr(expr, {name: i for i, name in enumerate(project.params())})
     except KeyError as error: raise ValueError(error.args[0]) from None
     if sigma is not None and not float(sigma) > 0: raise ValueError(f'σ invalide : {sigma}')
+    ensure_params(project, source)
     project.db.execute('insert or replace into photos_assoc values (?,?,?,?)', (source, plane_id, expr, None if sigma is None else float(sigma))); invalidate(project, source)
     return {'source': source, 'plane_id': plane_id, 'expr': expr, 'sigma': sigma}
 
@@ -582,6 +627,7 @@ def click(ctx, source, image, u, v, anchor):
     i = image_index(model, image); coordinates = anchor_coordinates(project, anchor); width, height = model['wh'][i]
     limits = (height, width) if int(model['orientation'][i]) in (6, 8) else (width, height)
     if not (0 <= u <= limits[0] and 0 <= v <= limits[1]): raise ValueError(f'clic hors de la photo ({u:.0f}, {v:.0f})')
+    ensure_params(project, source)
     cursor = project.db.execute('insert into photos_clicks(source, image, u, v, anchor) values (?,?,?,?,?)', (source, str(model['names'][i]), float(u), float(v), anchor))
     invalidate(project, source)
     return {'id': cursor.lastrowid, 'kind': {3: 'point', 2: 'arête', 1: 'face'}[len(coordinates)]}

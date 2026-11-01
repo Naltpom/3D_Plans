@@ -10,7 +10,8 @@ EAST, NORTH = 1700112.5, 8200030.0
 PARCEL = [(EAST, NORTH + 10), (EAST + 20, NORTH + 10), (EAST + 20, NORTH), (EAST, NORTH)]
 HOUSE = [(EAST + 4, NORTH + 7), (EAST + 12, NORTH + 7), (EAST + 12, NORTH + 1), (EAST + 4, NORTH + 1)]
 SHED = [(EAST + 15, NORTH + 9), (EAST + 18, NORTH + 9), (EAST + 18, NORTH + 7), (EAST + 15, NORTH + 7)]
-NEIGHBOUR = [(EAST - 100, NORTH + 15), (EAST - 1, NORTH + 15), (EAST - 1, NORTH), (EAST - 100, NORTH)]
+NEIGHBOUR = [(EAST - 100, NORTH + 15), (EAST, NORTH + 15), (EAST, NORTH - 5), (EAST - 100, NORTH - 5)]
+FAR = [(EAST + 30, NORTH + 10), (EAST + 50, NORTH + 10), (EAST + 50, NORTH), (EAST + 30, NORTH)]
 
 
 def make_pdf(path, scale_x, scale_y, cross=None):
@@ -19,7 +20,7 @@ def make_pdf(path, scale_x, scale_y, cross=None):
     page.insert_text((40, 72), 'Coordonnées en projection : RGF93CC49', fontsize=8)
     page.draw_rect(pymupdf.Rect(60, 200, 535, 800), color=(0, 0, 0), width=0.8)
     to_page = lambda e, n: pymupdf.Point(297.5 + (e - EAST - 10) * 1000 / scale_x * POINTS_PER_MM, 500 - (n - NORTH - 5) * 1000 / scale_y * POINTS_PER_MM)
-    for ring, fill in ((HOUSE, (1, .8, .2)), (SHED, (1, .9, .6)), (PARCEL, None), (NEIGHBOUR, None)):
+    for ring, fill in ((HOUSE, (1, .8, .2)), (SHED, (1, .9, .6)), (PARCEL, None), (NEIGHBOUR, None), (FAR, None)):
         points = [to_page(*p) for p in ring]
         page.draw_polyline(points + points[:1], color=None if fill else (0, 0, 0), fill=fill, width=0.5)
     if cross:
@@ -65,6 +66,7 @@ def test_pdf_stated_scale(tmp_path):
     assert neighbour['partiel'] and sum(o.id.startswith(f"plan:{neighbour['id']}_") for o in observations) == 4
     assert all(o.status == 'lu' and o.sigma == cadastre.SIGMA_COORDINATE and o.expr in params for o in observations)
     assert 'plan_p0_0_x' in params and len(observations) == 2 * (4 + 4 + 4 + 2)
+    assert [e['observe'] for e in data['entites'] if e['type'] == 'parcelle'] == [True, True, False]
 
 
 def test_stretched_pdf_georeferenced_on_geojson(tmp_path):
@@ -79,7 +81,7 @@ def test_stretched_pdf_georeferenced_on_geojson(tmp_path):
     result = project.update(); shapes = cadastre.geometry(project.folder, result)
     house = next(e for e in shapes['entites'] if e['source'] == 'parcelle' and e['type'] == 'bati')
     assert house['principal'] and house['h'] == pytest.approx(6.0)
-    assert result.value('parcelle_b0_h')[1] == pytest.approx(0.5, rel=1e-3) and result.value('parcelle_b0_0_x')[1] == pytest.approx(1.5, rel=1e-3)
+    assert result.value('parcelle_b0_h')[1] == pytest.approx(0.5, rel=1e-3) and result.value('parcelle_b0_0_x')[1] == pytest.approx(cadastre.SIGMA_BDTOPO, rel=1e-3)
     assert {e['source'] for e in shapes['entites']} == {'parcelle', 'plan'} and shapes['origine']['source'] == 'parcelle'
 
 
@@ -94,7 +96,7 @@ def test_neighbour_buildings_display_only(tmp_path):
     observed = {e['id']: e['observe'] for e in cadastre.geometry(project.folder)['entites'] if e['source'] == 'batiments'}
     assert observed == {'b0': True, 'b1': False, 'b2': True}
     result = project.update()
-    assert result.value('batiments_b0_0_x')[1] == pytest.approx(1.5, rel=1e-3) and len(result.obs) == 8 + 1 + 2 * 9
+    assert result.value('batiments_b0_0_x')[1] == pytest.approx(cadastre.SIGMA_BDTOPO, rel=1e-3) and len(result.obs) == 8 + 1 + 2 * 9
 
 
 def test_geojson_wgs84_to_lambert93(tmp_path):

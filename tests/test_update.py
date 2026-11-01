@@ -53,7 +53,7 @@ def test_gauge_and_predict(tmp_path):
     for cid, expr, value in (('a', 'w2 - w1', 130), ('b', 'w3 - w2', 60)): call(ctx, 'cotes.add', {'id': cid, 'expr': expr, 'value': value})
     with pytest.raises(RpcError, match='aucun résultat'): call(ctx, 'predict', {'expr': 'w1'})
     (warning,) = call(ctx, 'update', {})['warnings']
-    assert warning == {'code': 'non_determines', 'params': ['w1', 'w2', 'w3'], 'inutilises': 1,
+    assert warning == {'code': 'non_determines', 'params': ['w1', 'w2', 'w3'], 'inutilises': 1, 'sans_observation': [],
                        'message': '3 paramètres non déterminés (ex. w1, w2, w3) : ajoute une cote ou fixe une origine.'}
     distance = call(ctx, 'predict', {'expr': 'w3 - w1'})
     assert distance['value'] == pytest.approx(1.9) and 0 < distance['sigma'] < 0.02 and call(ctx, 'predict', {'expr': 'w1'})['sigma'] is None
@@ -110,4 +110,41 @@ def test_add_auto(tmp_path):
     assert [a['method'] for a in added] == ['sources.add', 'terrain.add', 'cadastre.add', 'photos.add'] and added[0]['kind'] == 'cotes_csv'
     assert {s['kind'] for s in call(ctx, 'sources.list', {})} == {'cotes_csv', 'grille_alti', 'cadastre_geojson', 'photos_colmap'}
     with pytest.raises(RpcError, match='notes.txt : type de fichier non reconnu'): call(ctx, 'sources.add_auto', {'path': str(tmp_path / 'notes.txt')})
+    ctx.project.db.close()
+
+
+def test_default_scope_and_component_params(tmp_path):
+    from plans3d.rpc import default_targets
+    from plans3d.server import load_plugins; load_plugins()
+    ctx = Ctx(); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'scope'})
+    square = lambda e: [[e, 6.6e6], [e + 20, 6.6e6], [e + 20, 6.6e6 + 20], [e, 6.6e6 + 20], [e, 6.6e6]]
+    (tmp_path / 'cad.geojson').write_text(json.dumps({'type': 'FeatureCollection', 'crs': {'type': 'name', 'properties': {'name': 'urn:ogc:def:crs:EPSG::2154'}},
+        'features': [{'type': 'Feature', 'properties': {'numero': str(k)}, 'geometry': {'type': 'Polygon', 'coordinates': [square(7e5 + 40 * k)]}} for k in (1, 2)]}))
+    call(ctx, 'cadastre.add', {'path': str(tmp_path / 'cad.geojson'), 'id': 'cad'})
+    call(ctx, 'components.add', {'type': 'boite', 'id': 'b1', 'options': {'x0': 2.0, 'z0': -5.0}})
+    call(ctx, 'params.add', {'name': 'v1', 'init': 5.0, 'axis': 'x'})
+    call(ctx, 'cotes.add', {'id': 'v', 'expr': 'v1', 'value': 500, 'sigma': 50, 'status': 'lu'})
+    assert call(ctx, 'update', {})['warnings'] == []
+    from plans3d.components import load
+    names = default_targets(ctx.project, ctx.result, load(ctx.project).values())
+    assert {'b1_x0', 'b1_h', 'cad_p0_0_x', 'cad_p0_3_z'} <= names and not any(n.startswith('cad_p1_') or n == 'v1' for n in names)
+    assert call(ctx, 'next_best', {'k': 1, 'targets': sorted(ctx.result.names)})[0]['expr'] == 'v1'
+    assert 'cad_p0_' in call(ctx, 'next_best', {'k': 1})[0]['expr']
+    for name in ('w1', 'w2'): call(ctx, 'params.add', {'name': name, 'init': 1.0, 'axis': 'x'})
+    call(ctx, 'cotes.add', {'id': 'd', 'expr': 'w2 - w1', 'value': 130})
+    (warning,) = call(ctx, 'update', {})['warnings']
+    assert warning['params'] == ['w1', 'w2'] and warning['sans_observation'] == ['b1_x0', 'b1_z0', 'b1_lx', 'b1_lz', 'b1_h']
+    ctx.project.db.close()
+
+
+def test_next_best_cap_and_terrain(tmp_path, monkeypatch):
+    from plans3d import rpc
+    from plans3d.server import load_plugins; load_plugins()
+    cotes = [(f'c{k}', f'w{k}', 100 * k, 'cm', s, 'lu') for k, s in ((1, 1), (2, 10), (3, 20), (4, 30))] + [('t', 'terrain_y_0_0', 100, 'cm', 50, 'lu')]
+    ctx = make_ctx(tmp_path, [(f'w{k}', 'x') for k in range(1, 5)], [])
+    call(ctx, 'components.add', {'type': 'terrain', 'id': 'terrain', 'options': {'nx': 3, 'nz': 3}})
+    for cid, expr, value, unit, sigma, status in cotes: call(ctx, 'cotes.add', {'id': cid, 'expr': expr, 'value': value, 'unit': unit, 'sigma': sigma, 'status': status})
+    call(ctx, 'update', {}); monkeypatch.setattr(rpc, 'MAX_CANDIDATES', 7)
+    assert {c['expr'] for c in call(ctx, 'next_best', {'k': 50})} == {'w1', 'w2', 'w3', 'w4', 'w2 - w3', 'w2 - w4', 'w3 - w4'}
+    assert call(ctx, 'next_best', {'k': 1})[0]['expr'] == 'w4'
     ctx.project.db.close()
