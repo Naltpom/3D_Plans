@@ -1,7 +1,7 @@
 import { call } from "./host";
 import { $, button, cm, el, message, number, run } from "./ui";
 
-type Obs = { id: string; expr: string; value: number; sigma: number; status: string; label: string; resid: number; w: number; source: string };
+type Obs = { id: string; expr: string; value: number; sigma: number; status: string; label: string; resid: number; w: number; source: string; unit: string };
 type Cote = { id: string; expr: string; value: number; sigma: number; unit: string; status: string; label: string };
 type Conflict = { id: string; w: number; label: string }[];
 type Result = {
@@ -68,9 +68,9 @@ function renderCotes() {
   const marked = new Set(focused?.map((c) => c.id));
   fill(coteList, [
     ...obs.map((o) => line(o.label || o.id,
-      `${o.status} · ${o.source} · écart ${o.resid > 0 ? "+" : ""}${cm(o.resid)} (w ${number(o.w)})`,
+      `${o.status} · ${o.source} · écart ${o.resid > 0 ? "+" : ""}${o.unit === "°" ? `${number(o.resid)} °` : cm(o.resid)} (w ${number(o.w)})`,
       `${flagged.has(o.id) ? "conflict" : ""} ${marked.has(o.id) ? "current" : ""}`, removable(o.id), `${o.id} = ${o.expr}`,
-      amount(number(o.value * 100), `${number(o.sigma * 100)} cm`))),
+      o.unit === "°" ? amount(number(o.value), `${number(o.sigma)} °`) : amount(number(o.value * 100), `${number(o.sigma * 100)} cm`))),
     ...cotes.filter((c) => !obs.some((o) => o.id === `cotes:${c.id}`)).map((c) => line(c.label || c.id,
       `${c.status} · à intégrer : mettre à jour`, "pending", removable(`cotes:${c.id}`), `cotes:${c.id} = ${c.expr}`,
       amount(number(c.value), `${number(c.sigma)} ${c.unit}`))),

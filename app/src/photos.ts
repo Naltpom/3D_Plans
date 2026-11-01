@@ -289,6 +289,7 @@ function place() {
 
 function edges(shapes: Shape[]): Point[][] {
   return shapes.flatMap((shape): Point[][] => {
+    if (shape.kind === "mesh") return shape.type === "terrain" ? [] : shape.faces.flatMap((face) => face.map((k, i) => [shape.vertices[k], shape.vertices[face[(i + 1) % face.length]]] as Point[]));
     if (shape.kind === "polygon") return shape.vertices.map(([x, z], i, all) => [[x, shape.y ?? 0, z], [all[(i + 1) % all.length][0], shape.y ?? 0, all[(i + 1) % all.length][1]]]);
     const [cx, cy, cz] = shape.center, [hx, hy, hz] = shape.size.map((v) => v / 2), c = Math.cos(shape.rotY), s = Math.sin(shape.rotY);
     const corner = (i: number) => {

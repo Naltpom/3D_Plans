@@ -212,6 +212,7 @@ def cotes_remove(ctx, id):
 
 @rpc('update', long=True)
 def update(ctx, exclude=(), progress=lambda fraction, message: None):
+    from .components import obs_unit
     project = ctx.require_project()
     with ctx.update_lock: result = ctx.result = project.update(set(exclude), progress)
     params = project.params()
@@ -219,7 +220,7 @@ def update(ctx, exclude=(), progress=lambda fraction, message: None):
             'params': [{'name': n, 'value': x, 'sigma': s, 'axis': params[n][1], 'label': params[n][2]}
                        for n, x, s in zip(result.names, result.x, result.sigma)],
             'conflicts': [[{'id': o.id, 'w': w, 'label': o.label} for o, w in group] for group in result.conflicts()],
-            'obs': [{'id': o.id, 'source': o.source, 'expr': o.expr, 'value': o.value, 'sigma': o.sigma, 'status': o.status, 'label': o.label,
+            'obs': [{'id': o.id, 'source': o.source, 'expr': o.expr, 'value': o.value, 'sigma': o.sigma, 'status': o.status, 'label': o.label, 'unit': obs_unit(o),
                      'resid': resid, 'w': w, 'redundancy': red} for o, resid, w, red in zip(result.obs, result.resid, result.w, result.redundancy)]}
 
 

@@ -8,7 +8,7 @@ export type Shape = {
 type Vec = [number, number, number];
 type Range = [number, number];
 
-const OPACITY: Record<string, number> = { mur: 0.45, fenetre: 0.6, porte_fenetre: 0.6, parcelle: 0.3 };
+const OPACITY: Record<string, number> = { mur: 0.45, fenetre: 0.6, porte_fenetre: 0.6, parcelle: 0.3, toit: 0.7 };
 const EDGES = { ok: 0x202020, large: 0xe8953a, unknown: 0xf07a72 };
 const VIEWS: Record<string, Vec> = { dessus: [0, 1, 1e-4], face: [0, 0, 1], "3d": [0.6, 0.5, 0.8] };
 
@@ -59,11 +59,11 @@ function shapeGeometry(shape: Shape) {
 }
 
 function mesh(shape: Shape) {
-  const geometry = shapeGeometry(shape), terrain = shape.kind === "mesh";
+  const geometry = shapeGeometry(shape), terrain = shape.type === "terrain";
   const opacity = OPACITY[shape.type] ?? 1;
   const material = new THREE.MeshLambertMaterial({
     color: shape.color ?? "#bbbbbb", transparent: opacity < 1, opacity, depthWrite: opacity === 1,
-    side: shape.type === "plafond" ? THREE.BackSide : shape.kind === "polygon" ? THREE.DoubleSide : THREE.FrontSide,
+    side: shape.type === "plafond" ? THREE.BackSide : shape.kind === "box" || terrain ? THREE.FrontSide : THREE.DoubleSide,
     polygonOffset: shape.kind !== "box", polygonOffsetFactor: 1, polygonOffsetUnits: terrain || shape.type === "parcelle" ? 4 : 1,
   });
   const result = new THREE.Mesh(geometry, material);
@@ -74,6 +74,7 @@ function mesh(shape: Shape) {
   result.add(new THREE.LineSegments(terrain ? new THREE.WireframeGeometry(geometry) : new THREE.EdgesGeometry(geometry),
     new THREE.LineBasicMaterial({ color: EDGES[status(shape.sigma_max)], transparent: terrain, opacity: terrain ? 0.25 : 1 })));
   result.userData.id = shape.id;
+  result.userData.known = shape.sigma_max !== null;
   return result;
 }
 
@@ -110,7 +111,8 @@ export function showCameras(cameras: { name: string; center: Vec; R: number[][] 
 document.addEventListener("plans3d:highlight", (event) => highlight((event as CustomEvent<string[]>).detail, 0x8a4a12));
 
 function setView(name: string) {
-  const box = new THREE.Box3().setFromObject(model);
+  const known = model.children.filter((o) => o.userData.known), box = new THREE.Box3();
+  for (const o of known.length ? known : model.children) box.expandByObject(o);
   if (box.isEmpty()) box.set(new THREE.Vector3(-2, 0, -2), new THREE.Vector3(2, 2.5, 2));
   const sphere = box.getBoundingSphere(new THREE.Sphere());
   const half = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.min(1, camera.aspect));

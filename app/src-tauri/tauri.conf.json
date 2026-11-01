@@ -1,6 +1,6 @@
 {
   "productName": "3D_Plans",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.naltpom.plans3d",
   "build": {
     "beforeDevCommand": "python scripts/prepare_runtime.py && npm run dev",

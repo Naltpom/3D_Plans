@@ -225,11 +225,15 @@ def build_box(comp, quantity, initial, components):
     quantity('rot', 'angle', 'rotation autour du coin d’origine', 0.0)
 
 
-def box_corner(comp):
+def rotation(comp):
     expr = comp['expressions']; angle = expr.get('rot', Expr()); k = angle.constant()
     cos, sin = (Expr.of(round(f(math.radians(k)), 12)) for f in (math.cos, math.sin)) if k is not None else (call(f, angle * (math.pi / 180)) for f in ('cos', 'sin'))
-    lx_cos, lx_sin, lz_cos, lz_sin = expr['lx'] * cos, expr['lx'] * sin, expr['lz'] * cos, expr['lz'] * sin
-    return lambda i, j: {'x': expr['x0'] + i * lx_cos + j * lz_sin, 'z': expr['z0'] - i * lx_sin + j * lz_cos}
+    return lambda u, v: {'x': expr['x0'] + u * cos + v * sin, 'z': expr['z0'] - u * sin + v * cos}
+
+
+def box_corner(comp):
+    expr = comp['expressions']; at = rotation(comp)
+    return lambda i, j: at(i * expr['lx'], j * expr['lz'])
 
 
 def box_anchors(comp):
@@ -242,6 +246,33 @@ def box_anchors(comp):
 def box_geometry(comp, evaluate_expr, walls):
     val = evaluated(comp, evaluate_expr); center = box_anchors(comp)['centre']
     return [box_shape([evaluate_expr(center[a]) for a in 'xyz'], [val['lx'], val['h'], val['lz']], math.radians(val.get('rot', 0.0)), color=box_nature(comp)[1])]
+
+
+def build_roof(comp, quantity, initial, components):
+    quantity('x0', 'x', 'coin d’origine (x)', 0.0); quantity('z0', 'z', 'coin d’origine (z)', 0.0)
+    quantity('long', 'dim', 'longueur (le long du faîtage)', 10.0); width = quantity('larg', 'dim', 'largeur', 8.0)
+    quantity('rot', 'angle', 'orientation autour du coin d’origine', 0.0)
+    low, high = quantity('hg', 'y', 'hauteur de gouttière', 3.0), quantity('hf', 'y', 'hauteur de faîtage', 6.0)
+    run = 0.5 * width + quantity('deb', 'dim', 'débord', 0.4)
+    comp['expressions'].update(pente=call('atan2', high - low, run) * (180 / math.pi), egout=high - (high - low) * (0.5 * width) / run)
+
+
+def roof_anchors(comp):
+    expr = comp['expressions']; at = rotation(comp); over, half, end = expr['deb'], 0.5 * expr['larg'], expr['long']
+    def lift(u, v, y): return {**at(u, v), 'y': expr[y]}
+    return {'faitage_a': lift(-over, half, 'hf'), 'faitage_b': lift(end + over, half, 'hf'), 'gouttiere_1': lift(0.5 * end, -over, 'hg'),
+            'gouttiere_2': lift(0.5 * end, expr['larg'] + over, 'hg'), 'pignon_a': lift(0, half, 'hf'), 'pignon_b': lift(end, half, 'hf'),
+            **{f'coin_{i}{j}': at(i * end, j * expr['larg']) for i in (0, 1) for j in (0, 1)}}
+
+
+def roof_geometry(comp, evaluate_expr, walls):
+    expr = comp['expressions']; at = rotation(comp); over, half, end = expr['deb'], 0.5 * expr['larg'], expr['long']
+    def point(u, v, y): xz = at(u, v); return [evaluate_expr(xz['x']), evaluate_expr(expr[y]), evaluate_expr(xz['z'])]
+    ridge = [point(end + over, half, 'hf'), point(-over, half, 'hf')]
+    pans = [[point(-over, v, 'hg'), point(end + over, v, 'hg'), *ridge] for v in (-over, expr['larg'] + over)]
+    gables = [[point(u, 0, 'egout'), point(u, expr['larg'], 'egout'), point(u, half, 'hf')] for u in (0, end)]
+    return ([{'kind': 'mesh', 'vertices': pan, 'faces': [[0, 1, 2], [0, 2, 3]], 'part': f'pan_{k}'} for k, pan in enumerate(pans, 1)] +
+            [{'kind': 'mesh', 'vertices': gable, 'faces': [[0, 1, 2]], 'part': f'pignon_{k}', 'color': TYPES['mur'].color} for k, gable in zip('ab', gables)])
 
 
 ComponentType = namedtuple('ComponentType', 'label build anchors geometry color options')
@@ -258,14 +289,18 @@ TYPES = {
                               {'axe': "montée selon 'x' ou 'z'", 'sens': 'sens de montée (1 ou -1)', 'cote': 'côté de la largeur (1 ou -1)', 'n': 'nombre de hauteurs'}),
     'boite': ComponentType('Boîte', build_box, box_anchors, box_geometry, None, {'nature': f'texte libre ({", ".join(BOX_NATURES)}, …)'}),
     'parcelle': ComponentType('Zone extérieure', build_parcel, polygon_anchors, polygon_geometry, '#6aa84f', {'sommets': 'sommets [[x, z], …]'}),
+    'toit': ComponentType('Toit', build_roof, roof_anchors, roof_geometry, '#b5523b', {}),
 }
 PRIORS = {'mur': {'ep': (0.2, 0.1), 'h': (2.5, 0.2)}, 'porte': {'h': (2.04, 0.05)}, 'fenetre': {'al': (0.9, 0.2)}, 'porte_fenetre': {'h': (2.15, 0.1)},
-          'plafond': {'y': (2.5, 0.2)}, 'escalier': {'g': (0.25, 0.04), 'r': (0.175, 0.02)}, 'boite': {'rot': (None, 2.0)}}
+          'plafond': {'y': (2.5, 0.2)}, 'escalier': {'g': (0.25, 0.04), 'r': (0.175, 0.02)}, 'boite': {'rot': (None, 2.0)},
+          'toit': {'pente': (35.0, 15.0), 'deb': (0.4, 0.3), 'rot': (None, 2.0)}}
+ANGLE_PRIORS = ('rot', 'pente')
 ANCHOR_LABELS = {'a': 'extrémité a', 'b': 'extrémité b', 'a_ext': 'extrémité a, face opposée', 'b_ext': 'extrémité b, face opposée', 'face': 'face',
                  'face_ext': 'face opposée', 'g': 'tableau côté a', 'd': 'tableau côté b', 'g_ext': 'tableau côté a, face opposée',
                  'd_ext': 'tableau côté b, face opposée', 'depart': '1re contremarche', 'arrivee': 'dernière contremarche', 'cote': 'côté',
                  'cote_ext': 'côté opposé', 'x0': 'milieu de la face x min', 'x1': 'milieu de la face x max', 'z0': 'milieu de la face z min',
-                 'z1': 'milieu de la face z max', 'coin_00': 'coin d’origine'}
+                 'z1': 'milieu de la face z max', 'coin_00': 'coin d’origine', 'faitage_a': 'faîtage, extrémité a', 'faitage_b': 'faîtage, extrémité b',
+                 'gouttiere_1': 'gouttière côté origine', 'gouttiere_2': 'gouttière opposée', 'pignon_a': 'sommet du pignon a', 'pignon_b': 'sommet du pignon b'}
 
 
 def fields(type):
@@ -294,32 +329,33 @@ def add(project, type, id, options=None, label=None):
     if type not in TYPES: raise ValueError(f'type inconnu : {type} ({", ".join(TYPES)})')
     components = load(project)
     if not COMPONENT_ID.fullmatch(str(id)) or id in components: raise ValueError(f'identifiant invalide ou déjà pris : {id!r}')
-    options = dict(options or {}); kind = TYPES[type]; existing = project.params(); created, priors = [], []
+    options = dict(options or {}); kind = TYPES[type]; existing = project.params(); created, labels = [], {}
     default_label = str(options.get('nature') or 'meuble').capitalize() if type == 'boite' else kind.label
     comp = {'id': id, 'type': type, 'label': label or f'{default_label} {id}', 'options': options, 'expressions': {}}
 
     def quantity(name, axis, quantity_label, default):
-        value = options.get(name)
+        labels[name] = quantity_label; value = options.get(name)
         value = default if value is None else value
         if isinstance(value, str): expr = Expr.of(value)
         else:
             param = f'{id}_{name}'
             if param in existing: raise ValueError(f'paramètre déjà existant : {param}')
             created.append((param, float(value), axis, f"{comp['label']} — {quantity_label}")); expr = Expr({param: 1.0})
-            prior = PRIORS.get(type, {}).get(name)
-            if prior and options.get('a_priori', True): priors.append((param, float(value) if prior[0] is None else prior[0], prior[1], quantity_label))
         comp['expressions'][name] = expr
         return expr
 
     def initial(expr): return evaluate(expr, {**{n: v[0] for n, v in existing.items()}, **{n: v for n, v, *_ in created}})
 
-    kind.build(comp, quantity, initial, components)
+    kind.build(comp, quantity, initial, components); own = {n for n, *_ in created}
+    priors = [(name, comp['expressions'][name], value, sigma) for name, (value, sigma) in PRIORS.get(type, {}).items()
+              if options.get('a_priori', True) and own & set(NAME.findall(str(comp['expressions'][name])))]
     index = {n: i for i, n in enumerate([*existing, *(n for n, *_ in created)])}
     for expr in comp['expressions'].values(): compile_expr(str(expr), index)
     comp['params'] = [n for n, *_ in created]; source = f'comp:{id}'; db = project.db
     db.executemany('insert into params values (?,?,?,?)', created)
     db.executemany('insert or replace into obs values (?,?,?,?,?,?,?)',
-                   [(f'{source}:{p}', source, p, v, s, PRIOR_STATUS, f"{comp['label']} — {lab} (a priori)") for p, v, s, lab in priors])
+                   [(f'{source}:{id}_{name}', source, str(expr), initial(expr) if value is None else value, sigma, PRIOR_STATUS,
+                     f"{comp['label']} — {labels.get(name, name)} (a priori)") for name, expr, value, sigma in priors])
     db.execute('insert into components values (?,?,?)', (id, type, json.dumps(comp, ensure_ascii=False))); db.commit()
     return comp
 
@@ -333,6 +369,9 @@ def remove(project, comp_id):
     if users: raise ValueError(f'{comp_id} est utilisé par : {", ".join(users[:5])}' + (f', … ({len(users)} au total)' if len(users) > 5 else ''))
     db = project.db; db.executemany('delete from params where name=?', [(n,) for n in own])
     db.execute('delete from obs where source=?', (source,)); db.execute('delete from components where id=?', (comp_id,)); db.commit()
+
+
+def obs_unit(obs): return '°' if obs.source.startswith('comp:') and obs.id.rpartition('_')[2] in ANGLE_PRIORS else 'm'
 
 
 def summary(comp): return {**{k: comp[k] for k in ('id', 'type', 'label', 'options', 'params')}, 'anchors': list(anchors(comp))}

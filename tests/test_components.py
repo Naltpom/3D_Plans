@@ -72,6 +72,17 @@ def test_room(tmp_path):
     assert close(C.geometry(project)[0]['size'], m1['size'])
 
 
+def test_undetermined_wall_does_not_drift(tmp_path):
+    project = build_room(str(tmp_path)); C.add(project, 'mur', 'm5', {'axe': 'x', 'z': 6.0, 'x0': 1.0, 'x1': 3.0})
+    add_tape_measures(project, ROOM_MEASURES + [('m5_l', 'm5:a', 'm5:b', 'dist')], {**TRUE_VALUES, 'm5_x1': 3.5})
+    for _ in range(3):
+        result = project.update(); v = lambda name: result.value(name)[0]
+        assert close(v('m5_z'), 6.0) and close(v('m5_x0') + v('m5_x1'), 4.0) and close(v('m5_x1') - v('m5_x0'), 2.5)
+        assert_recovered(result, TRUE_VALUES)
+    model = project.model(); model['params']['m5_z']['value'] = 868.0
+    with open(os.path.join(project.folder, 'model.json'), 'w', encoding='utf-8') as f: json.dump(model, f)
+    assert close(project.update().value('m5_z')[0], 6.0)
+
 def test_oblique_wall(tmp_path):
     project = build_room(str(tmp_path)); C.add(project, 'mur', 'mb', {'x0': 2.1, 'z0': 0.9, 'x1': 3.4, 'z1': 2.3})
     true_values = {**TRUE_VALUES, 'mb_x0': 2.0, 'mb_z0': 1.0, 'mb_x1': 3.5, 'mb_z1': 2.2}
@@ -126,6 +137,31 @@ def test_rotated_box(tmp_path):
     result = project.update(); rot, sigma = result.value('b2_rot')
     assert 'cos' in expr['dx'] and abs(rot - 31) < 0.1 and 0 < sigma < 0.5
 
+
+def test_roof(tmp_path):
+    project = Project(str(tmp_path)); ctx = Ctx(project=project)
+    C.add(project, 'toit', 't1', {'x0': 1.0, 'z0': 2.0, 'long': 10.0, 'larg': 8.0, 'hg': 3.0, 'hf': 6.0, 'deb': 0.5}); C.add(project, 'toit', 't2', {'rot': 90.0})
+    assert [f['name'] for f in next(t for t in C.rpc_types(ctx) if t['type'] == 'toit')['fields']] == ['x0', 'z0', 'long', 'larg', 'rot', 'hg', 'hf', 'deb']
+    priors = {o.id: (o.expr, o.value, o.sigma) for o in project.observations() if o.source == 'comp:t1'}
+    assert set(priors) == {'comp:t1:t1_pente', 'comp:t1:t1_deb', 'comp:t1:t1_rot'} and priors['comp:t1:t1_pente'][1:] == (35.0, 15.0)
+    assert {o.id: C.obs_unit(o) for o in project.observations() if o.source == 'comp:t1'} == {'comp:t1:t1_pente': '°', 'comp:t1:t1_deb': 'm', 'comp:t1:t1_rot': '°'}
+    values = {n: v for n, (v, _) in C.param_values(project).items()}; roof = C.load(project)['t1']
+    point = lambda comp, name: {a: round(C.evaluate(e, values), 9) for a, e in C.anchor(comp, name).items()}
+    assert point(roof, 'faitage_a') == {'x': 0.5, 'z': 6.0, 'y': 6.0} and point(roof, 'faitage_b') == {'x': 11.5, 'z': 6.0, 'y': 6.0}
+    assert point(roof, 'gouttiere_1') == {'x': 6.0, 'z': 1.5, 'y': 3.0} and point(roof, 'gouttiere_2') == {'x': 6.0, 'z': 10.5, 'y': 3.0}
+    assert point(roof, 'pignon_b') == {'x': 11.0, 'z': 6.0, 'y': 6.0} and point(roof, 'coin_11') == {'x': 11.0, 'z': 10.0}
+    assert point(C.load(project)['t2'], 'faitage_b') == {'x': 4.0, 'z': -10.4, 'y': 6.0}
+    assert close(C.evaluate(roof['expressions']['pente'], values), math.degrees(math.atan2(3, 4.5)))
+    shapes = [s for s in C.geometry(project) if s['id'] == 't1']
+    assert [(s['kind'], s['part']) for s in shapes] == [('mesh', 'pan_1'), ('mesh', 'pan_2'), ('mesh', 'pignon_a'), ('mesh', 'pignon_b')]
+    assert close(sum(shapes[0]['vertices'], []), [0.5, 3, 1.5, 11.5, 3, 1.5, 11.5, 6, 6, 0.5, 6, 6]) and shapes[1]['vertices'][0] == [0.5, 3, 10.5]
+    assert close(sum(shapes[2]['vertices'], []), [1, 6 - 3 * 4 / 4.5, 2, 1, 6 - 3 * 4 / 4.5, 10, 1, 6, 6]) and shapes[2]['color'] == C.TYPES['mur'].color
+    measured = C.rpc_measure(ctx, 't1:gouttiere_1', 't1:faitage_a', 'y')
+    assert measured['expr'] == 't1_hf - t1_hg' and measured['value'] == pytest.approx(3.0)
+    expr = add_tape_measures(project, [('hauteur', 't1:gouttiere_1', 't1:faitage_a', 'y'), ('long', 't1:pignon_a', 't1:pignon_b', 'dist')],
+                             {'t1_hf': 6.4, 't1_long': 11.0})
+    result = project.update(); value, sigma = result.predict(expr['hauteur'])
+    assert abs(value - 3.4) < 0.03 and 0 < sigma < 0.02 and abs(result.value('t1_long')[0] - 11.0) < 0.03
 
 def make_land(tmp_path):
     east, north = 1700112.5, 8200030.0

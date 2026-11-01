@@ -151,8 +151,8 @@ def solve(params, obs, loss='soft_l1'):
     groups, deps = batch([o.expr for o in obs], idx)
     y = np.array([o.value for o in obs], float); sg = np.array([o.sigma for o in obs], float)
     res = lambda x: (evaluate(groups, x, len(obs)) - y) / sg
-    jac = lambda x: jacobian(groups, x, sg) if len(names) > 100 else jacobian(groups, x, sg).toarray()
-    sol = least_squares(res, np.array([params[n] for n in names], float), jac=jac, loss=loss, f_scale=1.0, x_scale='jac', tr_options={'atol': 1e-12, 'btol': 1e-12}, max_nfev=MAX_NFEV)
+    sol = least_squares(res, np.array([params[n] for n in names], float), jac=lambda x: jacobian(groups, x, sg), loss=loss, f_scale=1.0, x_scale='jac',
+                        tr_solver='lsmr', tr_options={'atol': 1e-12, 'btol': 1e-12}, max_nfev=MAX_NFEV)
     x = sol.x; r = res(x); J = jacobian(groups, x, sg)
     wr = (1 + r ** 2) ** -0.25 if loss == 'soft_l1' else np.ones_like(r)
     Jw = J.multiply(wr[:, None]).tocsr(); A = Jw.T @ Jw

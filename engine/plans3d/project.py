@@ -95,7 +95,7 @@ class Project:
     def last_solution(self):
         try:
             m = self.model() or {}
-            return {n: float(p['value']) for n, p in m['params'].items() if np.isfinite(p['value'])} if m.get('converged', True) else {}
+            return {n: float(p['value']) for n, p in m['params'].items() if p['sigma'] is not None and np.isfinite(p['value'])} if m.get('converged', True) else {}
         except (OSError, ValueError, KeyError, TypeError): return {}
 
     def export(self, res, P):

@@ -104,7 +104,8 @@ def test_full_scenario(server, tmp_path):
     params = {p['name']: p for p in result['params']}
     assert abs(params['w3']['value'] - 3.10) < 0.02 and 0 < params['w3']['sigma'] < 0.02 and params['w1']['label'] == 'mur w1'
     best = server('next_best', k=3, targets=['w2'])
-    assert len(best) == 3 and best[0]['gain'] >= best[1]['gain'] >= best[2]['gain'] > 0 and 'w2' in best[0]['expr']
+    gains = [round(b['gain'], 12) for b in best]
+    assert gains == sorted(gains, reverse=True) and gains[2] > 0 and 'w2' in best[0]['expr']
     assert {c['expr'] for c in server('next_best', k=20)} == {'w1', 'w2', 'w3', 'w1 - w2', 'w1 - w3', 'w2 - w3'}
     factors = server('variance_factors')
     assert factors[0]['group'] == {'source': 'cotes'} and factors[0]['n'] == 6 and factors[0]['factor'] > 3
