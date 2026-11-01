@@ -17,7 +17,8 @@ let cursor: Point | null = null;
 let active = "";
 let keyboard = false;
 let changed = () => {};
-let finished = async () => {};
+let finished: (made?: string[]) => Promise<void> = async () => {};
+let rough = false;
 let lengthInput: HTMLInputElement | null = null;
 let angleInput: HTMLInputElement | null = null;
 let hint: HTMLElement | null = null;
@@ -82,8 +83,8 @@ async function finish(closed: boolean) {
   if (points.length < (closed ? 3 : 2)) throw new Error(closed ? "Il faut au moins 3 angles pour fermer la pièce." : "Il faut au moins 2 points.");
   const drawn = { points, closed, lengths: closed ? [...lengths, null] : lengths };
   stop();
-  await call("plan.trace", drawn);
-  await finished();
+  const made = await call<{ created: string[] }>("plan.trace", { ...drawn, ...rough ? { prior: 0.3 } : {} });
+  await finished(rough ? made.created : []);
 }
 
 export function stop() {
@@ -93,7 +94,7 @@ export function stop() {
   changed();
 }
 
-export function trace(walls: () => Wall[], onChange: () => void, onDone: () => Promise<void>) {
+export function trace(walls: () => Wall[], onChange: () => void, onDone: (made?: string[]) => Promise<void>) {
   [active, points, lengths, cursor, changed, finished, existing] = ["trace", [], [], null, onChange, onDone, walls];
   setView("dessus");
   setPointer((x, z) => { cursor = snap(x, z); preview(); }, (x, z) => run(() => add(snap(x, z), null)));
@@ -148,7 +149,11 @@ export function controls() {
   const status = points.length ? `${points.length} angle${points.length > 1 ? "s" : ""} posé${points.length > 1 ? "s" : ""}. Angle 0° vers la droite, 90° vers le haut du plan.`
     : "Clique le premier angle de la pièce dans la vue.";
   magnet = el("p", "status");
-  return [el("p", "", status), magnet, fields, actions];
+  const unsure = Object.assign(el("input"), { type: "checkbox", checked: rough });
+  unsure.onchange = () => { rough = unsure.checked; };
+  const option = el("label", "wall", "");
+  option.append(unsure, el("span", "", "Je ne suis pas sûr de mes murs : chaque mur sera calé sur la surface photo la plus proche (± 30 cm)"));
+  return [el("p", "", status), magnet, fields, option, actions];
 }
 
 export function opacity(sketch: NonNullable<Sketch>) {

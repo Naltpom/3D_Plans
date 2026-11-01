@@ -156,3 +156,24 @@ def test_fit_keeps_cameras_inside(setup):
     walls.fit_walls(ctx); project.update()
     centers = np.array([c['center'] for c in photos.cameras(ctx)['cameras']])[:, [0, 2]]
     assert walls.inside_share(centers, traced) == 1.0 and centers[:, 0].min() > 0 and centers[:, 1].max() < 5
+
+
+def test_holes_classified():
+    rng = np.random.default_rng(5); points = rng.uniform(0, 1, (12000, 2)) * [5.0, 2.5]
+    door = (points[:, 0] > 1.0) & (points[:, 0] < 1.9) & (points[:, 1] < 2.05)
+    window = (points[:, 0] > 2.6) & (points[:, 0] < 3.6) & (points[:, 1] > 1.0) & (points[:, 1] < 2.2)
+    found = sorted(walls.holes(points[~door & ~window], 5.0, 2.5), key=lambda h: h['along'])
+    assert [h['type'] for h in found] == ['porte', 'fenetre']
+    assert found[0]['width'] == pytest.approx(0.9, abs=0.15) and found[0]['height'] == pytest.approx(2.05, abs=0.15)
+    assert found[1]['sill'] == pytest.approx(1.0, abs=0.15) and found[1]['width'] == pytest.approx(1.0, abs=0.15)
+
+
+def test_snap_rough_walls(setup):
+    from plans3d import plan
+    ctx, project = setup; listed = walls.propose_walls(ctx)['walls']
+    xs = sorted({round(w['position'], 3) for w in listed if w['axis'] == 'x' and w['sure']}); zs = sorted({round(w['position'], 3) for w in listed if w['axis'] == 'z' and w['sure']})
+    created = plan.rpc_trace(ctx, [[xs[0] + 0.2, zs[0] - 0.15], [xs[-1] - 0.1, zs[0] - 0.15], [xs[-1] - 0.1, zs[0] + 3.0], [xs[0] + 0.2, zs[0] + 3.0]], True, prior=0.3)['created']
+    paired = walls.snap_walls(ctx, 'photos', created)['pairs']
+    result = project.update(); values = dict(zip(result.names, result.x))
+    assert len(paired) == 3 and not result.contradictions and sorted(round(p['moved_cm']) for p in paired) == [10, 15, 20]
+    assert [values['mur4_x'], values['mur2_x'], values['mur1_z']] == pytest.approx([xs[0], xs[-1], zs[0]], abs=0.03)

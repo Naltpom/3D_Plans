@@ -68,6 +68,10 @@ let next: Candidate | null = null;
 let phase = 0;
 let pending = "";
 let fresh = "";
+let hover = "";
+let moves: { photo: string; wall: string; moved_cm: number | null }[] = [];
+let holes: { type: string; label: string; width: number; height: number; sill: number; sigma: number; point: number[] }[] | null = null;
+let picked = new Set<number>();
 let parts: { id: string; type: string }[] = [];
 let roofed: { measured: boolean } | null = null;
 let reading: Reading = null;
@@ -291,9 +295,12 @@ function photoWalls() {
       if (box.checked) checked.add(wall.id);
       else checked.delete(wall.id);
       render();
+      paint();
     };
     const line = el("label", `wall ${wall.sure ? "" : "doubt"}`);
     line.append(box, el("span", "", `${wall.label} · ${wall.reason || `vu sur ${plural(wall.photos, "photo")}`} · ${number(wall.length)} m`), el("span", "m", `${number(wall.n, 0)} pts`));
+    line.onmouseenter = () => { hover = wall.id; paint(); };
+    line.onmouseleave = () => { hover = ""; paint(); };
     return line;
   }));
   const hidden = walls().length - shown().length;
@@ -341,6 +348,8 @@ function wallsStep() {
       button("Tracer une pièce", built.length || fromPhotos || house ? "" : "primary", "Tracer des murs dans la vue de dessus", () => trace(() => built, render, refreshPlan)),
       ...sketch ? [button(sketch.points ? "Recaler le croquis" : "Caler le croquis", sketch.points ? "" : "primary", "2 points du croquis et leur distance", () => calibrate(sketch!, async () => { await loadPlan(); setView("dessus"); render(); }))] : []),
     ...sketch?.points ? [opacity(sketch)] : [],
+    ...moves.length ? [card("Murs calés sur les photos", moves.map((m) => `${m.wall} → ${m.photo}${m.moved_cm == null ? "" : ` : ${number(m.moved_cm, 0)} cm`}`).join(", ") + ".")] : [],
+    ...openingsCard(),
     ...sketchReading(),
     ...built.length ? [card("Portes et fenêtres", "Choisis le type, puis clique sur un mur dans la vue.",
       ...OPENINGS.map(([id, label]) => button(label, "", `Poser : ${label.toLowerCase()}`, () => place(id, () => built, render, refreshPlan))))] : [],
@@ -405,10 +414,35 @@ async function createRead() {
   await refreshPlan();
 }
 
-async function refreshPlan() {
+async function refreshPlan(rough: string[] = []) {
+  if (rough.length && photoInfo().count) moves = (await call<{ pairs: typeof moves }>("photos.snap_walls", { source: photoInfo().source, walls: rough })).pairs;
   await update();
   await loadPlan();
   render();
+}
+
+function openingsCard() {
+  if (!photoInfo().count || !built.length) return [];
+  if (!holes) return [card("Ouvertures proposées", "Les portes et fenêtres se voient comme des trous dans les points des murs validés.",
+    button("Chercher les ouvertures", "", "Trous rectangulaires dans les points des murs", () => run(() => act("Recherche des ouvertures", async () => {
+      holes = await call("photos.propose_openings", { source: photoInfo().source });
+      picked = new Set(holes!.map((_, i) => i));
+    }))))];
+  const box = el("div", "card");
+  box.append(el("b", "", holes.length ? "Ouvertures proposées" : "Aucune ouverture trouvée"));
+  for (const [i, hole] of holes.entries()) {
+    const check = Object.assign(el("input"), { type: "checkbox", checked: picked.has(i) });
+    check.onchange = () => { if (check.checked) picked.add(i); else picked.delete(i); };
+    const line = el("label", "wall");
+    line.append(check, el("span", "", `${OPENINGS.find(([id]) => id === hole.type)?.[1]} · ${hole.label} · ${number(hole.width, 2)} × ${number(hole.height, 2)} m ± ${cm(hole.sigma)}${hole.sill > 0.15 ? ` · allège ${number(hole.sill, 2)} m` : ""}`));
+    box.append(line);
+  }
+  if (holes.length) box.append(row(button("Créer les ouvertures cochées", "primary", "Portes et fenêtres", () => run(() => act("Création des ouvertures", async () => {
+    for (const [i, hole] of holes!.entries()) if (picked.has(i)) await call("plan.place", { type: hole.type, point: hole.point, width: hole.width, height: hole.height, sill: hole.sill }).catch(() => {});
+    holes = null;
+    await refreshPlan();
+  })))));
+  return [box];
 }
 
 async function fromCadastre() {
@@ -650,9 +684,9 @@ function paint() {
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
   const read = (reading?.walls ?? []).flatMap((wall, w) => wall.points.slice(0, wall.closed ? undefined : -1).map((a, i) => ({
     a, b: wall.points[(i + 1) % wall.points.length], height: 2.5, tone: "doubt", on: kept.has(w), text: i ? "" : `Croquis ${w + 1}` })));
-  showWalls((step === "murs" || step === "facades") && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline, ...read]
+  showWalls((step === "murs" || step === "facades") && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.id === hover ? "measure" : w.sure ? "sure" : "doubt", on: checked.has(w.id) || w.id === hover, text: checked.has(w.id) || w.id === hover ? w.label : "" })), ...outline, ...read]
     : step === "echelle" ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
-  if (step) highlight(step === "echelle" ? proposal?.measure ?? null : null, 0xf5c451);
+  if (step) highlight(step === "echelle" ? proposal?.measure ?? null : walls().find((w) => w.id === hover)?.component ?? null, 0xf5c451);
 }
 
 function render() {

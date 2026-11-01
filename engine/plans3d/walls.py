@@ -234,3 +234,65 @@ def fit_walls(ctx, source='photos', turn=None):
     parallel = any(abs(np.sin(direction(t['a'], t['b']) - direction(u['a'], u['b']))) < 0.1 and abs((t['b'] - t['a'])[0] * (u['a'] - t['a'])[1] - (t['b'] - t['a'])[1] * (u['a'] - t['a'])[0]) > 0.3 * np.linalg.norm(t['b'] - t['a'])
                    for _, t, _ in paired for _, u, _ in paired if t is not u)
     return {'pairs': [[seg['id'], t['id']] for seg, t, _ in paired], 'scale_known': parallel}
+
+
+SNAP_M, SNAP_DEG, HOLE_CELL, BAND_M = 0.6, 10.0, 0.1, 0.06
+
+
+@rpc('photos.snap_walls')
+def snap_walls(ctx, source, walls):
+    project = ctx.require_project(); found = proposals(project, source); paired = []
+    for t in (t for t in traced_walls(project, source) if t['id'] in walls):
+        u = (t['b'] - t['a']) / np.linalg.norm(t['b'] - t['a']); normal = np.array([-u[1], u[0]]); best = None
+        for w in found['walls']:
+            a, b = np.array(w['a']), np.array(w['b']); low, high = sorted(((a - t['a']) @ u, (b - t['a']) @ u))
+            if abs(wrap(direction(a, b) - direction(t['a'], t['b']), np.pi)) > np.radians(SNAP_DEG) or abs(normal @ ((a + b) / 2 - t['a'])) > SNAP_M: continue
+            if min(high, np.linalg.norm(t['b'] - t['a'])) > max(low, 0) and (best is None or w['n'] > best['n']): best = w
+        if not best: continue
+        project.db.executemany('insert or replace into photos_assoc values (?,?,?,?)', [(source, plane, t['expr'], None) for plane in best['planes']])
+        comp = components.load(project)[t['id']]; run = comp['options'].get('axe'); name = str(comp['expressions'][f"start_{'z' if run == 'x' else 'x'}"]) if run else ''
+        moved = None
+        if name in project.params() and best['axis'] == ('z' if run == 'x' else 'x'):
+            moved = abs(best['position'] - project.params()[name][0]) * 100
+            project.db.execute('update params set init=? where name=?', (best['position'], name))
+            project.db.execute("update obs set value=? where expr=? and source like 'comp:%'", (best['position'], name))
+        paired.append({'photo': best['id'], 'wall': t['id'], 'moved_cm': moved})
+    if paired: photos.ensure_params(project, source); photos.invalidate(project, source)
+    return {'pairs': paired}
+
+
+def holes(points, length, height, cell=HOLE_CELL):
+    from scipy import ndimage
+    nu, nv = int(length / cell), int(height / cell)
+    if nu < 3 or nv < 3: return []
+    grid = np.zeros((nv, nu), bool); inside = (points[:, 0] >= 0) & (points[:, 0] < nu * cell) & (points[:, 1] >= 0) & (points[:, 1] < nv * cell)
+    grid[(points[inside, 1] / cell).astype(int), (points[inside, 0] / cell).astype(int)] = True
+    labels, count = ndimage.label(~grid); found = []
+    for rows, cols in ndimage.find_objects(labels):
+        r0, r1, c0, c1 = rows.start, rows.stop - 1, cols.start, cols.stop - 1
+        if r1 >= nv - 1 or c0 == 0 or c1 >= nu - 1 or (c1 - c0 + 1) * cell < 0.4 or (r1 - r0 + 1) * cell < 0.4: continue
+        ring = np.concatenate([grid[r0:r1 + 1, c0 - 1], grid[r0:r1 + 1, c1 + 1], grid[r1 + 1, c0:c1 + 1]])
+        if ring.mean() < 0.5 or grid[r0:r1 + 1, c0:c1 + 1].mean() > 0.05: continue
+        width, tall, bottom = (c1 - c0 + 1) * cell, (r1 - r0 + 1) * cell, r0 * cell
+        kind = ('porte' if width <= 1.2 else 'porte_fenetre') if bottom < 0.15 and tall >= 1.6 else 'fenetre' if bottom > 0.5 and tall <= 2.2 else None
+        if kind: found.append({'type': kind, 'along': c0 * cell + width / 2, 'width': width, 'height': tall, 'sill': bottom, 'sigma': cell / 2})
+    return found
+
+
+@rpc('photos.propose_openings')
+def propose_openings(ctx, source='photos'):
+    from .plan import current_values, wall_ends
+    project = ctx.require_project(); _, frame, cache = photos.photo_state(project, source, compute=False)
+    points, _ = photos.cloud_sample(cache, 400000); linear_map, shift, _ = photos.project_transform(project, source, frame); points = points @ linear_map.T + shift
+    values, existing = current_values(project), components.load(project); found = []
+    for comp in existing.values():
+        if comp['type'] != 'mur': continue
+        a, b = wall_ends(comp, values); length = np.linalg.norm(b - a); u = (b - a) / length; normal = np.array([-u[1], u[0]])
+        base, height = components.evaluate(comp['expressions']['y0'], values), components.evaluate(comp['expressions']['h'], values)
+        flat = points[:, [0, 2]] - a; near = np.abs(flat @ normal) < BAND_M
+        local = np.stack([flat[near] @ u, points[near, 1] - base], 1)
+        taken = [o for o in existing.values() if o['options'].get('mur') == comp['id']]
+        for hole in holes(local, length, height):
+            if any(abs(components.evaluate(o['expressions']['pos'], values) + components.evaluate(o['expressions']['l'], values) / 2 - hole['along']) < hole['width'] for o in taken): continue
+            found.append({**hole, 'wall': comp['id'], 'label': comp['label'], 'point': (a + hole['along'] * u).round(3).tolist()})
+    return found

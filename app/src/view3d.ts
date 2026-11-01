@@ -304,7 +304,40 @@ new ResizeObserver(() => {
 
 export const view = { scene, camera, renderer, controls, model, furniture, neutral, helpers: [...helpers, photos, swings, cloud, overlays, draft, sketch] };
 export const hooks = { frame: () => renderer.render(scene, camera) };
-renderer.setAnimationLoop(() => hooks.frame());
+const MOVES: Record<string, [number, number, number]> = { z: [1, 0, 0], w: [1, 0, 0], s: [-1, 0, 0], q: [0, -1, 0], a: [0, -1, 0], d: [0, 1, 0], " ": [0, 0, 1], c: [0, 0, -1] };
+const held = new Set<string>();
+let last = performance.now();
+export const walk = { speed: 2 };
+const typing = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName));
+window.addEventListener("keydown", (event) => {
+  const key = event.key.toLowerCase();
+  if (!MOVES[key] || typing(event.target) || event.ctrlKey || event.metaKey || event.altKey) return;
+  held.add(key);
+  event.preventDefault();
+});
+window.addEventListener("keyup", (event) => held.delete(event.key.toLowerCase()));
+window.addEventListener("blur", () => held.clear());
+
+function stroll(now: number) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (!held.size || !canvas.offsetParent) return;
+  const ahead = camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize(), side = new THREE.Vector3().crossVectors(ahead, camera.up).normalize();
+  const step = new THREE.Vector3();
+  for (const key of held) {
+    const [f, r, u] = MOVES[key];
+    step.addScaledVector(ahead, f).addScaledVector(side, r).y += u;
+  }
+  if (!step.lengthSq()) return;
+  step.normalize().multiplyScalar(walk.speed * (held.has("shift") ? 3 : 1) * dt);
+  camera.position.add(step);
+  controls.target.add(step);
+}
+window.addEventListener("keydown", (event) => { if (event.key === "Shift") held.add("shift"); });
+renderer.setAnimationLoop((now) => {
+  stroll(now);
+  hooks.frame();
+});
 
 const TONES: Record<string, number> = { sure: 0x3fb6d9, doubt: 0xe8953a, measure: 0xf5c451 };
 
