@@ -12,6 +12,7 @@ PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, 
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 RUNNING = set()
+LINE = 'ligne:'
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
 SCHEMA = '''create table if not exists photos_assoc(source text, plane_id text, expr text, sigma real, primary key(source, plane_id));
 create table if not exists photos_axes(source text primary key, map text);
@@ -445,6 +446,12 @@ def yaw_name(project, source):
     return f'{source}_yaw' if project.db.execute('select 1 from params where name=?', (f'{source}_yaw',)).fetchone() else '0'
 
 
+def line_expressions(source, yaw, expr, axis):
+    values = expr[len(LINE):].split(';'); cos, sin = f'cos({yaw})', f'sin({yaw})'
+    first, second = ((cos, f'-{sin}'), (sin, cos))['xz'.index(axis)]
+    return [f'({first} * (({x}) - {source}_tx) + {second} * (({z}) - {source}_tz)) / {source}_s' for x, z in zip(values[0::2], values[1::2])]
+
+
 def axis_expression(source, yaw, expr, axis, along, across=0.0):
     position = f'(({expr}) - {source}_t{axis}) / {source}_s'
     if axis == 'y' or yaw == '0': return position, float(along)
@@ -509,10 +516,12 @@ def photos_colmap(path, source):
     for plane_id, expr, sigma_m in project.db.execute('select plane_id, expr, sigma from photos_assoc where source=? order by plane_id', (source,)):
         plane = planes.get(plane_id)
         if not plane or not plane['axis'] or (plane['id'], expr) in seen: continue
-        axis, sign = mapping[plane['axis']]; seen.add((plane['id'], expr)); expression, value = axis_expression(source, yaw, expr, axis, sign * plane['offset'])
-        observations.append(Obs(f'{source}:{plane_id}', expression, value, (sigma_m or PLANE_SIGMA_M) / scale, source, 'photo', f'plan {plane["id"]} ({axis})'))
+        axis, sign = mapping[plane['axis']]; seen.add((plane['id'], expr))
+        expressions = line_expressions(source, yaw, expr, axis) if expr.startswith(LINE) else [axis_expression(source, yaw, expr, axis, sign * plane['offset'])[0]]
+        observations += [Obs(f'{source}:{plane_id}' + ':b' * k, expression, sign * plane['offset'], (sigma_m or PLANE_SIGMA_M) / scale, source, 'photo', f'plan {plane["id"]} ({axis})')
+                         for k, expression in enumerate(expressions)]
     observations += click_observations(project, source, load_model(cache), frame, scale)
-    if yaw != '0': observations.append(Obs(f'{source}:lacet', yaw, 0.0, YAW_PRIOR_RAD, source, 'supposé', 'lacet des photos a priori'))
+    if yaw != '0': observations.append(Obs(f'{source}:lacet', yaw, project.params()[yaw][0], YAW_PRIOR_RAD, source, 'supposé', 'lacet des photos a priori'))
     project.db.close(); return observations
 
 

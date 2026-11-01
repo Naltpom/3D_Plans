@@ -124,13 +124,25 @@ def test_dense_cloud_with_colors(setup):
 
 def test_fit_photos_on_traced_room(setup):
     from plans3d import plan
-    ctx, project = setup; photos.axes(ctx, 'photos', '+x+y+z'); plan.rpc_trace(ctx, [[0, 0], [4, 0], [4, 5], [0, 5]], True)
+    ctx, project = setup; photos.axes(ctx, 'photos', '+x+y+z'); plan.rpc_trace(ctx, [[0, 0], [4, 0], [4, 5], [0, 5]], True, [4.0, 5.0, None, None])
     fitted = walls.fit_walls(ctx)
     assert fitted['scale_known'] and len(fitted['pairs']) == 3 and len({wall for _, wall in fitted['pairs']}) == 3
     result = project.update(); values = dict(zip(result.names, result.x))
-    assert not result.contradictions and values['photos_s'] == pytest.approx(SCALE, rel=0.01)
+    assert not result.contradictions and values['photos_s'] == pytest.approx(SCALE, rel=0.01) and np.isfinite(result.sigma[result.names.index('photos_s')])
     assert [values[name] for name in ('mur2_x', 'mur3_z', 'mur4_x', 'mur1_z')] == pytest.approx([4, 5, 0, 0], abs=0.02)
     first = photos.cameras(ctx)['cameras'][0]['center'][0::2]; mirrored = [4 - SPOTS[0][0], 5 - SPOTS[0][1]]
     assert first == pytest.approx(list(SPOTS[0]), abs=0.05) or first == pytest.approx(mirrored, abs=0.05)
     walls.fit_walls(ctx, turn=2); project.update(); turned = photos.cameras(ctx)['cameras'][0]['center'][0::2]
     assert turned == pytest.approx(mirrored if first == pytest.approx(list(SPOTS[0]), abs=0.05) else list(SPOTS[0]), abs=0.05)
+
+
+def test_fit_photos_on_slanted_walls(setup):
+    from plans3d import plan
+    ctx, project = setup; photos.axes(ctx, 'photos', '+x+y+z'); angle = np.radians(30)
+    turn = lambda x, z: [np.cos(angle) * x - np.sin(angle) * z + 10, np.sin(angle) * x + np.cos(angle) * z - 3]
+    plan.rpc_trace(ctx, [turn(0, 0), turn(4, 0), turn(4, 5), turn(0, 5)], True, [4.0, 5.0, None, None])
+    fitted = walls.fit_walls(ctx); result = project.update(); values = dict(zip(result.names, result.x))
+    assert fitted['scale_known'] and len(fitted['pairs']) == 3 and not result.contradictions and values['photos_s'] == pytest.approx(SCALE, rel=0.01)
+    assert np.isfinite(result.sigma[[result.names.index(n) for n in ('photos_s', 'photos_yaw', 'photos_tx', 'photos_tz')]]).all()
+    center = photos.cameras(ctx)['cameras'][0]['center'][0::2]
+    assert any(center == pytest.approx(turn(*spot), abs=0.05) for spot in (SPOTS[0], (4 - SPOTS[0][0], 5 - SPOTS[0][1])))
