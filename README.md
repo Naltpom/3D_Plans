@@ -53,6 +53,7 @@ cd app; npx tsc --noEmit
 - Toute observation porte une valeur et un σ en unités physiques ; contradiction si résidu normalisé > 3.
 - L'IA propose, le solveur tranche, l'utilisateur valide. L'IA ne produit jamais de coordonnées ; aucune règle n'est ajoutée sans validation.
 - Cache par source : seules les sources modifiées sont ré-extraites ; le solveur est relancé en entier à chaque mise à jour.
+- Fusion photos + tracé : les murs sûrs des photos (6 au plus) sont appariés aux murs tracés alignés (rotation par quart de tour, échelle, translation ; écart ≤ 15 cm, recouvrement des emprises), puis associés ; 2 murs non parallèles calent la position, 2 murs parallèles en plus l'échelle. Pièce symétrique : sens à confirmer (bouton « Tourner »). L'étape Murs affiche 6 pans au plus par défaut.
 - Murs proposés : plans verticaux regroupés (écart ≤ 10 cm), d'au moins 0,8 m de haut et atteignant 1,3 m ; incertains si peu de points, courts ou à moins d'1 m devant un autre mur. Cadastre : murs extérieurs du bâtiment principal sur ses sommets (épaisseur vers l'intérieur, hauteur BD TOPO si connue) et parcelle principale. À la validation : murs perpendiculaires reliés par leurs angles (≤ 75 cm), premier mur de chaque direction à 0, sol et plafond associés ; une nouvelle validation remplace les murs proposés et la cote d'échelle.
 - Outils photo : COLMAP, téléchargé au premier usage dans `%LOCALAPPDATA%\3D_Plans\tools`.
 - Aucune photo ni donnée de projet dans le dépôt.

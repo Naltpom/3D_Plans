@@ -120,3 +120,17 @@ def test_dense_cloud_with_colors(setup):
     found = photos.cloud(ctx, limit=1000)
     assert found['dense'] and len(found['points']) == len(found['colors']) <= 3000 and set(found['colors'][::3]) == {200}
     assert photos.cloud(ctx, limit=1000)['points'] == found['points'] and os.path.exists(os.path.join(cache, 'cloud.npz'))
+
+
+def test_fit_photos_on_traced_room(setup):
+    from plans3d import plan
+    ctx, project = setup; photos.axes(ctx, 'photos', '+x+y+z'); plan.rpc_trace(ctx, [[0, 0], [4, 0], [4, 5], [0, 5]], True)
+    fitted = walls.fit_walls(ctx)
+    assert fitted['scale_known'] and len(fitted['pairs']) == 3 and len({wall for _, wall in fitted['pairs']}) == 3
+    result = project.update(); values = dict(zip(result.names, result.x))
+    assert not result.contradictions and values['photos_s'] == pytest.approx(SCALE, rel=0.01)
+    assert [values[name] for name in ('mur2_x', 'mur3_z', 'mur4_x', 'mur1_z')] == pytest.approx([4, 5, 0, 0], abs=0.02)
+    first = photos.cameras(ctx)['cameras'][0]['center'][0::2]; mirrored = [4 - SPOTS[0][0], 5 - SPOTS[0][1]]
+    assert first == pytest.approx(list(SPOTS[0]), abs=0.05) or first == pytest.approx(mirrored, abs=0.05)
+    walls.fit_walls(ctx, turn=2); project.update(); turned = photos.cameras(ctx)['cameras'][0]['center'][0::2]
+    assert turned == pytest.approx(mirrored if first == pytest.approx(list(SPOTS[0]), abs=0.05) else list(SPOTS[0]), abs=0.05)

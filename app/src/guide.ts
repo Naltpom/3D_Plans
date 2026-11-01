@@ -56,6 +56,9 @@ let next: Candidate | null = null;
 let phase = 0;
 let pending = "";
 let fresh = "";
+let everything = false;
+let fitted: { pairs: string[][]; scale_known: boolean } | null = null;
+const shown = () => everything ? walls() : walls().filter((w, i, all) => w.component || checked.has(w.id) || [...all].sort((a, b) => Number(b.sure) - Number(a.sure) || b.n - a.n).indexOf(w) < 6);
 let built: Built[] = [];
 let land: Cadastre = null;
 let sketch: Sketch = null;
@@ -258,7 +261,7 @@ function positionsStep() {
 function photoWalls() {
   if (!proposal) return [el("p", "", "Recherche des murs sur les photos…")];
   const list = el("div", "walls");
-  list.append(...walls().map((wall) => {
+  list.append(...shown().map((wall) => {
     const box = Object.assign(el("input"), { type: "checkbox", checked: checked.has(wall.id) });
     box.onchange = () => {
       if (box.checked) checked.add(wall.id);
@@ -269,6 +272,8 @@ function photoWalls() {
     line.append(box, el("span", "", `${wall.label} · ${wall.reason || `vu sur ${plural(wall.photos, "photo")}`} · ${number(wall.length)} m`), el("span", "m", `${number(wall.n, 0)} pts`));
     return line;
   }));
+  const hidden = walls().length - shown().length;
+  if (hidden) list.append(button(`Voir les ${hidden} autre${hidden > 1 ? "s pans incertains" : " pan incertain"}`, "link fit", "Afficher toutes les surfaces trouvées", () => { everything = true; render(); paint(); }));
   const axes = new Set(walls().filter((w) => checked.has(w.id)).map((w) => w.axis)), done = created();
   const same = done.length === checked.size && done.every((w) => checked.has(w.id));
   const validate = button("Valider les murs", same && done.length ? "" : "primary", "Créer les murs cochés", () => run(() => act("Création des murs", validateWalls)));
@@ -303,6 +308,7 @@ function wallsStep() {
     intro(4, fromPhotos && count ? `J'ai trouvé ${count} mur${count > 1 ? "s probables" : " probable"}` : "Les murs", fromPhotos
       ? "Ils viennent des surfaces planes vues sur tes photos. Décoche ceux qui sont faux. Tu peux aussi tracer des murs ou les reprendre du cadastre."
       : "Trace les murs, décalque ton croquis ou reprends-les du cadastre. Une cote au mètre les précisera ensuite."),
+    ...fromPhotos && built.some((w) => w.source !== photoInfo().source) ? [fitCard()] : [],
     ...fromPhotos ? photoWalls() : [],
     ...house || parcel ? [card(land!.created.length ? "Cadastre : créé" : "Depuis le cadastre", [house && `Bâtiment principal : ${plural(house.walls, "mur")} extérieurs, ${number(house.perimeter)} m de périmètre`,
       parcel && `parcelle de ${number(parcel.area, 0)} m²`].filter(Boolean).join(" ; ") + ".",
@@ -315,6 +321,19 @@ function wallsStep() {
       ...OPENINGS.map(([id, label]) => button(label, "", `Poser : ${label.toLowerCase()}`, () => place(id, () => built, render, refreshPlan))))] : [],
   ];
   return [...parts, footer(back(), onward(built.length > 0, built.length > 0 && (!fromPhotos || created().length > 0)))];
+}
+
+function fitCard() {
+  const run2 = (turn?: number) => () => run(() => act("Recalage des photos", async () => {
+    fitted = await call("photos.fit_walls", { source: photoInfo().source, ...turn ? { turn } : {} });
+    await refreshPlan();
+    await loadProposal();
+  }));
+  if (!fitted) return card("Recaler les photos sur tes murs", "Les murs vus sur les photos sont appariés à tes murs tracés : les photos prennent la position et l'échelle du tracé, sans cote de plus.",
+    button("Recaler les photos", "primary", "Apparier automatiquement photos et murs tracés", run2()));
+  return card(`${fitted.pairs.length} mur${fitted.pairs.length > 1 ? "s appariés" : " apparié"}`, `${fitted.pairs.map(([photo, wall]) => `${photo} → ${wall}`).join(", ")}. ${fitted.scale_known
+    ? "Position et échelle des photos viennent du tracé." : "Position calée ; ajoute une cote pour l'échelle."} Pièce symétrique ? Vérifie le sens dans la vue.`,
+  button("Tourner de 180°", "", "Autre sens possible", run2(2)), button("Tourner de 90°", "", "Autre sens possible", run2(1)));
 }
 
 async function refreshPlan() {
@@ -490,7 +509,7 @@ function paint() {
   const step = mode === "guide" ? guide.step : 0;
   const measured = walls().filter((w) => w.component && w.component === proposal?.measure), house = land?.created.length ? [] : land?.house?.points ?? [];
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
-  showWalls(step === 4 && !drawing() ? [...walls().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline]
+  showWalls(step === 4 && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.sure ? "sure" : "doubt", on: checked.has(w.id), text: checked.has(w.id) ? w.label : "" })), ...outline]
     : step === 5 ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
   if (step) highlight(step === 5 ? proposal?.measure ?? null : null, 0xf5c451);
 }
@@ -558,7 +577,7 @@ host.documents().then((folder) => { parent ||= `${folder}\\3D_Plans`; if (!info)
 
 document.addEventListener("plans3d:opened", (event) => run(async () => {
   const opened = (event as CustomEvent<Info | null>).detail;
-  [info, creating, proposal, result, next, checked] = [opened, false, null, null, null, new Set()];
+  [info, creating, proposal, result, next, checked, fitted, everything] = [opened, false, null, null, null, new Set(), null, false];
   guide = info ? await resume(info.guide) : { type: draft.type, step: 1, done: [] };
   render();
   if (info) await go(guide.step);

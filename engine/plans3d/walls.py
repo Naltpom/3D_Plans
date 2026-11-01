@@ -137,3 +137,77 @@ def create_walls(ctx, source, walls):
                            [(source, plane, position[w['id']], None) for w in chosen for plane in w['planes']] + [(source, plane, expr, None) for plane, expr in levels])
     photos.ensure_params(project, source); photos.invalidate(project, source)
     return {'created': list(ids.values())}
+
+
+FIT_M, FIT_SCALE, FIT_WALLS = 0.15, (0.5, 2.0), 6
+TURNS = ['+x+y+z', '+z+y-x', '-x+y-z', '-z+y+x']
+
+
+def turn_matrix(text): return photos.mapping_matrix({axis: (text[2 * i + 1], 1.0 if text[2 * i] == '+' else -1.0) for i, axis in enumerate('xyz')})
+def matrix_text(matrix): return ''.join(f"{'+' if matrix[np.abs(matrix[:, i]).argmax(), i] > 0 else '-'}{'xyz'[np.abs(matrix[:, i]).argmax()]}" for i in range(3))
+
+
+def traced_walls(project, source):
+    values = {name: value for name, (value, _) in components.param_values(project).items()}; found = []
+    for comp in components.load(project).values():
+        run = comp['options'].get('axe')
+        if comp['type'] != 'mur' or comp['options'].get('source') == source or run not in ('x', 'z'): continue
+        axis = 'z' if run == 'x' else 'x'; expr = comp['expressions'][f'start_{axis}']
+        low, high = sorted(components.evaluate(comp['expressions'][f'{end}_{run}'], values) for end in ('start', 'end'))
+        found.append({'id': comp['id'], 'axis': axis, 'position': components.evaluate(expr, values), 'expr': str(expr), 'low': low, 'high': high})
+    return found
+
+
+def turned(wall, rotation):
+    a, b = (rotation @ [p[0], 0.0, p[1]] for p in (wall['a'], wall['b'])); axis = 'x' if abs(a[0] - b[0]) < abs(a[2] - b[2]) else 'z'
+    k, r = 'xyz'.index(axis), 2 - 'xyz'.index(axis)
+    return {**wall, 'axis': axis, 'position': (a[k] + b[k]) / 2, 'low': min(a[r], b[r]), 'high': max(a[r], b[r])}
+
+
+def matches(segments, traced, scale, shift):
+    found = []
+    for seg in segments:
+        run = 'z' if seg['axis'] == 'x' else 'x'; low, high = scale * seg['low'] + shift[run], scale * seg['high'] + shift[run]
+        near = [(abs(scale * seg['position'] + shift[seg['axis']] - t['position']), t) for t in traced
+                if t['axis'] == seg['axis'] and min(high, t['high']) > max(low, t['low'])]
+        distance, best = min(near, key=lambda item: item[0], default=(np.inf, None))
+        if distance < FIT_M: found.append((seg, best, min(high, best['high']) - max(low, best['low']) - 2 * (max(0, best['low'] - low) + max(0, high - best['high']))))
+    return found
+
+
+def best_fit(photo, traced, turns):
+    best = (0.0, None)
+    for k, turn in ((k, TURNS[k]) for k in turns):
+        segments = [turned(w, turn_matrix(turn)) for w in photo]
+        for axis, other in (('x', 'z'), ('z', 'x')):
+            own, mine = [s for s in segments if s['axis'] == axis], [t for t in traced if t['axis'] == axis]
+            pairs = [(1.0, s, t) for s in own for t in mine]
+            pairs += [((t['position'] - t2['position']) / (s['position'] - s2['position']), s, t) for s in own for s2 in own for t in mine for t2 in mine
+                      if s is not s2 and t is not t2 and abs(s['position'] - s2['position']) > 0.3]
+            for scale, s, t in pairs:
+                if not FIT_SCALE[0] < scale < FIT_SCALE[1]: continue
+                for s3 in (s for s in segments if s['axis'] == other):
+                    for t3 in (t for t in traced if t['axis'] == other):
+                        shift = {axis: t['position'] - scale * s['position'], other: t3['position'] - scale * s3['position']}
+                        found = matches(segments, traced, scale, shift); score = sum(fit for *_, fit in found)
+                        if score > best[0]: best = (score, (k, scale, shift, found))
+    return best[1]
+
+
+@rpc('photos.fit_walls')
+def fit_walls(ctx, source='photos', turn=None):
+    project = ctx.require_project(); found = proposals(project, source); traced = traced_walls(project, source)
+    photo = sorted((w for w in found['walls'] if w['sure'] and not w['component']), key=lambda w: -w['length'])[:FIT_WALLS]
+    fit = best_fit(photo, traced, range(4) if turn is None else [int(turn) % 4]) if photo and traced else None
+    if not fit or len({t['axis'] for _, t, _ in fit[3]}) < 2: raise ValueError('appariement impossible : il faut au moins 2 murs non parallèles vus sur les photos et tracés')
+    turn, factor, shift, paired = fit; rotation = turn_matrix(TURNS[turn])
+    scale, translation, _, _ = photos.current_values(project, source); mapping = photos.mapping_matrix(photos.axis_mapping(project, source))
+    photos.axes(ctx, source, matrix_text(rotation @ mapping)); moved = factor * rotation @ translation + np.array([shift['x'], 0.0, shift['z']])
+    project.db.executemany('update params set init=? where name=?', [(factor * scale, f'{source}_s'), *((float(v), f'{source}_t{a}') for a, v in zip('xyz', moved))])
+    stale = {plane for w in photo for plane in w['planes']}
+    project.db.executemany('delete from photos_assoc where source=? and plane_id=?', [(source, plane) for plane in stale])
+    rows = [(source, plane, t['expr'], None) for seg, t, _ in paired for plane in seg['planes']] + [(source, found['floor'], '0', None)] * bool(found['floor'])
+    project.db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
+    photos.ensure_params(project, source); photos.invalidate(project, source)
+    parallel = any(len({round(t['position'], 2) for _, t, _ in paired if t['axis'] == axis}) > 1 for axis in 'xz')
+    return {'pairs': [[seg['id'], t['id']] for seg, t, _ in paired], 'scale_known': parallel}
