@@ -361,14 +361,18 @@ export function showDraft(points: number[][]) {
   draft.add(line, dots);
 }
 
-export function showSketch(url: string | null, place?: { x: number; z: number; width: number; depth: number; angle: number }) {
+export function sketchOpacity(value: number) {
+  for (const o of sketch.children) if (o instanceof THREE.Mesh) o.material.opacity = value;
+}
+
+export function showSketch(url: string | null, place?: { x: number; z: number; width: number; depth: number; angle: number; opacity: number }) {
   clear(sketch);
   sketchMap?.dispose();
   sketchMap = null;
   if (!url || !place) return;
   sketchMap = new THREE.TextureLoader().load(url);
   sketchMap.colorSpace = THREE.SRGBColorSpace;
-  const material = new THREE.MeshBasicMaterial({ map: sketchMap, transparent: true, opacity: 0.55, depthWrite: false });
+  const material = new THREE.MeshBasicMaterial({ map: sketchMap, transparent: true, opacity: place.opacity, depthWrite: false });
   const plane = new THREE.Mesh(new THREE.PlaneGeometry(place.width, place.depth).rotateX(-Math.PI / 2), material);
   plane.position.set(place.x, 0.003, place.z);
   plane.rotation.y = place.angle;

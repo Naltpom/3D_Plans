@@ -103,7 +103,7 @@ def walls(ctx):
 
 
 @rpc('plan.sketch')
-def sketch(ctx, path=None, points=None, length=None, size=None):
+def sketch(ctx, path=None, points=None, length=None, size=None, opacity=None):
     project = ctx.require_project(); found = project_meta(project).get('croquis')
     if path:
         extension = os.path.splitext(path)[1].lower()
@@ -116,6 +116,9 @@ def sketch(ctx, path=None, points=None, length=None, size=None):
         if not float(length) > 0 or np.hypot(u1 - u0, v1 - v0) < 1: raise ValueError('calage : deux points distincts et une longueur positive')
         found = project_meta(project, croquis={**found, 'points': [[float(u0), float(v0)], [float(u1), float(v1)]], 'length': float(length),
                                                'size': [float(v) for v in size]})['croquis']
+    if opacity is not None:
+        if not found or not 0.05 <= float(opacity) <= 1: raise ValueError('opacité du croquis : entre 0,05 et 1')
+        found = project_meta(project, croquis={**found, 'opacity': float(opacity)})['croquis']
     return found and {**found, 'path': os.path.join(project.folder, 'sources', found['file'])}
 
 

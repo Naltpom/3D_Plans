@@ -1,14 +1,15 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
-import { setPointer, setView, showDraft, showSketch } from "./view3d";
+import { setPointer, setView, showDraft, showSketch, sketchOpacity } from "./view3d";
 
 type Point = [number, number];
 type Wall = { label: string; a: number[]; b: number[] };
-export type Sketch = { file: string; path: string; points?: number[][]; length?: number; size?: number[] } | null;
+export type Sketch = { file: string; path: string; points?: number[][]; length?: number; size?: number[]; opacity?: number } | null;
 
 const GRID = 0.05;
 const SQUARE = Math.PI / 30;
 const CLOSE = 0.25;
+const MAGNET = 0.2;
 
 let points: Point[] = [];
 let lengths: (number | null)[] = [];
@@ -20,6 +21,8 @@ let finished = async () => {};
 let lengthInput: HTMLInputElement | null = null;
 let angleInput: HTMLInputElement | null = null;
 let hint: HTMLElement | null = null;
+let magnet: HTMLElement | null = null;
+let existing: () => Wall[] = () => [];
 
 const decimal = (text: string) => Number(text.trim().replace(",", "."));
 const round = (v: number) => Math.round(v / GRID) * GRID;
@@ -29,9 +32,23 @@ const degrees = (angle: number) => ((angle * 180 / Math.PI) % 360 + 360) % 360;
 
 export const mode = () => active;
 
+function onWall({ a, b }: Wall, x: number, z: number): Point {
+  const dx = b[0] - a[0], dz = b[1] - a[1], t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (z - a[1]) * dz) / (dx * dx + dz * dz)));
+  return [a[0] + t * dx, a[1] + t * dz];
+}
+
+function attract(x: number, z: number): [Point, string] | null {
+  for (const wall of existing()) for (const p of [wall.a, wall.b]) if (Math.hypot(x - p[0], z - p[1]) < MAGNET) return [[p[0], p[1]], `angle du ${wall.label[0].toLowerCase()}${wall.label.slice(1)}`];
+  const close = existing().map((wall) => [onWall(wall, x, z), wall] as const).filter(([p]) => Math.hypot(x - p[0], z - p[1]) < MAGNET)
+    .sort(([p], [q]) => Math.hypot(x - p[0], z - p[1]) - Math.hypot(x - q[0], z - q[1]))[0];
+  return close ? [close[0], `${close[1].label[0].toLowerCase()}${close[1].label.slice(1)}`] : null;
+}
+
 function snap(x: number, z: number): Point {
-  const last = points.at(-1);
+  const last = points.at(-1), held = attract(x, z);
+  if (magnet) magnet.textContent = points.length > 2 && Math.hypot(x - points[0][0], z - points[0][1]) < CLOSE ? "Aimanté : premier angle (clic pour fermer)" : held ? `Aimanté : ${held[1]}` : "";
   if (points.length > 2 && Math.hypot(x - points[0][0], z - points[0][1]) < CLOSE) return points[0];
+  if (held) return held[0];
   if (!last) return [round(x), round(z)];
   const angle = angleOf(last, [x, z]), square = Math.round(angle / (Math.PI / 2)) * Math.PI / 2;
   return Math.abs(angle - square) < SQUARE ? toward(last, square, round(Math.hypot(x - last[0], z - last[1]))) : [round(x), round(z)];
@@ -76,8 +93,8 @@ export function stop() {
   changed();
 }
 
-export function trace(onChange: () => void, onDone: () => Promise<void>) {
-  [active, points, lengths, cursor, changed, finished] = ["trace", [], [], null, onChange, onDone];
+export function trace(walls: () => Wall[], onChange: () => void, onDone: () => Promise<void>) {
+  [active, points, lengths, cursor, changed, finished, existing] = ["trace", [], [], null, onChange, onDone, walls];
   setView("dessus");
   setPointer((x, z) => { cursor = snap(x, z); preview(); }, (x, z) => run(() => add(snap(x, z), null)));
   changed();
@@ -130,7 +147,17 @@ export function controls() {
   preview();
   const status = points.length ? `${points.length} angle${points.length > 1 ? "s" : ""} posé${points.length > 1 ? "s" : ""}. Angle 0° vers la droite, 90° vers le haut du plan.`
     : "Clique le premier angle de la pièce dans la vue.";
-  return [el("p", "", status), fields, actions];
+  magnet = el("p", "status");
+  return [el("p", "", status), magnet, fields, actions];
+}
+
+export function opacity(sketch: NonNullable<Sketch>) {
+  const slider = Object.assign(el("input"), { type: "range", min: "0.1", max: "1", step: "0.05", value: String(sketch.opacity ?? 0.55), ariaLabel: "Opacité du croquis" });
+  slider.oninput = () => sketchOpacity(Number(slider.value));
+  slider.onchange = () => run(() => call("plan.sketch", { opacity: Number(slider.value) }).then((saved) => { sketch.opacity = (saved as NonNullable<Sketch>).opacity; }));
+  const label = el("label", "opacity", "Opacité du croquis");
+  label.append(slider);
+  return label;
 }
 
 export function placeSketch(sketch: Sketch) {
@@ -138,7 +165,7 @@ export function placeSketch(sketch: Sketch) {
   const [[u0, v0], [u1, v1]] = sketch.points, [width, height] = sketch.size;
   const k = sketch.length / Math.hypot(u1 - u0, v1 - v0), angle = Math.atan2(v1 - v0, u1 - u0), c = Math.cos(angle), s = Math.sin(angle);
   const u = width / 2 - u0, v = height / 2 - v0;
-  showSketch(host.photoUrl(sketch.path), { x: k * (c * u + s * v), z: k * (c * v - s * u), width: width * k, depth: height * k, angle });
+  showSketch(host.photoUrl(sketch.path), { x: k * (c * u + s * v), z: k * (c * v - s * u), width: width * k, depth: height * k, angle, opacity: sketch.opacity ?? 0.55 });
 }
 
 export function calibrate(sketch: NonNullable<Sketch>, onDone: () => Promise<void>) {

@@ -54,6 +54,8 @@ def test_sketch_saved_and_calibrated(ctx, tmp_path):
     with pytest.raises(ValueError): plan.sketch(ctx, points=[[1, 1], [1, 1]], length=2)
     calibrated = plan.sketch(ctx, points=[[5, 5], [35, 5]], length=3.0, size=[40, 30])
     assert calibrated['length'] == 3.0 and json.load(open(os.path.join(ctx.project.folder, 'project.json')))['croquis']['size'] == [40, 30]
+    assert plan.sketch(ctx, opacity=0.3)['opacity'] == 0.3 and plan.sketch(ctx)['length'] == 3.0
+    with pytest.raises(ValueError): plan.sketch(ctx, opacity=2)
 
 
 def test_cadastre_walls_and_parcel(ctx, tmp_path):

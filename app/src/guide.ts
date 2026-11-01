@@ -3,7 +3,7 @@ import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, recent, refreshSources, update, type UpdateResult } from "./projects";
 import { openGuided, photoInfo, photoTask } from "./photos";
 import { highlight, setView, showWalls } from "./view3d";
-import { calibrate, controls, mode as drawing, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
+import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; scale?: number; manual?: boolean };
 type Info = { name: string; path: string; guide?: Guide };
@@ -293,8 +293,8 @@ function wallsStep() {
   const photo = photoInfo(), tool = drawing();
   if (photo.busy === "photos.densify") return [intro(4, "Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
-  if (tool === "trace") return [intro(4, "Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm et l'angle droit sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
-    ...controls()];
+  if (tool === "trace") return [intro(4, "Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
+    ...controls(), ...sketch?.points ? [opacity(sketch)] : []];
   if (tool) return [intro(4, `Pose : ${OPENINGS.find(([id]) => id === tool)?.[1].toLowerCase()}`, "Clique sur un mur dans la vue : l'ouverture se centre sur le clic. Clique un autre mur pour en poser d'autres."),
     placeHint(), footer(button("Terminer", "primary", "Quitter la pose", stopDrawing))];
   const fromPhotos = photo.count > 0, count = walls().length;
@@ -308,8 +308,9 @@ function wallsStep() {
       parcel && `parcelle de ${number(parcel.area, 0)} m²`].filter(Boolean).join(" ; ") + ".",
     ...land!.created.length ? [] : [button("Créer les murs et la parcelle", "", "Murs extérieurs du bâtiment principal et parcelle", () => run(() => act("Création depuis le cadastre", fromCadastre)))])] : [],
     card("Tracer à la main", `Clique les angles dans la vue de dessus, longueurs au clavier.${sketch ? sketch.points ? " Le croquis calé s'affiche en fond : décalque-le." : " Cale d'abord le croquis : 2 points et leur distance." : ""}`,
-      button("Tracer une pièce", built.length || fromPhotos || house ? "" : "primary", "Tracer des murs dans la vue de dessus", () => trace(render, refreshPlan)),
+      button("Tracer une pièce", built.length || fromPhotos || house ? "" : "primary", "Tracer des murs dans la vue de dessus", () => trace(() => built, render, refreshPlan)),
       ...sketch ? [button(sketch.points ? "Recaler le croquis" : "Caler le croquis", sketch.points ? "" : "primary", "2 points du croquis et leur distance", () => calibrate(sketch!, async () => { await loadPlan(); setView("dessus"); render(); }))] : []),
+    ...sketch?.points ? [opacity(sketch)] : [],
     ...built.length ? [card("Portes et fenêtres", "Choisis le type, puis clique sur un mur dans la vue.",
       ...OPENINGS.map(([id, label]) => button(label, "", `Poser : ${label.toLowerCase()}`, () => place(id, () => built, render, refreshPlan))))] : [],
   ];

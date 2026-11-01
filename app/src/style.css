@@ -316,6 +316,7 @@ body.page #step .actions { margin-top: 0; }
 #photo-overlay .aim polyline { fill: none; stroke: var(--point); stroke-width: 6; stroke-dasharray: 16 8; vector-effect: non-scaling-stroke; }
 #step .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 #step .fields input { width: 100%; }
+#step .opacity input { min-height: 0; padding: 0; accent-color: var(--accent); }
 #step .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 #step .card.done { border-color: var(--accent); }
 #step .status { color: var(--accent-text); font-weight: 600; }
