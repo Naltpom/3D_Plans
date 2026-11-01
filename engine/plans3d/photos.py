@@ -11,6 +11,7 @@ YAW_PRIOR_RAD = np.radians(5)
 PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 5
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
+RUNNING = set()
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
 SCHEMA = '''create table if not exists photos_assoc(source text, plane_id text, expr text, sigma real, primary key(source, plane_id));
 create table if not exists photos_axes(source text primary key, map text);
@@ -92,11 +93,15 @@ def read_text_model(folder):
 
 
 def link_images(paths, image_dir):
-    shutil.rmtree(image_dir, ignore_errors=True); os.makedirs(image_dir); names = []
-    for i, path in enumerate(paths):
-        names.append(f'{i:05d}{os.path.splitext(path)[1].lower()}')
-        try: os.link(path, os.path.join(image_dir, names[-1]))
-        except OSError: shutil.copy2(path, os.path.join(image_dir, names[-1]))
+    os.makedirs(image_dir, exist_ok=True); names = [f'{i:05d}{os.path.splitext(path)[1].lower()}' for i, path in enumerate(paths)]
+    for stale in set(os.listdir(image_dir)) - set(names): os.remove(os.path.join(image_dir, stale))
+    for path, name in zip(paths, names):
+        target = os.path.join(image_dir, name)
+        if os.path.exists(target):
+            if os.path.samefile(path, target): continue
+            os.remove(target)
+        try: os.link(path, target)
+        except OSError: shutil.copy2(path, target)
     return image_dir, names
 
 
@@ -345,8 +350,25 @@ def photo_state(project, source, progress=no_progress, compute=True):
     manifest, cache = source_cache(project, source)
     if not os.path.exists(os.path.join(cache, 'meta.json')):
         if not compute: raise ValueError(f'source {source} : reconstruction non faite (photos.extract)')
-        reconstruct(read_manifest(manifest), cache, progress)
+        key, error_path = (os.path.abspath(project.folder), source), os.path.join(cache, 'error.txt'); RUNNING.add(key)
+        try:
+            if os.path.exists(error_path): os.remove(error_path)
+            reconstruct(read_manifest(manifest), cache, progress)
+        except Exception as error:
+            os.makedirs(cache, exist_ok=True); open(error_path, 'w', encoding='utf-8').write(str(error) or type(error).__name__); raise
+        finally:
+            RUNNING.discard(key)
     return load_json(os.path.join(cache, 'meta.json')), frame_and_planes(cache, progress), cache
+
+
+def source_status(project, source, manifest):
+    if not os.path.exists(manifest): return {'photos': 0, 'registered': None, 'state': 'échec', 'error': f'manifeste introuvable : {manifest}'}
+    cache = os.path.join(project.folder, 'cache', 'photos', file_hash(manifest)); meta, error = os.path.join(cache, 'meta.json'), os.path.join(cache, 'error.txt')
+    status = {'photos': len(read_manifest(manifest)), 'registered': load_json(meta)['registered'] if os.path.exists(meta) else None}
+    if (os.path.abspath(project.folder), source) in RUNNING: return {**status, 'state': 'en cours'}
+    if status['registered'] is not None: return {**status, 'state': 'calculé'}
+    if os.path.exists(error): return {**status, 'state': 'échec', 'error': open(error, encoding='utf-8').read()}
+    return {**status, 'state': 'à calculer'}
 
 
 def axis_mapping(project, source):

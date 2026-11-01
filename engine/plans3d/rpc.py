@@ -116,8 +116,10 @@ def params_remove(ctx, name):
 @rpc('sources.list')
 def sources_list(ctx):
     project = ctx.require_project()
+    from .photos import source_status
     obs_count = dict(project.db.execute('select source, count(*) from obs group by source').fetchall())
-    return [{'id': sid, 'path': path, 'kind': kind, 'extracted': bool(hash_), 'obs': obs_count.get(sid, 0)}
+    return [{'id': sid, 'path': path, 'kind': kind, 'extracted': bool(hash_), 'obs': obs_count.get(sid, 0),
+             **(source_status(project, sid, path) if kind == 'photos_colmap' else {})}
             for sid, path, kind, hash_ in project.db.execute('select * from sources').fetchall()]
 
 
@@ -224,13 +226,13 @@ def update(ctx, exclude=(), progress=lambda fraction, message: None):
 @rpc('model')
 def model(ctx):
     found = ctx.require_project().model()
-    if found is None: raise RpcError('pas encore de modèle : lancez update')
+    if found is None: raise RpcError('Aucun résultat : cliquez sur « Mettre à jour »')
     return found
 
 
 def require_result(ctx):
     ctx.require_project()
-    if ctx.result is None: raise RpcError('aucun résultat : lancez update')
+    if ctx.result is None: raise RpcError('Aucun résultat : cliquez sur « Mettre à jour »')
     return ctx.result
 
 

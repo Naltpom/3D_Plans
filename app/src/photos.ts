@@ -16,6 +16,8 @@ const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "
 const KINDS = ["point", "face", "arête", "point"];
 const BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
 const STEPS = 8;
+const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification" };
+const TASK_KEY = "plans3d.photoTask";
 
 const svg = (tag: string, attributes: Record<string, string | number> = {}) => {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -28,7 +30,8 @@ const subdivide = (a: Point, b: Point) => Array.from({ length: STEPS + 1 }, (_, 
 const section = $("#photos");
 const sourceSelect = $<HTMLSelectElement>("#photo-source");
 const state = $("#photo-state");
-const progress = $<HTMLProgressElement>("#photo-progress");
+const bars = [$<HTMLProgressElement>("#photo-progress"), $<HTMLProgressElement>("#progress")];
+const status = $("#status");
 const installButton = $<HTMLButtonElement>("#photo-install");
 const extractButton = $<HTMLButtonElement>("#photo-extract");
 const densifyButton = $<HTMLButtonElement>("#photo-densify");
@@ -57,6 +60,8 @@ let planes: Planes | null = null;
 let clicks: Click[] = [];
 let anchors: Anchor[] = [];
 let busy = "";
+let projectPath = "";
+let step = { fraction: NaN, message: "", started: 0 };
 let dirty = false;
 let image: string | null = null;
 let size: UV = [1, 1];
@@ -102,7 +107,9 @@ function render() {
   extractButton.hidden = !tools || Boolean(located);
   densifyButton.hidden = openButton.hidden = details.hidden = !located;
   for (const b of [installButton, extractButton, densifyButton]) b.disabled = Boolean(busy);
-  if (!busy) state.textContent = !tools ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
+  const stopped = interrupted();
+  if (stopped) state.replaceChildren(`Calcul interrompu (${TASKS[stopped].toLowerCase()}) — `, button("relancer", "link", "Relancer le calcul", () => run(() => longTask(stopped))));
+  else if (!busy) state.textContent = !tools ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
     located.solved ? "" : "à recaler : mettre à jour", dirty ? "modifications à intégrer : mettre à jour" : ""].filter(Boolean).join(" · ");
   renderStrip();
   renderClicks();
@@ -322,17 +329,44 @@ async function draw() {
   drawMarks();
 }
 
-async function longTask(method: string, text: string, params: Record<string, unknown> = { source }) {
+function interrupted() {
+  const saved = JSON.parse(localStorage.getItem(TASK_KEY) ?? "null") as { method: string; project: string; source: string } | null;
+  if (busy || !saved || saved.method !== "tools.install" && (saved.project !== projectPath || saved.source !== source)) return "";
+  if (!({ "tools.install": tools, "photos.extract": Boolean(located) } as Record<string, boolean>)[saved.method]) return saved.method;
+  localStorage.removeItem(TASK_KEY);
+  return "";
+}
+
+function showStep() {
+  const seconds = Math.round((Date.now() - step.started) / 1000), known = Number.isFinite(step.fraction);
+  for (const bar of bars) {
+    bar.hidden = false;
+    if (known) bar.value = step.fraction;
+    else bar.removeAttribute("value");
+  }
+  state.textContent = status.textContent = `${TASKS[busy]}${step.message ? ` : ${step.message}` : "…"}${known ? ` (${Math.round(step.fraction * 100)} %)` : ""}`
+    + ` · ${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+}
+
+async function longTask(method: string) {
+  const label = TASKS[method];
   busy = method;
-  progress.hidden = false;
-  progress.removeAttribute("value");
-  state.textContent = text;
+  step = { fraction: NaN, message: "", started: Date.now() };
+  localStorage.setItem(TASK_KEY, JSON.stringify({ method, project: projectPath, source }));
   render();
+  showStep();
+  const ticking = window.setInterval(showStep, 1000);
   try {
-    await call(method, params);
+    await call(method, method === "tools.install" ? {} : { source });
+    status.textContent = `${label} : terminé`;
+  } catch (error) {
+    status.textContent = `${label} : échec`;
+    throw error;
   } finally {
+    clearInterval(ticking);
+    localStorage.removeItem(TASK_KEY);
     busy = "";
-    progress.hidden = true;
+    for (const bar of bars) bar.hidden = true;
     render();
   }
   await refresh();
@@ -366,9 +400,9 @@ stage.onwheel = (event) => {
 };
 new ResizeObserver(() => { if (image) fit(); }).observe(stage);
 
-installButton.onclick = () => run(() => longTask("tools.install", "Installation des outils photo…", {}));
-extractButton.onclick = () => run(() => longTask("photos.extract", "Calcul des positions…"));
-densifyButton.onclick = () => run(() => longTask("photos.densify", "Densification…"));
+installButton.onclick = () => run(() => longTask("tools.install"));
+extractButton.onclick = () => run(() => longTask("photos.extract"));
+densifyButton.onclick = () => run(() => longTask("photos.densify"));
 openButton.onclick = () => view.hidden ? run(() => openPhoto(cameras()[0]?.name ?? "")) : closePhoto();
 $("#photo-close").onclick = closePhoto;
 sourceSelect.onchange = () => {
@@ -395,12 +429,13 @@ form.onsubmit = (event) => {
 
 onEvent((event) => {
   if (event.event !== "progress" || event.method !== busy) return;
-  progress.value = Number(event.fraction);
-  state.textContent = String(event.message ?? "");
+  step = { ...step, fraction: Number(event.fraction), message: String(event.message ?? "") };
+  showStep();
 });
 new MutationObserver(schedule).observe($("#source-list"), { childList: true });
 new MutationObserver(() => { if (image) run(drawWire); }).observe($("#component-list"), { childList: true });
-document.addEventListener("plans3d:opened", () => {
+document.addEventListener("plans3d:opened", (event) => {
+  projectPath = (event as CustomEvent<{ path: string } | null>).detail?.path ?? "";
   [source, located, planes, clicks, dirty, shown] = [null, null, null, [], false, null];
   closeForm();
   closePhoto();

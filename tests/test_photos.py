@@ -205,3 +205,35 @@ def test_yaw_from_clicks(setup, monkeypatch):
     assert [result.value(name)[0] for name in ('qx', 'qy', 'qz')] == pytest.approx(turn @ room_q, abs=0.003)
     project.db.execute("delete from params where name='photos_yaw'"); project.db.commit(); photos.invalidate(project, 'photos')
     assert not any('yaw' in o.expr for o in project.update().obs)
+
+
+def test_extract_twice_reuses_image_links(tmp_path, monkeypatch):
+    from PIL import Image
+    folder = tmp_path / 'a b'; folder.mkdir()
+    for i in range(3): Image.new('RGB', (40, 30), (i * 60, 0, 0)).save(folder / f'photo {i}.jpg')
+    project = Project(str(tmp_path / 'projet')); ctx = Ctx(project=project); photos.add(ctx, [str(folder)])
+    def failing_colmap(arguments, *rest, **options): raise ValueError('COLMAP simulé')
+    monkeypatch.setattr(photos, 'run_colmap', failing_colmap)
+    for _ in range(2):
+        with pytest.raises(ValueError, match='simulé'): photos.extract(ctx)
+        with pytest.raises(ValueError, match='simulé'): project.update()
+    image_dir = os.path.join(photos.source_cache(project, 'photos')[1], 'images'); (folder / 'photo 1.jpg').unlink()
+    photos.link_images([str(folder / 'photo 2.jpg'), str(folder / 'photo 0.jpg')], image_dir)
+    assert sorted(os.listdir(image_dir)) == ['00000.jpg', '00001.jpg'] and os.path.samefile(os.path.join(image_dir, '00000.jpg'), folder / 'photo 2.jpg')
+
+
+def test_source_status_in_sources_list(tmp_path, monkeypatch):
+    from PIL import Image
+    rpc = pytest.importorskip('plans3d.rpc'); folder = tmp_path / 'photos'; folder.mkdir()
+    for i in range(2): Image.new('RGB', (40, 30)).save(folder / f'{i}.jpg')
+    project = Project(str(tmp_path / 'projet')); ctx = rpc.Ctx(); rpc.open_project(ctx, project.folder); photos.add(ctx, [str(folder)])
+    status = lambda: next(s for s in rpc.call(ctx, 'sources.list', {}) if s['id'] == 'photos')
+    assert {k: status()[k] for k in ('photos', 'registered', 'state')} == {'photos': 2, 'registered': None, 'state': 'à calculer'}
+    seen = []
+    def failing_colmap(arguments, *rest, **options): seen.append(status()['state']); raise ValueError('COLMAP simulé')
+    monkeypatch.setattr(photos, 'run_colmap', failing_colmap)
+    with pytest.raises(ValueError): photos.extract(ctx)
+    assert seen == ['en cours'] and status()['state'] == 'échec' and status()['error'] == 'COLMAP simulé'
+    cache = photos.source_cache(ctx.project, 'photos')[1]
+    with open(os.path.join(cache, 'meta.json'), 'w') as f: json.dump({'registered': 2}, f)
+    assert {k: status()[k] for k in ('registered', 'state')} == {'registered': 2, 'state': 'calculé'} and 'error' not in status()

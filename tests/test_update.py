@@ -51,7 +51,7 @@ def test_gauge_and_predict(tmp_path):
     ctx = Ctx(); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'essai'})
     for name in ('w1', 'w2', 'w3', 'libre'): call(ctx, 'params.add', {'name': name, 'init': 1.0, 'axis': 'x'})
     for cid, expr, value in (('a', 'w2 - w1', 130), ('b', 'w3 - w2', 60)): call(ctx, 'cotes.add', {'id': cid, 'expr': expr, 'value': value})
-    with pytest.raises(RpcError, match='aucun résultat'): call(ctx, 'predict', {'expr': 'w1'})
+    with pytest.raises(RpcError, match='Aucun résultat'): call(ctx, 'predict', {'expr': 'w1'})
     (warning,) = call(ctx, 'update', {})['warnings']
     assert warning == {'code': 'non_determines', 'params': ['w1', 'w2', 'w3'], 'inutilises': 1, 'sans_observation': [],
                        'message': '3 paramètres non déterminés (ex. w1, w2, w3) : ajoute une cote ou fixe une origine.'}

@@ -2,7 +2,7 @@ import { call, host, onEvent } from "./host";
 import { $, el, number, report, run as runTask } from "./ui";
 
 type Project = { name: string; path: string };
-type Source = { id: string; path: string; kind: string; extracted: boolean; obs: number };
+type Source = { id: string; path: string; kind: string; extracted: boolean; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type UpdateResult = { chi2: number; dof: number; params: { sigma: number | null }[]; conflicts: unknown[][] };
 
 const RECENT = "plans3d.recent";
@@ -68,9 +68,11 @@ async function refreshSources() {
     const remove = el("button", "remove", "×");
     remove.title = "Supprimer la source";
     remove.onclick = () => run(async () => { await call("sources.remove", { id: source.id }); await refreshSources(); });
-    item.title = source.path;
-    item.append(el("strong", "", source.id), remove,
-      el("small", "", `${KINDS[source.kind] ?? source.kind} · ${plural(source.obs, "élément")} · ${source.extracted ? "extraite" : "à extraire"}`));
+    const details = source.photos == null
+      ? [KINDS[source.kind] ?? source.kind, plural(source.obs, "élément"), source.extracted ? "extraite" : "à extraire"]
+      : [plural(source.photos, "photo"), source.registered != null && `${source.registered} positionnée${source.registered > 1 ? "s" : ""}`, source.state];
+    item.title = source.error ?? source.path;
+    item.append(el("strong", "", source.id), remove, el("small", "", details.filter(Boolean).join(" · ")));
     return item;
   }));
   if (!sources.length) sourceList.append(el("li", "empty", "Aucune source"));
@@ -108,17 +110,19 @@ updateButton.onclick = () => run(async () => {
   progress.removeAttribute("value");
   status.textContent = "Mise à jour…";
   const start = performance.now();
+  const polling = setInterval(() => refreshSources().catch(() => {}), 2000);
   try {
     summarize(await call<UpdateResult>("update"), (performance.now() - start) / 1000);
   } catch (error) {
     status.textContent = "Échec de la mise à jour";
     throw error;
   } finally {
+    clearInterval(polling);
     updating = false;
     progress.hidden = true;
     render();
+    await refreshSources().catch(() => {});
   }
-  await refreshSources();
 });
 
 $("#new-project-button").onclick = () => run(async () => {

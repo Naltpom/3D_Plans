@@ -8,7 +8,9 @@ export const cm = (m: number) => `${number(m * 100)} cm`;
 export const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function report(error: unknown) {
-  $("#banner span").textContent = message(error);
+  const text = message(error), stale = text.includes("cliquez sur « Mettre à jour »");
+  $("#banner span").replaceChildren(text,
+    ...stale ? [" ", button("Mettre à jour", "link", "Lancer la mise à jour", () => $<HTMLButtonElement>("#update-button").click())] : []);
   $("#banner").hidden = false;
 }
 

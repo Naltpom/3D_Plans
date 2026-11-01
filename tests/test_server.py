@@ -125,7 +125,7 @@ def test_full_scenario(server, tmp_path):
         assert reopened('project.info') is None
         info = reopened('project.open', path=path)
         assert info['name'] == 'Salon d’essai' and info['params'] == 3 and info['obs'] == 5 and info['model']
-        with pytest.raises(RuntimeError, match='aucun résultat'): reopened('next_best')
+        with pytest.raises(RuntimeError, match='Aucun résultat'): reopened('next_best')
         result = reopened('update')
         assert result['timing']['reextracted'] == [] and result['dof'] == 2
         reopened('sources.remove', id='cotes')
