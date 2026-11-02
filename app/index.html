@@ -20,6 +20,7 @@
       </span>
       <button id="update-button" class="primary" disabled>Mettre à jour</button>
       <button id="mode-button" class="small" type="button">Mode expert</button>
+      <button id="about-button" class="small" type="button" title="Version, notes de version, mises à jour">À propos</button>
     </header>
     <aside id="sidebar">
       <section>
@@ -235,6 +236,7 @@
       <span id="status"></span>
       <span class="spacer"></span>
       <span id="tools-state"></span>
+      <span id="version"></span>
     </footer>
     <div id="photo-view" hidden>
       <header id="photo-bar">
@@ -293,6 +295,19 @@
       </header>
       <div id="sketch-stage"><div id="sketch-frame"><img id="sketch-image" alt="Croquis" draggable="false" /><svg id="sketch-marks" aria-hidden="true"></svg></div></div>
     </div>
+    <div id="update" role="status" hidden></div>
+    <dialog id="about">
+      <h2>3D_Plans</h2>
+      <p id="about-version"></p>
+      <p><a id="about-notes" target="_blank" rel="noreferrer">Notes de version</a> · <a id="about-notice" target="_blank" rel="noreferrer">Licences et mentions (NOTICE)</a></p>
+      <p>Usage personnel. Composants tiers sous leurs propres licences (voir NOTICE).</p>
+      <small id="about-state"></small>
+      <div class="row">
+        <button id="about-check" type="button">Rechercher une mise à jour</button>
+        <span class="spacer"></span>
+        <button id="about-close" class="primary" type="button">Fermer</button>
+      </div>
+    </dialog>
     <div id="banner" role="alert" hidden><span></span><button aria-label="Fermer" title="Fermer">×</button></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

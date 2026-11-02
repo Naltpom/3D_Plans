@@ -1,6 +1,6 @@
 {
   "productName": "3D_Plans",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "identifier": "com.naltpom.plans3d",
   "build": {
     "beforeDevCommand": "python scripts/prepare_runtime.py && npm run dev",
@@ -9,21 +9,52 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "3D_Plans", "width": 1400, "height": 900, "dragDropEnabled": true }],
+    "windows": [
+      {
+        "title": "3D_Plans",
+        "width": 1400,
+        "height": 900,
+        "dragDropEnabled": true
+      }
+    ],
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'",
-      "assetProtocol": { "enable": true, "scope": [] }
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
-    "resources": ["runtime/"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "runtime/"
+    ],
     "windows": {
       "nsis": {
         "installMode": "perMachine",
-        "languages": ["French"]
+        "languages": [
+          "French"
+        ]
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBMkNGNzk4N0ZEMDVERjIKUldUeVhkQi9tUGNzR281MTBudWtOSWpiS2paY3BuUzhRbWhzK04vaVZGVHdDUytTeHNYKzhaeFYK",
+      "endpoints": [
+        "https://github.com/Naltpom/3D_Plans/releases/latest/download/latest.json"
+      ],
+      "dangerousInsecureTransportProtocol": true,
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

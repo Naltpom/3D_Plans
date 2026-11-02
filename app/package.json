@@ -1,7 +1,7 @@
 {
   "name": "plans3d-app",
   "private": true,
-  "version": "0.7.2",
+  "version": "0.7.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,8 @@
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "three": "^0.187.0",
     "three-gpu-pathtracer": "0.0.27",
     "three-mesh-bvh": "0.9.17"

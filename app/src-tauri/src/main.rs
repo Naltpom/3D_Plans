@@ -14,6 +14,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::sync::oneshot;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
@@ -144,14 +145,43 @@ fn allow_assets(app: AppHandle, paths: Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+fn updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let mut builder = app.updater_builder();
+    if let Ok(url) = std::env::var("PLANS3D_UPDATE_URL") {
+        builder = builder.endpoints(vec![tauri::Url::parse(&url).map_err(|error| error.to_string())?]).map_err(|error| error.to_string())?;
+    }
+    builder.build().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Option<Value>, String> {
+    let update = updater(&app)?.check().await.map_err(|error| error.to_string())?;
+    Ok(update.map(|found| serde_json::json!({ "version": found.version, "notes": found.body.unwrap_or_default() })))
+}
+
+#[tauri::command]
+async fn update_install(app: AppHandle) -> Result<(), String> {
+    let Some(update) = updater(&app)?.check().await.map_err(|error| error.to_string())? else { return Ok(()) };
+    let mut done = 0usize;
+    update
+        .download_and_install(|chunk, total| {
+            done += chunk;
+            let _ = app.emit("update-progress", serde_json::json!({ "done": done, "total": total }));
+        }, || {})
+        .await
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             app.manage(start_engine(app.handle()).map_err(|error| error.to_string()));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![engine_call, allow_assets])
+        .invoke_handler(tauri::generate_handler![engine_call, allow_assets, update_check, update_install])
         .build(tauri::generate_context!())
         .expect("échec du lancement de 3D_Plans")
         .run(|app, event| {
