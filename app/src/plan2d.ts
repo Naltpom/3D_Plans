@@ -1,5 +1,5 @@
 export type DrawnWall = { name: string; a: number[]; b: number[] };
-export type Opening = { type: string; wall: string; t0: number; t1: number; seen?: boolean | null };
+export type Opening = { type: string; wall: string; t0: number; t1: number; seen?: boolean | null; same?: boolean };
 export type Fit = { k: number; turn: number | null; pose: { L: number[][]; c: number[] }; pairs: Record<string, string[]>; gaps: Record<string, number>; height: number | null;
   photo: { id: string; sure: boolean; wall: string | null; a: number[]; b: number[] }[] };
 export type Corner = { corner: number; clicks: { image: string; u: number; v: number; kind?: string }[]; skipped?: boolean };

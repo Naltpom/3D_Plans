@@ -645,9 +645,9 @@ def axes(ctx, source, mapping):
 
 
 @rpc('photos.cameras')
-def cameras(ctx, source='photos'):
+def cameras(ctx, source='photos', pose=None):
     project = ctx.require_project(); meta, frame, cache = photo_state(project, source, compute=False); model = load_model(cache)
-    linear_map, shift, solved = project_transform(project, source, frame); centers = camera_centers(model) @ linear_map.T + shift
+    linear_map, shift, solved = project_transform(project, source, frame, pose); centers = camera_centers(model) @ linear_map.T + shift
     to_project = (linear_map / np.linalg.norm(linear_map[0])) @ rotation_matrices(model['q']).transpose(0, 2, 1)
     return {'solved': solved, 'cameras': [{'name': str(name), 'path': os.path.join(meta['root'], str(name)), 'center': center.tolist(), 'R': rotation.tolist(),
                                             'K': camera.tolist(), 'size': size.tolist(), 'orientation': int(orientation)}
@@ -711,9 +711,9 @@ def cloud_sample(cache, limit):
 
 
 @rpc('photos.cloud')
-def cloud(ctx, source='photos', limit=50000):
+def cloud(ctx, source='photos', limit=50000, pose=None):
     project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False)
-    points, colors = cloud_sample(cache, int(limit)); linear_map, shift, _ = project_transform(project, source, frame); points = points @ linear_map.T + shift
+    points, colors = cloud_sample(cache, int(limit)); linear_map, shift, _ = project_transform(project, source, frame, pose); points = points @ linear_map.T + shift
     low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
     kept = np.all((points > low - margin) & (points < high + margin), 1); kept[np.flatnonzero(kept)[int(limit):]] = False
     return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [],

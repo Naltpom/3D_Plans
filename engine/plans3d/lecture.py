@@ -568,13 +568,15 @@ def apply(ctx, plan):
         db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
         clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:{ANCHORS[c.get('kind', 'arete')]}") for p in plan.get('points', []) if not p.get('skipped') and len(p.get('clicks', [])) == 2 for c in p['clicks']]
         db.executemany('insert into photos_clicks(source, image, u, v, anchor) values (?,?,?,?,?)', clicks); db.commit(); photos.invalidate(project, source)
-    names, placed = {w['name']: w for w in ring}, []
+    names, placed, masters = {w['name']: w for w in ring}, [], {}
     for opening in plan.get('openings', []):
         w = names.get(opening['wall'])
         if not w: continue
-        a, b = forward(w['a']), forward(w['b']); middle = (opening['t0'] + opening['t1']) / 2
-        try: placed.append(place(ctx, opening['type'], (a + middle * (b - a)).tolist(), width=max(0.4, (opening['t1'] - opening['t0']) * np.hypot(*(b - a))), sigma=0.1 if opening.get('seen') else PRIOR_M)['id'])
+        a, b = forward(w['a']), forward(w['b']); middle = (opening['t0'] + opening['t1']) / 2; group = opening['type'] if opening.get('same') else None
+        try: made = place(ctx, opening['type'], (a + middle * (b - a)).tolist(), width=max(0.4, (opening['t1'] - opening['t0']) * np.hypot(*(b - a))), sigma=0.1 if opening.get('seen') else PRIOR_M, share=masters.get(group))['id']
         except ValueError: continue
+        placed.append(made)
+        if group: masters.setdefault(group, made)
     stairs = []
     for stair in (s for s in plan.get('stairs', []) if s.get('kept', True)):
         steps = measured_steps(cache, fitted['pose'], *stair_region(plan, stair, forward, 0.1), fitted.get('height') or 2.5) if fitted else []

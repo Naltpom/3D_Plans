@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, recent, refreshSources, update, type UpdateResult } from "./projects";
-import { closeGuided, openGuided, photoInfo, photoTask } from "./photos";
+import { closeGuided, openGuided, photoInfo, photoTask, previewPose } from "./photos";
 import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
 import type { Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
@@ -708,7 +708,7 @@ const VIEWS: Record<string, () => Node[]> = { projet: projectStep, sources: sour
 
 function paint() {
   const step = mode === "guide" ? key() : "";
-  if (step === "murs" && drawn()) return fourPaint();
+  if (step !== "murs" || !drawn()) previewPose(null);
   const measured = walls().filter((w) => w.component && w.component === proposal?.measure), house = land?.created.length ? [] : land?.house?.points ?? [];
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
   const read = (reading?.walls ?? []).flatMap((wall, w) => wall.points.slice(0, wall.closed ? undefined : -1).map((a, i) => ({

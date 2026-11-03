@@ -74,7 +74,7 @@ def rpc_trace(ctx, points, closed=True, lengths=None, cote_status='mesuré', cot
 
 
 @rpc('plan.place')
-def place(ctx, type, point, width=None, height=None, sill=None, sigma=None):
+def place(ctx, type, point, width=None, height=None, sill=None, sigma=None, share=None):
     project = ctx.require_project(); point = np.asarray(point, float); values = current_values(project); best = None
     if type not in components.OPENING_DEFAULTS: raise ValueError(f'ouverture inconnue : {type}')
     for comp in components.load(project).values():
@@ -86,11 +86,13 @@ def place(ctx, type, point, width=None, height=None, sill=None, sigma=None):
     _, wall, along, length = best; width = float(width or components.OPENING_DEFAULTS[type]['l'])
     if length < width + 2 * MARGIN_M: raise ValueError(f"{wall['label']} trop court pour cette ouverture")
     comp_id = free_ids(project, type, 1)[0]; position = min(max(along - width / 2, MARGIN_M), length - width - MARGIN_M)
-    comp = components.add(project, type, comp_id, {'mur': wall['id'], 'pos': position, 'l': width, **({'h': float(height)} if height else {}), **({'al': float(sill)} if sill is not None else {})})
+    shared = {'l': f'{share}_l', 'h': f'{share}_h', **({'al': f'{share}_al'} if type == 'fenetre' else {})} if share else {}
+    comp = components.add(project, type, comp_id, {'mur': wall['id'], 'pos': position, 'l': width, **({'h': float(height)} if height else {}), **({'al': float(sill)} if sill is not None else {}), **shared})
     covered, params = {o.expr for o in project.observations() if o.source == f'comp:{comp_id}'}, project.params()
     for name in comp['params']:
         if name not in covered: prior(project, comp_id, name, params[name][0], float(sigma or OPENING_SIGMA_M), f"{params[name][2]} (a priori)")
     if height: prior(project, comp_id, f'{comp_id}_h', float(height), MARGIN_M / 5, f"{comp['label']} — hauteur (fiche)")
+    if share: project.db.execute('insert or replace into obs values (?,?,?,?,?,?,?)', (f'comp:{comp_id}:{share}_l', f'comp:{comp_id}', f'{share}_l', width, float(sigma or OPENING_SIGMA_M), components.PRIOR_STATUS, f"{comp['label']} — largeur, même taille que {share}"))
     project.db.commit()
     return components.summary(comp)
 

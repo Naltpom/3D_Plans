@@ -1,7 +1,7 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
 import { drawPlan, metres, type Corner, type DrawnWall, type Fit, type Opening, type Plan } from "./plan2d";
-import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, refreshGuided, showGuided } from "./photos";
+import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previewPose, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
@@ -230,7 +230,7 @@ async function openCorner(q: { corner: number; photos: string[] }) {
   if (kind === "haut" && !f.height) kind = "bas";
   await openGuided({ anchor: `coin ${before}-${after}`, text: "", points: [[x, 0, z], [x, f.height ?? 2.4, z]], photos: q.photos, pose: f.pose,
     picks: () => entry(q.corner).clicks, pick: (c) => setPick(q.corner, { ...c, kind }), label: (c, i) => `${i + 1} · ${kindName(c.kind)}`,
-    mark: () => kind === "bas" ? 0 : kind === "haut" ? 8 : null, top: () => [kindPicker()], bottom: () => photoActions(q), overlay: () => galleryView(q) });
+    mark: () => kind === "bas" ? 0 : kind === "haut" ? 8 : null, plan: () => drawPlan(plan(), { corner: q.corner }), top: () => [kindPicker()], bottom: () => photoActions(q), overlay: () => galleryView(q) });
   h.render();
 }
 
@@ -421,15 +421,31 @@ function pointsStep() {
   });
   const result = clicks.length === 2 ? verdict ? verdict.ok ? [el("div", "note", `✓ Les 2 clics se recoupent à ${number(verdict.gap_cm ?? 0, 0)} cm près.`), ...verdict.note ? [el("div", "alert", `⚠ ${verdict.note}.`)] : []]
     : [el("div", "alert", `⚠ ${verdict.message[0].toUpperCase()}${verdict.message.slice(1)}.`)] : [el("div", "note", "Vérification des 2 clics…")] : [];
-  const map = el("div", "corner-plan");
-  map.append(el("span", "", "Plan · ce coin"), drawPlan(p, { corner: q.corner }));
-  return [box, bar, ...rows, ...result, map, ...open ? [] : [h.primary("Ouvrir les photos", () => openCorner(q))],
+  return [box, bar, ...rows, ...result, ...open ? [] : [h.primary("Ouvrir les photos", () => openCorner(q))],
     el("div", "note", "Rien ne change dans le plan avant 4.5 · Ctrl+Z annule un clic."),
     h.footer(button("Passer ce point", "", "Ne pas préciser ce coin", () => run(() => skip(true))), Object.assign(h.primary("Point suivant", () => skip(false)), { disabled: clicks.length !== 2 || !verdict?.ok }))];
 }
 
+const openingWidth = (p: Plan, o: Opening) => (o.t1 - o.t0) * size(p, p.walls.find((w) => w.name === o.wall)!);
+const openingSigma = (o: Opening) => o.seen ? 0.1 : 0.3;
+
+function sameDefaults(p: Plan) {
+  if (p.openings.every((o) => o.same !== undefined)) return null;
+  return p.openings.map((o) => {
+    const widths = p.openings.filter((x) => x.type === o.type).map((x) => openingWidth(p, x)).sort((a, b) => a - b), median = widths[Math.floor(widths.length / 2)];
+    return { ...o, same: o.same ?? (widths.length > 1 && Math.abs(openingWidth(p, o) - median) <= 0.25 * median) };
+  });
+}
+
+function sharedSize(p: Plan, type: string) {
+  const group = p.openings.filter((o) => o.same && o.type === type), weights = group.map((o) => openingSigma(o) ** -2), total = weights.reduce((s, w) => s + w, 0);
+  return group.length > 1 ? { n: group.length, width: group.reduce((s, o, i) => s + weights[i] * openingWidth(p, o), 0) / total, sigma: total ** -0.5 } : null;
+}
+
 function openingsStep() {
-  const p = plan(), choose = (i: number) => { chosen = chosen === i ? -1 : i; h.render(); };
+  const defaults = sameDefaults(plan());
+  if (defaults) run(() => savePlan({ ...plan(), openings: defaults }));
+  const p = defaults ? { ...plan(), openings: defaults } : plan(), choose = (i: number) => { chosen = chosen === i ? -1 : i; h.render(); };
   show(false, section("Portes et fenêtres · clique pour choisir", drawPlan(p, { opening: chosen, onOpening: choose })));
   const change = (i: number, patch: Partial<Opening>) => run(() => savePlan({ ...p, openings: p.openings.map((o, k) => k === i ? { ...o, ...patch } : o) }));
   const list = el("div", "walls");
@@ -444,14 +460,18 @@ function openingsStep() {
       const w = Number(width.value.replace(",", ".")) / 100 / length, middle = (o.t0 + o.t1) / 2;
       if (w > 0 && w < 1) change(i, { t0: Math.max(0, middle - w / 2), t1: Math.min(1, middle + w / 2) });
     };
-    line.append(el("span", "tag", o.wall), type, width, el("span", "", "cm"), el("span", "m", o.seen === true ? "✓ vue sur les photos" : o.seen === false ? "pas vue : d'après le dessin (± 30 cm)" : "d'après le dessin (± 30 cm)"),
+    const same = Object.assign(el("input"), { type: "checkbox", checked: Boolean(o.same) }), label = el("label", "check"), shared = o.same ? sharedSize(p, o.type) : null;
+    same.onchange = () => change(i, { same: same.checked });
+    label.append(same, `même taille que les autres ${KINDS[o.type][1]}`);
+    line.append(el("span", "tag", o.wall), type, width, el("span", "", "cm"), el("span", "m", `${o.seen ? "photos (IA)" : "dessin"} ± ${number(openingSigma(o) * 100, 0)} cm`), label,
+      ...shared ? [el("span", "m", `taille commune ≈ ${number(shared.width * 100, 0)} cm ± ${number(shared.sigma * 100, 0)} cm (${shared.n} ${KINDS[o.type][1]})`)] : [],
       button("Supprimer", "", "Supprimer cette ouverture (Suppr)", () => run(() => removeOpening(i))));
     line.onclick = (event) => { if (event.target === line) choose(i); };
     return line;
   }));
   if (!p.openings.length) list.append(el("p", "", "Aucune porte ni fenêtre sur le dessin."));
   const stairs = p.stairs.map((s, i) => tagged("≡", s.kept === false ? "Escalier ignoré" : "Escalier du dessin", "", false, () => run(() => savePlan({ ...p, stairs: p.stairs.map((x, k) => k === i ? { ...x, kept: x.kept === false } : x) }))));
-  return [h.intro("Portes et fenêtres", "Elles viennent de ton dessin. Change le type ou la largeur, supprime ce qui est faux, puis vérifie sur les photos."), list, ...stairs,
+  return [h.intro("Portes et fenêtres", "Elles viennent de ton dessin, dont les largeurs sont approximatives. Les ouvertures de même type et de taille proche partagent une seule taille, estimée avec toutes leurs mesures : décoche celles qui diffèrent (la porte d'entrée par exemple)."), list, ...stairs,
     ...p.fit ? [h.row(button("Vérifier sur les photos (IA)", "", "L'IA vision regarde chaque ouverture sur une photo qui la montre", () => run(() => h.act("Vérification des ouvertures par l'IA", check))))] : [],
     h.footer(button("Retour", "", "4.3", () => run(() => goSub(p.fit ? 3 : 1))), h.primary("Récapitulatif", () => goSub(5)))];
 }
@@ -498,6 +518,7 @@ export function fourStep(helpers: Helpers): Node[] {
 
 export function fourPaint() {
   const p = h?.guide().plan;
+  previewPose(p?.fit && !applied && sub() > 1 ? p.fit.pose : null);
   if (!p || sub() !== 5) return showWalls([]);
   if (applied) return showWalls(h.walls().map((w) => ({ a: w.a, b: w.b, height: w.height, tone: "sure", on: false, text: w.label })));
   const k = scale(p);

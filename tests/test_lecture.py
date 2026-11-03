@@ -80,7 +80,11 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
     assert not check([at(a, 0.0, 'bas'), at(b, 0.0, 'bas', 300.0)])['ok'] and not check([at(a, 1.0, 'arete'), at(a, 1.5, 'arete')])['ok']
     assert not rpc.call(ctx, 'plan.check_corner', {'clicks': [at(a, 2.0, 'haut'), at(b, 0.0, 'bas')], 'pose': fit['pose'], 'point': [x, z]})['ok']
     clicks = [at(a, 0.0, 'bas'), at(b, 1.0, 'arete')]
-    read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
+    read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read})
+    state = photos.photo_state(project, 'photos', compute=False)[1]; turned = {**read, 'fit': rpc.call(ctx, 'plan.fit', {'plan': read, 'turn': 2}), 'points': []}
+    preview = rpc.call(ctx, 'photos.cloud', {'source': 'photos', 'limit': 300, 'pose': turned['fit']['pose']})['points']; rpc.call(ctx, 'plan.apply', {'plan': turned})
+    assert np.allclose(photos.project_transform(project, 'photos', state)[0], turned['fit']['pose']['L']) and np.allclose(rpc.call(ctx, 'photos.cloud', {'source': 'photos', 'limit': 300})['points'], preview, atol=1e-3)
+    rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
     lengths = sorted(np.hypot(*np.subtract(w['b'], w['a'])) for w in plan.walls(ctx))
     assert result.converged and not result.conflicts() and lengths[-1] / lengths[0] == pytest.approx(5 / 4, rel=0.03)
 
@@ -92,3 +96,15 @@ def test_order_constrained_match():
     assert {drawn[i]['name']: j for i, (_, j) in pairs.items()} == {'A': 0, 'B': 1, 'C': 2}
     crossed = [lecture.lined(np.array([x, 0.0]), np.array([x, 2.0])) for x in (0.0, 0.5, 0.6)]
     assert sorted(j for _, j in lecture.match(drawn[:2], crossed, 1.0, [0.0, 0.0]).values()) == [0, 2]
+
+
+def test_identical_openings_share_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
+    door = next(o for o in read['openings'] if o['type'] == 'porte')
+    read['openings'] = [{**door, 'same': True}, {**door, 't0': 0.62, 't1': 0.8, 'same': True}]
+    placed = rpc.call(ctx, 'plan.apply', {'plan': read})['openings']; loaded = components.load(ctx.project)
+    assert str(loaded[placed[1]]['expressions']['l']) == f'{placed[0]}_l' and str(loaded[placed[1]]['expressions']['h']) == f'{placed[0]}_h'
+    result = ctx.project.update(); widths = sorted((t1 - t0) * 500 / 100 * 6 / 6.02 for t0, t1 in ((door['t0'], door['t1']), (0.62, 0.8)))
+    assert result.converged and widths[0] < result.value(f'{placed[0]}_l')[0] < widths[1] + 0.2

@@ -14,7 +14,7 @@ type Anchor = { ref: string; label: string; axes: Record<string, string> };
 type Model = { params: Record<string, { value: number }> };
 type Pick = { image: string; u: number; v: number; kind?: string };
 type Guided = { anchor: string; text: string; points: Point[]; photos: string[]; pose?: unknown; picks?: () => Pick[]; pick?: (pick: Pick) => unknown;
-  top?: () => Node[]; bottom?: () => Node[]; overlay?: () => Node | null; mark?: () => number | null; label?: (pick: Pick, i: number) => string };
+  plan?: () => Node; top?: () => Node[]; bottom?: () => Node[]; overlay?: () => Node | null; mark?: () => number | null; label?: (pick: Pick, i: number) => string };
 
 const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "-x+y-z": "180°", "-z+y+x": "270°" };
 const KINDS = ["point", "face", "arête", "point"];
@@ -101,7 +101,7 @@ async function refresh() {
   const n = ++sequence;
   const sources = (await call<{ id: string; kind: string }[]>("sources.list")).filter((s) => s.kind === "photos_colmap");
   const id = sources.some((s) => s.id === source) ? source : sources[0]?.id ?? null;
-  const ask = <T>(method: string, fallback: T) => id ? call<T>(method, { source: id }).catch(() => fallback) : Promise.resolve(fallback);
+  const ask = <T>(method: string, fallback: T) => id ? call<T>(method, { source: id, ...preview && ["photos.cameras", "photos.cloud"].includes(method) ? { pose: preview } : {} }).catch(() => fallback) : Promise.resolve(fallback);
   const [status, found, detected, listed, cloud] = await Promise.all([
     id ? call<{ colmap: boolean }>("tools.status").catch(() => ({ colmap: true })) : { colmap: true },
     ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), ask("photos.cloud", { points: [] as number[], colors: [] as number[] })]);
@@ -138,6 +138,15 @@ function render() {
   signal();
 }
 
+const miniPlan = $("#photo-plan"), PLAN_SIZE = "plans3d.miniplan", savedPlan = JSON.parse(localStorage.getItem(PLAN_SIZE) ?? "null") as UV | null;
+if (savedPlan) Object.assign(miniPlan.style, { width: `${savedPlan[0]}px`, height: `${savedPlan[1]}px` });
+new ResizeObserver(() => { if (miniPlan.offsetWidth) localStorage.setItem(PLAN_SIZE, JSON.stringify([miniPlan.offsetWidth, miniPlan.offsetHeight])); }).observe(miniPlan);
+let preview: unknown = null;
+export function previewPose(pose: unknown) {
+  if (JSON.stringify(pose) === JSON.stringify(preview)) return;
+  preview = pose;
+  schedule();
+}
 const guidedTop = el("div", "guided-top"), guidedBottom = el("div", "guided-bottom"), guidedOverlay = el("div", "guided-overlay");
 view.append(guidedTop, guidedBottom, guidedOverlay);
 
@@ -153,6 +162,8 @@ function renderGuide() {
   guidedOverlay.replaceChildren(...layer ? [layer] : []);
   [guidedTop.hidden, guidedBottom.hidden, guidedOverlay.hidden, strip.hidden] = [!guided?.top, !guided?.bottom, !layer, Boolean(guided?.bottom)];
   guideBox.hidden = !guided || Boolean(guided.pick);
+  miniPlan.hidden = !guided?.plan;
+  if (guided?.plan) miniPlan.replaceChildren("Plan · ce coin", guided.plan());
   if (!guided) return;
   const done = new Set(guidedClicks().map((c) => c.image)).size;
   $("#photo-guide-text").textContent = done >= 2 ? "C'est bon : l'angle est vu sur 2 photos. Tu peux revenir au parcours." : guided.text;
