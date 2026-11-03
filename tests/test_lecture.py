@@ -76,3 +76,12 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
     read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
     lengths = sorted(np.hypot(*np.subtract(w['b'], w['a'])) for w in plan.walls(ctx))
     assert result.converged and not result.conflicts() and lengths[-1] / lengths[0] == pytest.approx(5 / 4, rel=0.03)
+
+
+def test_order_constrained_match():
+    drawn = [lecture.lined(np.array([x, 0.0]), np.array([x, 2.0]), name=n) for x, n in ((0.0, 'A'), (1.0, 'B'), (3.0, 'C'), (4.0, 'D'))]
+    photo = [lecture.lined(np.array([x, 0.0]), np.array([x, 2.0])) for x in (0.0, 1.45, 3.0, 4.75)]
+    pairs = lecture.match(drawn, photo, 1.0, [0.0, 0.0])
+    assert {drawn[i]['name']: j for i, (_, j) in pairs.items()} == {'A': 0, 'B': 1, 'C': 2}
+    crossed = [lecture.lined(np.array([x, 0.0]), np.array([x, 2.0])) for x in (0.0, 0.5, 0.6)]
+    assert sorted(j for _, j in lecture.match(drawn[:2], crossed, 1.0, [0.0, 0.0]).values()) == [0, 2]

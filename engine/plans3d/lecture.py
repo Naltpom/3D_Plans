@@ -5,7 +5,7 @@ from . import cadastre, components, photos, walls
 from .plan import free_ids, place, sketch, trace
 from .rpc import rpc
 
-PIXELS, SNAP_DEG, EPS, PRIOR_M, STEP_M, ROOM_M, MATCH_M, SCALES = 1000, 20.0, 0.006, 0.3, 0.25, 6.0, 0.12, (0.6, 1.6)
+PIXELS, SNAP_DEG, EPS, PRIOR_M, STEP_M, ROOM_M, MATCH_M, SCALES, MATCH_TOL, COLLINEAR_M = 1000, 20.0, 0.006, 0.3, 0.25, 6.0, 0.12, (0.6, 1.6), 0.6, 0.1
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 COLORS = {'noir': '#1a1a1a', 'gris': '#8a8a8a', 'rouge': '#e0302c', 'orange': '#e8953a', 'jaune': '#e3c13b', 'vert': '#3aa65a', 'bleu': '#2f8fe0', 'violet': '#9a5bd0'}
 ROLES = {'noir': 'mur', 'gris': 'escalier', 'rouge': 'porte', 'orange': 'porte', 'jaune': 'fenetre', 'vert': 'fenetre', 'bleu': 'porte_fenetre', 'violet': 'ignorer'}
@@ -257,15 +257,31 @@ def lined(a, b, **extra):
 
 def match(drawn, photo, f, shift):
     pairs = {}
-    for i, w in enumerate(drawn):
-        best = None
-        for j, p in enumerate(photo):
-            if p['ax'] != w['ax']: continue
-            gap = abs(w['pos'] - f * p['pos'] - shift[w['ax']]); lo, hi = f * p['lo'] + shift[1 - w['ax']], f * p['hi'] + shift[1 - w['ax']]
-            if gap < MATCH_M * 2.5 and min(hi, w['hi']) - max(lo, w['lo']) > -0.3 and (best is None or gap < best[0]): best = (gap, j)
-        if best: pairs[i] = best
-    return pairs
+    for ax in (0, 1):
+        groups, planes = [], sorted((j for j, p in enumerate(photo) if p['ax'] == ax), key=lambda j: photo[j]['pos'])
+        for i in sorted((i for i, w in enumerate(drawn) if w['ax'] == ax), key=lambda i: drawn[i]['pos']):
+            if groups and abs(drawn[i]['pos'] - drawn[groups[-1][-1]]['pos']) < COLLINEAR_M: groups[-1].append(i)
+            else: groups.append([i])
 
+        def score(group, j):
+            p = photo[j]; y, lo, hi, total = f * p['pos'] + shift[ax], f * p['lo'] + shift[1 - ax], f * p['hi'] + shift[1 - ax], 0.0
+            for i in group:
+                w = drawn[i]; gap = abs(w['pos'] - y)
+                if gap >= MATCH_TOL or min(hi, w['hi']) - max(lo, w['lo']) <= -0.3: return 0.0
+                total += max(w['len'], 0.1) * (1 - (gap / MATCH_TOL) ** 2)
+            return total
+        best, move = np.zeros((len(groups) + 1, len(planes) + 1)), {}
+        for a in range(1, len(groups) + 1):
+            for b in range(1, len(planes) + 1):
+                s = score(groups[a - 1], planes[b - 1]); options = [(best[a - 1, b], 'skip'), (best[a, b - 1], 'left')] + [(best[a - 1, b - 1] + s, 'take')] * (s > 0)
+                best[a, b], move[a, b] = max(options, key=lambda o: o[0])
+        a, b = len(groups), len(planes)
+        while a and b:
+            step = move[a, b]
+            if step == 'take':
+                for i in groups[a - 1]: pairs[i] = (abs(drawn[i]['pos'] - f * photo[planes[b - 1]]['pos'] - shift[ax]), planes[b - 1])
+            a, b = a - (step != 'left'), b - (step != 'skip')
+    return pairs
 
 def search(drawn, planes, turns, cameras, traced):
     found = []
@@ -294,12 +310,12 @@ def refine(drawn, photo, f, shift):
         if not pairs: break
         rows, rhs = [], []
         for i, (_, j) in pairs.items():
-            w = drawn[i]; rows.append([photo[j]['pos'], float(w['ax'] == 0), float(w['ax'] == 1)]); rhs.append(w['pos'])
+            w = drawn[i]; rows.append(np.array([photo[j]['pos'], float(w['ax'] == 0), float(w['ax'] == 1)]) * w['len']); rhs.append(w['pos'] * w['len'])
         rows, rhs = np.array(rows), np.array(rhs); axes = [ax for ax in (0, 1) if rows[:, 1 + ax].any()]
         if len(axes) == 2 and any(len({round(r[0], 1) for r in rows if r[1 + ax]}) >= 2 for ax in (0, 1)):
             solution = np.linalg.lstsq(rows, rhs, rcond=None)[0]
             if SCALES[0] < solution[0] < SCALES[1]: f, shift = float(solution[0]), [float(solution[1]), float(solution[2])]; continue
-        shift = [float(np.mean([rhs[n] - f * rows[n, 0] for n in range(len(rows)) if rows[n, 1 + ax]])) if rows[:, 1 + ax].any() else shift[ax] for ax in (0, 1)]
+        shift = [float(np.sum([rhs[n] - f * rows[n, 0] for n in range(len(rows)) if rows[n, 1 + ax]]) / np.sum(rows[:, 1 + ax])) if rows[:, 1 + ax].any() else shift[ax] for ax in (0, 1)]
     return f, shift, match(drawn, photo, f, shift)
 
 
