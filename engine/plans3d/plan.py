@@ -101,7 +101,7 @@ def walls(ctx):
     return [{'id': c['id'], 'label': c['label'], 'source': c['options'].get('source', ''), 'params': c['params'],
              'uses': sorted({n for key in ('start_x', 'start_z', 'end_x', 'end_z') for n in components.NAME.findall(str(c['expressions'][key]))}),
              'a': a.tolist(), 'b': b.tolist(), 'height': components.evaluate(c['expressions']['h'], values)}
-            for c in components.load(project).values() if c['type'] == 'mur' for a, b in [wall_ends(c, values)]]
+            for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('nature') != 'contremarche' for a, b in [wall_ends(c, values)]]
 
 
 @rpc('plan.sketch')

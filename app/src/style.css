@@ -389,3 +389,5 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #photo-loupe::after, #step .crop::after { content: ""; position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 2px solid var(--point); border-radius: 50%; }
 #photo-overlay .marks .cross { fill: none; stroke: var(--point); stroke-width: 2; vector-effect: non-scaling-stroke; }
 #step .crop { position: relative; flex: none; border: 1px solid var(--strong); border-radius: 6px; background-repeat: no-repeat; background-color: var(--bg); }
+#photo-plan { direction: rtl; }
+#photo-plan > * { direction: ltr; }

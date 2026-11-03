@@ -18,6 +18,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
                '"left": x, "right": x}} with left and right the horizontal pixel positions of its edges in this {width} px wide image.')
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
+STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
 CLICK_GAP_M, PLANE_GAP_M, CORNER_M, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.05, 0.6, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
@@ -428,6 +429,63 @@ def check_openings(ctx, plan, progress=None):
     progress(1.0, 'Ouvertures vérifiées')
     return found
 
+def stair_region(plan, stair, forward, margin=0.3):
+    u0, v0, u1, v1 = stair['box']; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))])
+    return corners.min(0) - margin, corners.max(0) + margin
+
+
+def measured_steps(cache, pose, low, high, top):
+    dense = os.path.join(cache, 'dense', 'fused.ply')
+    if not os.path.exists(dense): return []
+    from scipy.spatial import ConvexHull
+    points, normals = photos.read_ply(dense)
+    if normals is None: return []
+    L, c = np.array(pose['L'], float), np.array(pose['c'], float); points = points @ L.T + c; up = normals @ L.T; up = np.abs(up[:, 1]) / np.linalg.norm(up, axis=1).clip(1e-9)
+    keep = (points[:, 0] > low[0]) & (points[:, 0] < high[0]) & (points[:, 2] > low[1]) & (points[:, 2] < high[1]) & (points[:, 1] > 0.08) & (points[:, 1] < top + 0.1) & (up > 0.85)
+    flat = points[keep]
+    if len(flat) < 200: return []
+    counts, edges = np.histogram(flat[:, 1], bins=np.arange(0.08, top + 0.1, 0.01)); levels = edges[:-1] + 0.005
+    best = max(((sum(counts[np.abs(levels - (rise * n)) < STEP_TOL_M].sum() for n in range(1, int(top / rise) + 1)), rise)
+                for rise in np.arange(0.15, 0.23, 0.002)), key=lambda item: item[0])[1]
+    steps = []
+    for n in range(1, int(round(top / best)) + 1):
+        near = flat[np.abs(flat[:, 1] - best * n) < STEP_TOL_M]
+        if len(near) < STEP_POINTS: continue
+        cells = np.floor((near[:, [0, 2]] - low) / 0.08).astype(int); grid = np.zeros(cells.max(0) + 1, bool); grid[cells[:, 0], cells[:, 1]] = True
+        labels, count = ndimage.label(grid, np.ones((3, 3))); owner = labels[cells[:, 0], cells[:, 1]]; groups = [near[owner == k] for k in range(1, count + 1)]
+        last = np.mean(steps[-1]['contour'], 0) if steps else None
+        near = min(groups, key=lambda g: np.linalg.norm(g[:, [0, 2]].mean(0) - last)) if last is not None else max(groups, key=len)
+        if last is not None and np.linalg.norm(near[:, [0, 2]].mean(0) - last) > 0.8: continue
+        if len(near) < STEP_POINTS: continue
+        hull = ConvexHull(near[:, [0, 2]]); ring = near[hull.vertices][:, [0, 2]]
+        steps.append({'n': n, 'y': float(np.median(near[:, 1])), 'contour': simplify(ring, 0.03).round(3).tolist() if len(ring) > 3 else ring.round(3).tolist()})
+    return steps
+
+
+def add_measured_stairs(project, steps):
+    created = []
+    for k, step in enumerate(steps):
+        comp_id = free_ids(project, 'marche', 1)[0]
+        components.add(project, 'sol', comp_id, {'contour': [[f'{x:.3f}', f'{z:.3f}'] for x, z in step['contour']], 'y': f"{step['y']:.3f}", 'source': 'plan', 'a_priori': False}, f"Marche {step['n']}")
+        created.append(comp_id)
+        below = steps[k - 1] if k else None
+        if not below or step['n'] != below['n'] + 1: continue
+        middle = np.mean(below['contour'], 0); ring = np.array(step['contour']); edges = [(ring[i], ring[(i + 1) % len(ring)]) for i in range(len(ring))]
+        a, b = min(edges, key=lambda e: np.linalg.norm((e[0] + e[1]) / 2 - middle))
+        riser = free_ids(project, 'contremarche', 1)[0]
+        components.add(project, 'mur', riser, {'x0': f'{a[0]:.3f}', 'z0': f'{a[1]:.3f}', 'x1': f'{b[0]:.3f}', 'z1': f'{b[1]:.3f}', 'y0': f"{below['y']:.3f}",
+                                                'h': f"{step['y'] - below['y']:.3f}", 'ep': '0.02', 'sens': 1.0, 'source': 'plan', 'nature': 'contremarche', 'a_priori': False}, f"Contremarche {step['n']}")
+        created.append(riser)
+    return created
+
+def touching(plan, point, size):
+    p, best = np.array(point, float), None
+    for w in plan['walls']:
+        a, b = np.array(w['a'], float), np.array(w['b'], float); d = b - a; t = (p - a) @ d / (d @ d); dist = np.linalg.norm(a + np.clip(t, -0.05, 1.05) * d - p)
+        if dist < CONTACT_PX * size and (best is None or dist < best[0]): best = (dist, w['name'], a + t * d)
+    return best
+
+
 def add_stairs(project, stair, forward):
     u0, v0, u1, v1 = stair['box']; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))]); low, size = corners.min(0), np.ptp(corners, 0)
     run = 'x' if size[0] >= size[1] else 'z'; side = 'z' if run == 'x' else 'x'; count = max(2, int(round(size.max() / STEP_M)))
@@ -441,15 +499,26 @@ def apply(ctx, plan):
     stale = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in walls.KEPT or c['options'].get('source') == 'plan']
     if stale: components.remove(project, *stale)
     if source:
-        photos.ensure_params(project, source); _, state, _ = photos.photo_state(project, source, compute=False)
+        photos.ensure_params(project, source); _, state, cache = photos.photo_state(project, source, compute=False)
         db.execute('delete from photos_assoc where source=?', (source,)); db.execute('delete from photos_axes where source=?', (source,))
         db.executemany('update params set init=? where name=?', [(state['s_est'], f'{source}_s'), (0.0, f'{source}_yaw'), *((0.0, f'{source}_t{a}') for a in 'xyz')]); db.commit()
         if os.path.exists(model := os.path.join(project.folder, 'model.json')): os.remove(model)
         photos.invalidate(project, source)
     forward, _ = frame(plan, fitted['k'] if fitted else plan.get('k') or default_k(plan)); ring = plan['walls']
     ids = trace(ctx, [forward(w['a']).tolist() for w in ring], True, sigma=PRIOR_M, source='plan', names=[w['name'] for w in ring], height=fitted and fitted.get('height'))['created']
+    named, size, contacts = dict(zip([w['name'] for w in ring], ids)), float(np.ptp(np.array([w['a'] for w in ring], float), 0).max()), []
     for extra in (e for e in plan.get('extra', []) if e.get('name')):
-        trace(ctx, [forward(extra['a']).tolist(), forward(extra['b']).tolist()], False, sigma=PRIOR_M, source='plan', names=[extra['name']], height=f'{ids[0]}_h')
+        ends = {end: touching(plan, extra[end], size) for end in 'ab'}
+        eid = trace(ctx, [forward(ends[end][2] if ends[end] else extra[end]).tolist() for end in 'ab'], False, sigma=PRIOR_M, source='plan', names=[extra['name']], height=f'{ids[0]}_h')['created'][0]
+        contacts += [(eid, end, found[1]) for end, found in ends.items() if found]
+    loaded = components.load(project)
+    for eid, end, wall_name in contacts:
+        wall, comp = loaded[named[wall_name]]['expressions'], loaded[eid]['expressions']; x0, z0, x1, z1 = (f'({wall[k]})' for k in ('start_x', 'start_z', 'end_x', 'end_z'))
+        px, pz = (f"({comp[('start' if end == 'a' else 'end') + '_' + axis]})" for axis in 'xz'); w = next(w for w in ring if w['name'] == wall_name)
+        length = float(np.hypot(*(forward(w['b']) - forward(w['a']))))
+        db.execute('insert or replace into obs values (?,?,?,?,?,?,?)', (f'comp:{eid}:contact_{end}', f'comp:{eid}', f'(({x1} - {x0}) * ({pz} - {z0}) - ({z1} - {z0}) * ({px} - {x0})) / {length:.6f}',
+                                                                    0.0, CONTACT_SIGMA_M, components.PRIOR_STATUS, f"{loaded[eid]['label']} contre le mur {wall_name}"))
+    db.commit()
     pairs, clicks = None, []
     if fitted:
         walls.set_pose(ctx, project, source, fitted['angle'], 1.0, np.array(fitted['shift'])); loaded = components.load(project); named = dict(zip([w['name'] for w in ring], ids))
@@ -466,5 +535,8 @@ def apply(ctx, plan):
         a, b = forward(w['a']), forward(w['b']); middle = (opening['t0'] + opening['t1']) / 2
         try: placed.append(place(ctx, opening['type'], (a + middle * (b - a)).tolist(), width=max(0.4, (opening['t1'] - opening['t0']) * np.hypot(*(b - a))), sigma=0.1 if opening.get('seen') else PRIOR_M)['id'])
         except ValueError: continue
-    stairs = [add_stairs(project, stair, forward) for stair in plan.get('stairs', []) if stair.get('kept', True)]
+    stairs = []
+    for stair in (s for s in plan.get('stairs', []) if s.get('kept', True)):
+        steps = measured_steps(cache, fitted['pose'], *stair_region(plan, stair, forward, 0.1), fitted.get('height') or 2.5) if fitted else []
+        stairs += add_measured_stairs(project, steps) if len(steps) >= 4 else [add_stairs(project, stair, forward)]
     return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks)}
