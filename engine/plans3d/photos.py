@@ -8,6 +8,7 @@ from .project import Project, extractor, file_hash
 from .rpc import rpc
 
 YAW_PRIOR_RAD = np.radians(5)
+CLICK_SIGMA_M = 0.04
 PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 5
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
@@ -484,10 +485,10 @@ def click_observations(project, source, model, frame, scale_estimate):
         for click_id, i, x, y, _ in group:
             to_camera = cameras[i] @ rotation.T; columns = np.column_stack([to_camera, model['t'][i] - to_camera @ offset])
             depth_m = (cameras[i] @ point + model['t'][i])[2] if point is not None else scene_depth(model, i)
-            fx, fy = model['K'][i][:2]; label = f'clic {click_id} sur {anchor}'
+            fx, fy = model['K'][i][:2]; label = f'clic {click_id} sur {anchor}'; sigma = max(CLICK_SIGMA_PX, fx * CLICK_SIGMA_M / (depth_m * scale_estimate))
             if len(known) == 3:
-                observations += [Obs(f'{source}:clic{click_id}:u', linear(fx / depth_m * (columns[0] - x * columns[2]), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label),
-                                 Obs(f'{source}:clic{click_id}:v', linear(fy / depth_m * (columns[1] - y * columns[2]), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label)]
+                observations += [Obs(f'{source}:clic{click_id}:u', linear(fx / depth_m * (columns[0] - x * columns[2]), terms), 0.0, sigma, source, 'photo', label),
+                                 Obs(f'{source}:clic{click_id}:v', linear(fy / depth_m * (columns[1] - y * columns[2]), terms), 0.0, sigma, source, 'photo', label)]
                 continue
             ray = np.array([x, y, 1.0]); missing = next(axis for axis in 'xyz' if axis not in known); by_axis = dict(zip('xyz', to_camera.T))
             parts = {'y': [('', by_axis['y'])], 'x': [(f'cos({yaw})', by_axis['x']), (f'sin({yaw})', by_axis['z'])],
@@ -495,7 +496,7 @@ def click_observations(project, source, model, frame, scale_estimate):
             scale = depth_m * np.linalg.norm(np.cross(ray, parts[0][1])[:2])
             distance = ' + '.join(f'{factor} * ({linear(fx / scale * (ray @ (-skew(direction) @ columns)), terms)})' if factor else linear(fx / scale * (ray @ (-skew(direction) @ columns)), terms)
                                   for factor, direction in (parts if yaw != '0' else parts[:1]))
-            observations.append(Obs(f'{source}:clic{click_id}:ligne', distance, 0.0, CLICK_SIGMA_PX, source, 'photo', label))
+            observations.append(Obs(f'{source}:clic{click_id}:ligne', distance, 0.0, sigma, source, 'photo', label))
     return observations
 
 

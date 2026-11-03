@@ -109,7 +109,8 @@ def wall_anchors(comp):
     anchors = {'a': {'x': expr['start_x'], 'z': expr['start_z']}, 'b': {'x': expr['end_x'], 'z': expr['end_z']},
                'a_ext': opposite(expr['start_x'], expr['start_z']), 'b_ext': opposite(expr['end_x'], expr['end_z']),
                'bas': {'y': expr['y0']}, 'haut': {'y': expr['y0'] + expr['h']},
-               'a_sol': {'x': expr['start_x'], 'y': expr['y0'], 'z': expr['start_z']}, 'b_sol': {'x': expr['end_x'], 'y': expr['y0'], 'z': expr['end_z']}}
+               'a_sol': {'x': expr['start_x'], 'y': expr['y0'], 'z': expr['start_z']}, 'b_sol': {'x': expr['end_x'], 'y': expr['y0'], 'z': expr['end_z']},
+               'a_haut': {'x': expr['start_x'], 'y': expr['y0'] + expr['h'], 'z': expr['start_z']}}
     pos_axis = OTHER_AXIS.get(comp['options'].get('axe'))
     if pos_axis: anchors.update(face={pos_axis: expr[f'start_{pos_axis}']}, face_ext={pos_axis: anchors['a_ext'][pos_axis]})
     return anchors

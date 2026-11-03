@@ -19,7 +19,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
-CLICK_GAP_M, PLANE_GAP_M, FAR_M, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
+CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -344,26 +344,49 @@ def fit(ctx, plan, turn=None):
             'pairs': pairs, 'planes': planes_of, 'gaps': gaps, 'height': levels(state)[2],
             'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
 
+ANCHORS = {'bas': 'a_sol', 'haut': 'a_haut', 'arete': 'a'}
+
+
+def click_ray(model, L, c, click):
+    i = photos.image_index(model, click['image']); (width, height), orientation = model['wh'][i], int(model['orientation'][i])
+    x, y = photos.undistort(model['K'][i], *photos.display_to_raw(orientation, width, height, click['u'], click['v']))
+    return L @ photos.camera_centers(model)[i] + c, photos.unit(L @ (photos.rotation_matrices(model['q'][i:i + 1])[0].T @ [x, y, 1.0]))
+
+
+def corner_rows(model, L, c, click, height):
+    origin, ray = click_ray(model, L, c, click); kind = click.get('kind', 'arete')
+    if kind == 'arete':
+        across = np.array([-ray[2], ray[0]]) / max(np.hypot(ray[0], ray[2]), 1e-9)
+        return [across], [float(across @ origin[[0, 2]])], None
+    level = 0.0 if kind == 'bas' else height
+    if level is None: return None, None, 'hauteur du plafond inconnue : clique le coin bas ou l’arête'
+    t = (level - origin[1]) / ray[1] if abs(ray[1]) > 1e-6 else -1.0
+    if t <= 0: return None, None, f"ce clic ne vise pas le {'sol' if kind == 'bas' else 'plafond'} : vérifie le type de clic"
+    hit = origin + t * ray
+    return [np.array([1.0, 0.0]), np.array([0.0, 1.0])], [float(hit[0]), float(hit[2])], None
+
+
 @rpc('plan.check_corner')
-def check_corner(ctx, clicks, pose, point, lines=()):
+def check_corner(ctx, clicks, pose, point, lines=(), height=None):
     project = ctx.require_project(); source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False)
-    model = photos.load_model(cache); turns = photos.rotation_matrices(model['q']); centers = photos.camera_centers(model); group = []
+    model = photos.load_model(cache); L, c = np.array(pose['L'], float), np.array(pose['c'], float); rows, rhs, owners = [], [], []
+    refuse = lambda message: {'ok': False, 'gap_cm': None, 'offset_cm': None, 'message': message, 'note': '', 'point': None}
     for n, click in enumerate(clicks):
-        i = photos.image_index(model, click['image']); (width, height), orientation = model['wh'][i], int(model['orientation'][i])
-        group.append((n, i, *photos.undistort(model['K'][i], *photos.display_to_raw(orientation, width, height, click['u'], click['v'])), None))
-    found, _ = photos.triangulate(model, turns, group) if len(group) >= 2 else (None, 0.0)
-    if found is None: return {'ok': False, 'gap_cm': None, 'offset_cm': None, 'message': 'les 2 photos sont prises du même endroit : choisis-en une autre'}
-    L, c = np.array(pose['L'], float), np.array(pose['c'], float); scale = float(np.linalg.norm(L[0]))
-    rays = [photos.unit(turns[i].T @ [x, y, 1.0]) for _, i, x, y, _ in group]
-    gap = max(np.linalg.norm((found - centers[i]) - ((found - centers[i]) @ d) * d) for (_, i, *_), d in zip(group, rays)) * scale * 2
-    placed = L @ found + c; offset = float(np.hypot(placed[0] - point[0], placed[2] - point[1]))
-    away, wall = max(((abs(cross(np.subtract(b, a) / np.hypot(*np.subtract(b, a)), placed[[0, 2]] - a)), name) for name, a, b in lines), default=(0.0, ''))
+        found, values, error = corner_rows(model, L, c, click, height)
+        if error: return refuse(error)
+        rows += found; rhs += values; owners += [n] * len(found)
+    A, b = np.array(rows), np.array(rhs)
+    if len(clicks) < 2 or np.linalg.svd(A, compute_uv=False)[-1] < np.sqrt(2) * np.sin(np.radians(MIN_ANGLE_DEG) / 2):
+        return refuse('les 2 photos voient le coin presque du même côté : choisis une photo prise d’un autre endroit')
+    placed = np.linalg.lstsq(A, b, rcond=None)[0]; residual = A @ placed - b
+    gap = max(float(np.linalg.norm(residual[np.array(owners) == n])) for n in range(len(clicks)))
+    offset = float(np.hypot(placed[0] - point[0], placed[1] - point[1]))
+    away, wall = max(((abs(cross(np.subtract(q, a) / np.hypot(*np.subtract(q, a)), placed - a)), name) for name, a, q in lines), default=(0.0, ''))
     ok = gap < CLICK_GAP_M
-    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin'
-    notes = [f'à {away * 100:.0f} cm du mur {wall} vu en photo : vérifie que tu as cliqué l’arête du coin, pas un meuble devant'] * (away >= PLANE_GAP_M)
-    notes += [f'à {offset:.1f} m du coin dessiné : vérifie que c’est le bon coin'.replace('.', ',')] * (offset >= FAR_M)
-    note = ' ; '.join(notes) if ok else ''
-    return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message, 'note': note}
+    notes = [f'à {away * 100:.0f} cm du mur {wall} vu en photo : vérifie que tu as cliqué le coin, pas un meuble devant'] * int(away >= PLANE_GAP_M)
+    notes += [f'à {offset:.1f} m du coin dessiné : vérifie que c’est le bon coin'.replace('.', ',')] * int(offset >= FAR_M)
+    return {'ok': bool(ok), 'gap_cm': round(gap * 100, 1), 'offset_cm': round(offset * 100, 1), 'point': placed.round(3).tolist(),
+            'message': '' if ok else 'les 2 clics ne désignent pas le même coin : reclique', 'note': ' ; '.join(notes) if ok else ''}
 
 
 def corner_views(project, point, pose, walls=None):
@@ -543,7 +566,7 @@ def apply(ctx, plan):
         floor, ceiling, _ = levels(state); pairs = sorted(n for n in fitted.get('planes', {}) if n in named)
         rows = [(source, plane, line(loaded[named[n]]), None) for n in pairs for plane in fitted['planes'][n]] + [(source, floor, '0', None)] * bool(floor) + [(source, ceiling, f'{ids[0]}_h', None)] * bool(ceiling)
         db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
-        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:a") for p in plan.get('points', []) if not p.get('skipped') and len(p.get('clicks', [])) == 2 for c in p['clicks']]
+        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:{ANCHORS[c.get('kind', 'arete')]}") for p in plan.get('points', []) if not p.get('skipped') and len(p.get('clicks', [])) == 2 for c in p['clicks']]
         db.executemany('insert into photos_clicks(source, image, u, v, anchor) values (?,?,?,?,?)', clicks); db.commit(); photos.invalidate(project, source)
     names, placed = {w['name']: w for w in ring}, []
     for opening in plan.get('openings', []):

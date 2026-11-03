@@ -72,10 +72,14 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
     for corner in range(4):
         x, z = lecture.frame(read, fit['k'])[0](read['walls'][corner]['a']); seen = rpc.call(ctx, 'photos.visible', {'source': 'photos', 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})
         if len(seen) >= 2: break
-    clicks = [{'image': name, 'u': uv[0], 'v': uv[1]} for name in seen[:2] for uv in rpc.call(ctx, 'photos.project_points', {'source': 'photos', 'image': name, 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})['uv']]
-    assert len(clicks) == 2 and rpc.call(ctx, 'plan.check_corner', {'clicks': clicks, 'pose': fit['pose'], 'point': [x, z]})['ok']
-    wrong = [clicks[0], {**clicks[1], 'v': clicks[1]['v'] + 300}]
-    assert not rpc.call(ctx, 'plan.check_corner', {'clicks': wrong, 'pose': fit['pose'], 'point': [x, z]})['ok']
+    check = lambda pair: rpc.call(ctx, 'plan.check_corner', {'clicks': pair, 'pose': fit['pose'], 'point': [x, z], 'height': fit['height'], 'lines': [['A', [x - 1.0, z + 0.5], [x + 1.0, z + 0.5]]]})
+    at = lambda name, y, kind, du=0.0: {'image': name, 'kind': kind, **dict(zip('uv', np.add(rpc.call(ctx, 'photos.project_points', {'source': 'photos', 'image': name, 'points_xyz_m': [[x, y, z]], 'pose': fit['pose']})['uv'][0], [du, 0.0])))}
+    a, b = seen[:2]
+    for pair in ([at(a, 1.0, 'arete'), at(b, 1.6, 'arete')], [at(a, 0.0, 'bas'), at(b, 0.0, 'bas')], [at(a, fit['height'], 'haut'), at(b, 0.0, 'bas')], [at(a, 0.0, 'bas'), at(b, 1.2, 'arete')]):
+        result = check(pair); assert result['ok'] and result['gap_cm'] < 3 and result['offset_cm'] < 5, (pair, result)
+    assert not check([at(a, 0.0, 'bas'), at(b, 0.0, 'bas', 300.0)])['ok'] and not check([at(a, 1.0, 'arete'), at(a, 1.5, 'arete')])['ok']
+    assert not rpc.call(ctx, 'plan.check_corner', {'clicks': [at(a, 2.0, 'haut'), at(b, 0.0, 'bas')], 'pose': fit['pose'], 'point': [x, z]})['ok']
+    clicks = [at(a, 0.0, 'bas'), at(b, 1.0, 'arete')]
     read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
     lengths = sorted(np.hypot(*np.subtract(w['b'], w['a'])) for w in plan.walls(ctx))
     assert result.converged and not result.conflicts() and lengths[-1] / lengths[0] == pytest.approx(5 / 4, rel=0.03)

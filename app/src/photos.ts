@@ -12,8 +12,9 @@ type Planes = { axes: Record<string, string>; planes: Plane[] };
 type Click = { id: number; image: string; u: number; v: number; anchor: string; kind: string; photos_for_anchor: number };
 type Anchor = { ref: string; label: string; axes: Record<string, string> };
 type Model = { params: Record<string, { value: number }> };
-type Pick = { image: string; u: number; v: number };
-type Guided = { anchor: string; text: string; points: Point[]; photos: string[]; pose?: unknown; picks?: () => Pick[]; pick?: (pick: Pick) => unknown; plan?: () => Node };
+type Pick = { image: string; u: number; v: number; kind?: string };
+type Guided = { anchor: string; text: string; points: Point[]; photos: string[]; pose?: unknown; picks?: () => Pick[]; pick?: (pick: Pick) => unknown;
+  top?: () => Node[]; bottom?: () => Node[]; overlay?: () => Node | null; mark?: () => number | null; label?: (pick: Pick, i: number) => string };
 
 const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "-x+y-z": "180°", "-z+y+x": "270°" };
 const KINDS = ["point", "face", "arête", "point"];
@@ -137,7 +138,20 @@ function render() {
   signal();
 }
 
+const guidedTop = el("div", "guided-top"), guidedBottom = el("div", "guided-bottom"), guidedOverlay = el("div", "guided-overlay");
+view.append(guidedTop, guidedBottom, guidedOverlay);
+
+export function refreshGuided() {
+  renderGuide();
+  void draw();
+}
+
 function renderGuide() {
+  const layer = guided?.overlay?.() ?? null;
+  guidedTop.replaceChildren(...guided?.top?.() ?? []);
+  guidedBottom.replaceChildren(...guided?.bottom?.() ?? []);
+  guidedOverlay.replaceChildren(...layer ? [layer] : []);
+  [guidedTop.hidden, guidedBottom.hidden, guidedOverlay.hidden, strip.hidden] = [!guided?.top, !guided?.bottom, !layer, Boolean(guided?.bottom)];
   guideBox.hidden = !guided || Boolean(guided.pick);
   if (!guided) return;
   const done = new Set(guidedClicks().map((c) => c.image)).size;
@@ -146,9 +160,6 @@ function renderGuide() {
   $("#photo-guide-done").textContent = done >= 2 ? "Revenir au parcours" : "Annuler";
   $("#photo-guide-done").classList.toggle("primary", done >= 2);
   undoButton.hidden = !guidedClicks().length || Boolean(guided.pick);
-  const plan = $("#photo-plan");
-  plan.hidden = !guided.plan;
-  if (guided.plan) plan.replaceChildren("Plan · ce coin", guided.plan());
 }
 
 function renderStrip() {
@@ -295,7 +306,6 @@ function closePhoto() {
   render();
   if (wasGuided && !wasPick) document.dispatchEvent(new CustomEvent("plans3d:clicked"));
   if (wasPick) document.dispatchEvent(new CustomEvent("plans3d:guided-closed"));
-  $("#photo-plan").hidden = true;
 }
 
 export async function openGuided(task: Guided) {
@@ -374,7 +384,7 @@ async function drawAim() {
   const name = image;
   if (!guided || !name) return void aim.replaceChildren();
   const { uv } = await project(name, subdivide(guided.points[0], guided.points[1]));
-  const foot = uv[0], ring = foot ? [svg("circle", { cx: foot[0], cy: foot[1], r: 40 / zoom.k })] : [];
+  const at = guided.mark ? guided.mark() : 0, foot = at == null ? null : uv[at], ring = foot ? [svg("circle", { cx: foot[0], cy: foot[1], r: 40 / zoom.k })] : [];
   if (name === image) aim.replaceChildren(...runs(uv).map((run) => svg("polyline", { points: run.map((p) => p.join(",")).join(" ") })), ...ring);
 }
 
@@ -417,7 +427,7 @@ function drawMarks() {
     return group;
   };
   const shown = guided?.picks ? guidedClicks() : clicks;
-  marks.replaceChildren(...shown.filter((c) => c.image === image).map((c) => mark([c.u, c.v], guided?.picks ? "coin" : c.anchor)), ...pending ? [mark(pending, "?", "pending")] : []);
+  marks.replaceChildren(...shown.filter((c) => c.image === image).map((c, i) => mark([c.u, c.v], guided?.picks ? guided.label?.(c, i) ?? "coin" : c.anchor)), ...pending ? [mark(pending, "?", "pending")] : []);
   place();
 }
 
@@ -586,7 +596,5 @@ document.addEventListener("plans3d:photo", (event) => {
   if (!document.body.classList.contains("guided")) run(() => openPhoto((event as CustomEvent<string>).detail));
 });
 
-const miniPlan = $("#photo-plan"), PLAN_SIZE = "plans3d.miniplan", savedPlan = JSON.parse(localStorage.getItem(PLAN_SIZE) ?? "null") as UV | null;
-if (savedPlan) Object.assign(miniPlan.style, { width: `${savedPlan[0]}px`, height: `${savedPlan[1]}px` });
-new ResizeObserver(() => { if (miniPlan.offsetWidth) localStorage.setItem(PLAN_SIZE, JSON.stringify([miniPlan.offsetWidth, miniPlan.offsetHeight])); }).observe(miniPlan);
+export const photoRatio = (name: string) => { const camera = cameras().find((c) => c.name === name); return camera ? size0(camera)[0] / size0(camera)[1] : 0.75; };
 export const photoUrl = (name: string) => { const camera = cameras().find((c) => c.name === name); return camera ? host.photoUrl(camera.path) : ""; };

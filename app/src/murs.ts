@@ -1,7 +1,7 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
 import { drawPlan, metres, type Corner, type DrawnWall, type Fit, type Opening, type Plan } from "./plan2d";
-import { closeGuided, crop, guidedImage, openGuided, photoUrl, showGuided } from "./photos";
+import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
@@ -216,22 +216,83 @@ async function ask() {
   if (list.every((q) => entry(q.corner).clicks.length >= 2 || entry(q.corner).skipped)) current = list.length;
 }
 
+const CLICK_KINDS: [string, string][] = [["bas", "Coin bas (sol)"], ["haut", "Coin haut (plafond)"], ["arete", "Arête (n'importe où sur la verticale)"]];
+const kindName = (id?: string) => ({ bas: "coin bas", haut: "coin haut", arete: "arête" } as Record<string, string>)[id ?? "arete"];
+let kind = "bas";
+let browsing = false;
+
 async function openCorner(q: { corner: number; photos: string[] }) {
   if (gallery?.corner !== q.corner) await openGallery(q.corner);
-  const refused = new Set(plan().refused?.[q.corner] ?? []), others = gallery!.items.filter((v) => v.inside && !refused.has(v.name)).map((v) => v.name);
-  if (!q.photos.length) q.photos = others.length ? others : gallery!.items.map((v) => v.name);
+  const refused = new Set(plan().refused?.[q.corner] ?? []), seen = gallery!.items.filter((v) => v.visible && !refused.has(v.name)).map((v) => v.name);
+  if (!q.photos.length) q.photos = seen.length ? seen : gallery!.items.filter((v) => v.inside && !refused.has(v.name)).map((v) => v.name);
+  if (!q.photos.length) q.photos = gallery!.items.map((v) => v.name);
   const p = plan(), f = p.fit!, [x, z] = estimate(p, q.corner), [before, after] = neighbours(p, q.corner);
-  await openGuided({ anchor: `coin ${before}-${after}`, text: `Clique le coin sol – mur ${before} – mur ${after}, là où le sol rencontre les deux murs.`,
-    points: [[x, 0, z], [x, f.height ?? 2.4, z]], photos: q.photos, pose: f.pose, picks: () => entry(q.corner).clicks, pick: (c) => setPick(q.corner, c),
-    plan: () => drawPlan(plan(), { corner: q.corner }) });
+  if (kind === "haut" && !f.height) kind = "bas";
+  await openGuided({ anchor: `coin ${before}-${after}`, text: "", points: [[x, 0, z], [x, f.height ?? 2.4, z]], photos: q.photos, pose: f.pose,
+    picks: () => entry(q.corner).clicks, pick: (c) => setPick(q.corner, { ...c, kind }), label: (c, i) => `${i + 1} · ${kindName(c.kind)}`,
+    mark: () => kind === "bas" ? 0 : kind === "haut" ? 8 : null, top: () => [kindPicker()], bottom: () => photoActions(q), overlay: () => galleryView(q) });
   h.render();
 }
 
-async function setPick(corner: number, click: { image: string; u: number; v: number }) {
-  const p = plan(), old = entry(corner), clicks = old.clicks.filter((c) => c.image !== click.image);
+function kindPicker() {
+  const box = el("div", "seg");
+  box.setAttribute("role", "radiogroup");
+  box.ariaLabel = "Ce que tu désignes sur la photo";
+  box.append(el("span", "", "Je clique :"), ...CLICK_KINDS.map(([id, label]) => {
+    const line = el("label", id === kind ? "sel" : ""), input = Object.assign(el("input"), { type: "radio", name: "click-kind", checked: id === kind, disabled: id === "haut" && !plan().fit?.height });
+    input.onchange = () => { kind = id; refreshGuided(); };
+    line.append(input, label);
+    return line;
+  }));
+  return box;
+}
+
+function photoActions(q: { corner: number; photos: string[] }) {
+  const k = Math.max(0, q.photos.indexOf(guidedImage() ?? "")), seen = gallery?.items.filter((v) => v.visible).length ?? 0;
+  const go = (step: number) => () => run(() => showGuided(q.photos[(k + step + q.photos.length) % q.photos.length]));
+  return [button("‹ Photo précédente", "", "Photo précédente", go(-1)), el("span", "m", `${k + 1} sur ${q.photos.length} · ${plural(seen, "photo voit", "photos voient")} ce coin`),
+    button("Photo suivante ›", "", "Photo suivante", go(1)), el("span", "spacer"),
+    button("Choisir une autre photo", "", "Galerie de toutes les photos", () => { browsing = true; refreshGuided(); }),
+    button("Ce coin n'est pas visible ici", "", "Ne plus proposer cette photo pour ce coin", () => run(hidden))];
+}
+
+function galleryView(q: { corner: number; photos: string[] }) {
+  if (!browsing || gallery?.corner !== q.corner) return null;
+  const p = plan(), names = neighbours(p, q.corner), refused = new Set(p.refused?.[q.corner] ?? []), clicked = new Set(entry(q.corner).clicks.map((c) => c.image)), box = el("div", "photo-gallery");
+  const head = el("div", "gallery-head");
+  head.append(button("← Revenir à la photo", "", "Fermer la galerie", () => { browsing = false; refreshGuided(); }), el("b", "", `Choisir une photo pour le coin ${names.join("–")}`),
+    el("span", "m", `${gallery.items.length} photos · ${gallery.items.filter((v) => v.visible).length} voient le coin`), el("span", "spacer"),
+    ...[...names.map((n) => [n, `Voit le mur ${n}`]), ["coin", "Coin visible seulement"]].map(([key, label]) => {
+      const chip = button(label, "chip", label, () => { if (!gallery!.only.delete(key)) gallery!.only.add(key); refreshGuided(); });
+      chip.ariaPressed = String(gallery!.only.has(key));
+      return chip;
+    }));
+  const grid = el("div", "gallery-grid");
+  grid.append(...gallery.items.filter((v) => [...gallery!.only].every((key) => key === "coin" ? v.visible : v.sees[key])).map((v) => {
+    const tile = button("", `tile ${v.visible ? "ok" : ""} ${refused.has(v.name) ? "refused" : ""}`, v.name, () => run(async () => {
+      if (!q.photos.includes(v.name)) q.photos = [v.name, ...q.photos];
+      browsing = false;
+      await showGuided(v.name);
+    }));
+    const [text, tone] = clicked.has(v.name) ? ["✓ cliquée", "done"] : refused.has(v.name) ? ["Refusée", "refused"] : v.visible ? ["Coin visible", "ok"] : v.inside ? ["Caché · objet devant", "hidden"] : ["Hors cadre", "out"];
+    tile.append(Object.assign(el("img"), { src: photoUrl(v.name), alt: v.name, loading: "lazy", decoding: "async", style: `aspect-ratio: ${photoRatio(v.name)}` }), el("span", `badge ${tone}`, text));
+    return tile;
+  }));
+  box.append(head, grid);
+  return box;
+}
+
+async function setPick(corner: number, click: { image: string; u: number; v: number; kind: string }) {
+  const p = plan(), clicks = entry(corner).clicks.filter((c) => c.image !== click.image);
   if (clicks.length >= 2) clicks.shift();
   await savePlan({ ...p, points: [...(p.points ?? []).filter((c) => c.corner !== corner), { corner, clicks: [...clicks, click] }] });
   await verify(corner);
+}
+
+async function erase(corner: number, image: string) {
+  const p = plan();
+  await savePlan({ ...p, points: [...(p.points ?? []).filter((c) => c.corner !== corner), { corner, clicks: entry(corner).clicks.filter((c) => c.image !== image) }] });
+  refreshGuided();
 }
 
 const signature = (corner: number) => JSON.stringify(entry(corner).clicks);
@@ -240,8 +301,7 @@ async function verify(corner: number) {
   const p = plan(), clicks = entry(corner).clicks, key = signature(corner);
   if (clicks.length !== 2 || checks.has(key)) return;
   const [x, z] = metres(p, p.fit!.k, p.walls[corner].a);
-  const lines = photoLines(p, corner);
-  checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z], lines }));
+  checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z], lines: photoLines(p, corner), height: p.fit!.height }));
   h.render();
 }
 
@@ -249,6 +309,7 @@ async function skip(mark: boolean) {
   const q = questions![current], p = plan();
   if (mark) await h.save({ plan: { ...p, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { corner: q.corner, clicks: [], skipped: true }] } }, true);
   current++;
+  browsing = false;
   const next = questions![current];
   h.render();
   if (next) await openCorner(next);
@@ -259,29 +320,6 @@ async function openGallery(corner: number) {
   const p = plan(), f = p.fit!, [x, z] = estimate(p, corner), names = neighbours(p, corner);
   const walls = Object.fromEntries(p.walls.filter((w) => names.includes(w.name)).map((w) => [w.name, [metres(p, f.k, w.a), metres(p, f.k, w.b)]]));
   gallery = { corner, items: await call("plan.photo_gallery", { point: [x, z], pose: f.pose, walls }), only: new Set() };
-}
-
-function galleryBox(q: { corner: number; photos: string[] }) {
-  const p = plan(), names = neighbours(p, q.corner), refused = new Set(p.refused?.[q.corner] ?? []), box = el("div", "gallery");
-  const filters = h.row(...[...names.map((n) => [n, `voit le mur ${n}`]), ["coin", "coin visible"]].map(([key, label]) => {
-    const check = Object.assign(el("input"), { type: "checkbox", checked: gallery!.only.has(key) }), line = el("label", "check");
-    check.onchange = () => { if (check.checked) gallery!.only.add(key); else gallery!.only.delete(key); h.render(); };
-    line.append(check, label);
-    return line;
-  }), button("Fermer", "", "Fermer la galerie", () => { gallery = null; h.render(); }));
-  const grid = el("div", "tiles");
-  grid.append(...gallery!.items.filter((v) => [...gallery!.only].every((key) => key === "coin" ? v.visible : v.sees[key])).map((v) => {
-    const tile = button("", `tile ${v.visible ? "ok" : ""} ${refused.has(v.name) ? "refused" : ""}`, v.name, () => run(async () => {
-      q.photos = [v.name, ...q.photos.filter((n) => n !== v.name)];
-      await openCorner(q);
-      await showGuided(v.name);
-    }));
-    tile.append(Object.assign(el("img"), { src: photoUrl(v.name), alt: v.name, loading: "lazy", decoding: "async" }),
-      el("span", "", refused.has(v.name) ? "refusée" : v.visible ? "✓ coin visible" : v.inside ? `caché (${v.hidden ?? "?"})` : "hors cadre"));
-    return tile;
-  }));
-  box.append(el("span", "", "Toutes les photos : clique celle où tu vois le coin"), filters, grid);
-  return box;
 }
 
 async function hidden() {
@@ -370,24 +408,23 @@ function pointsStep() {
     questions.length ? "Rien n'est appliqué au plan avant la validation (4.5)." : "Tous les coins sont donnés par les murs vus sur les photos."),
   h.footer(button("Retour", "", "4.2", () => run(() => goSub(2))), ...questions.length ? [button("Recommencer", "", "Revoir les points", () => run(async () => { current = 0; h.render(); await openCorner(questions![0]); }))] : [],
     h.primary("Portes et fenêtres", () => goSub(4)))];
-  const [before, after] = neighbours(p, q.corner), clicks = entry(q.corner).clicks, open = Boolean(guidedImage());
-  const verdict = checks.get(signature(q.corner));
+  const [before, after] = neighbours(p, q.corner), clicks = entry(q.corner).clicks, open = Boolean(guidedImage()), verdict = checks.get(signature(q.corner));
   if (clicks.length === 2 && !verdict) run(() => verify(q.corner));
-  const steps = [0, 1].map((i) => {
-    const line = el("div", "tagged");
-    line.append(el("span", "tag", clicks[i] ? "✓" : String(i + 1)), ...clicks[i] ? [crop(clicks[i].image, clicks[i].u, clicks[i].v)] : [], el("span", "", clicks[i] ? `Photo ${clicks[i].image} · point posé` : i ? "Même coin sur une 2e photo, prise d'un autre angle" : "Clique le coin sur cette photo"));
+  const box = h.intro(`Le coin entre le mur ${before} et le mur ${after}`, "Sur 2 photos prises de deux endroits différents. Choisis au-dessus de la photo ce que tu désignes, puis clique : un clic par photo, un nouveau clic remplace le précédent.");
+  box.querySelector(".kicker")!.textContent = `Point ${current + 1} sur ${questions.length}`;
+  const bar = Object.assign(el("progress"), { max: questions.length, value: current, ariaLabel: "Avancement des points" });
+  const rows = [0, 1].map((i) => {
+    const c = clicks[i], line = el("div", `tagged ${c ? "" : "empty"}`);
+    if (!c) line.append(el("span", "", i ? "2e photo, prise d'un autre endroit" : "Clique sur la photo"));
+    else line.append(crop(c.image, c.u, c.v), el("span", "", `Photo ${c.image} · ${kindName(c.kind)}`), button("Effacer", "", `Effacer le clic de la photo ${c.image}`, () => run(() => erase(q.corner, c.image))));
     return line;
   });
-  const next = button("Photo suivante qui montre ce coin", "", "Autre photo", () => run(() => {
-    const shown = guidedImage(), k = q.photos.indexOf(shown ?? "");
-    return showGuided(q.photos[(k + 1) % q.photos.length]);
-  }));
-  const box = h.intro(`Clique le coin sol – mur ${before} – mur ${after}`, "Là où les deux murs se rencontrent, au pied du coin de préférence. Un seul clic par photo : un nouveau clic remplace le précédent.");
-  box.querySelector(".kicker")!.textContent = `Point ${current + 1} sur ${questions.length}`;
-  const result = clicks.length === 2 ? [verdict ? el("div", verdict.ok ? "note" : "alert", verdict.ok ? `✓ Les 2 clics se recoupent à ${number(verdict.gap_cm ?? 0, 0)} cm près, à ${number(verdict.offset_cm ?? 0, 0)} cm du coin dessiné.` : `⚠ ${verdict.message[0].toUpperCase()}${verdict.message.slice(1)}.`) : el("div", "note", "Vérification des 2 clics…")] : [];
-  const choose = button("Choisir une photo", "", "Toutes les photos, triées par visibilité du coin", () => run(() => h.act("Recherche des photos", () => openGallery(q.corner))));
-  return [box, ...steps, ...result, ...gallery?.corner === q.corner ? [galleryBox(q)] : [h.row(choose)], h.row(...open ? [next, button("Ce coin n'est pas visible", "", "Retirer cette photo", () => run(hidden))] : [h.primary("Ouvrir les photos", () => openCorner(q))]),
-    el("div", "note", "Le plan ne change qu'à la fin de l'étape 4.5. Tu peux annuler chaque clic (Ctrl+Z)."),
+  const result = clicks.length === 2 ? verdict ? verdict.ok ? [el("div", "note", `✓ Les 2 clics se recoupent à ${number(verdict.gap_cm ?? 0, 0)} cm près.`), ...verdict.note ? [el("div", "alert", `⚠ ${verdict.note}.`)] : []]
+    : [el("div", "alert", `⚠ ${verdict.message[0].toUpperCase()}${verdict.message.slice(1)}.`)] : [el("div", "note", "Vérification des 2 clics…")] : [];
+  const map = el("div", "corner-plan");
+  map.append(el("span", "", "Plan · ce coin"), drawPlan(p, { corner: q.corner }));
+  return [box, bar, ...rows, ...result, map, ...open ? [] : [h.primary("Ouvrir les photos", () => openCorner(q))],
+    el("div", "note", "Rien ne change dans le plan avant 4.5 · Ctrl+Z annule un clic."),
     h.footer(button("Passer ce point", "", "Ne pas préciser ce coin", () => run(() => skip(true))), Object.assign(h.primary("Point suivant", () => skip(false)), { disabled: clicks.length !== 2 || !verdict?.ok }))];
 }
 

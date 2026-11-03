@@ -196,7 +196,7 @@ def test_yaw_from_clicks(setup, monkeypatch):
     anchors = {name: {axis: number for axis, number in zip('xyz', map(photos.number, turn @ point))} for name, point in known.items()}
     anchors['q:coin'] = {'x': 'qx', 'y': 'qy', 'z': 'qz'}; monkeypatch.setattr(photos, 'anchor_coordinates', lambda project, anchor: anchors[anchor])
     for name in ('qx', 'qy', 'qz'): project.add_param(name, 2.0, name[1], name)
-    project.db.execute("update params set init=0.45 where name='photos_s'"); project.db.commit()
+    monkeypatch.setattr(photos, 'CLICK_SIGMA_M', 0.001); project.db.execute("update params set init=0.45 where name='photos_s'"); project.db.commit()
     room_q = [3.5, 1.1, 2.6]; known['q:coin'] = room_q
     for anchor, point in known.items():
         for i in (0, 3): photos.click(ctx, 'photos', f'img{i}.jpg', *display_pixel(model, i, point), anchor)
