@@ -589,3 +589,4 @@ document.addEventListener("plans3d:photo", (event) => {
 const miniPlan = $("#photo-plan"), PLAN_SIZE = "plans3d.miniplan", savedPlan = JSON.parse(localStorage.getItem(PLAN_SIZE) ?? "null") as UV | null;
 if (savedPlan) Object.assign(miniPlan.style, { width: `${savedPlan[0]}px`, height: `${savedPlan[1]}px` });
 new ResizeObserver(() => { if (miniPlan.offsetWidth) localStorage.setItem(PLAN_SIZE, JSON.stringify([miniPlan.offsetWidth, miniPlan.offsetHeight])); }).observe(miniPlan);
+export const photoUrl = (name: string) => { const camera = cameras().find((c) => c.name === name); return camera ? host.photoUrl(camera.path) : ""; };

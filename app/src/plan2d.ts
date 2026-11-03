@@ -4,7 +4,7 @@ export type Fit = { k: number; turn: number | null; pose: { L: number[][]; c: nu
   photo: { id: string; sure: boolean; wall: string | null; a: number[]; b: number[] }[] };
 export type Corner = { corner: number; clicks: { image: string; u: number; v: number }[]; skipped?: boolean };
 export type Plan = { image: number[]; angle: number; walls: DrawnWall[]; extra: { a: number[]; b: number[]; inside: boolean; name?: string }[]; openings: Opening[];
-  stairs: { box: number[]; kept?: boolean }[]; legend: { color: string; hex: string; count: number; role: string }[]; ai?: boolean; fit?: Fit | null; points?: Corner[] };
+  stairs: { box: number[]; kept?: boolean }[]; legend: { color: string; hex: string; count: number; role: string }[]; ai?: boolean; fit?: Fit | null; points?: Corner[]; refused?: Record<string, string[]> };
 type Options = { selected?: string; opening?: number; corner?: number; photo?: boolean; onWall?: (name: string) => void; onOpening?: (i: number) => void };
 
 const NS = "http://www.w3.org/2000/svg";

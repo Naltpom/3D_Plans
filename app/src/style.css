@@ -391,3 +391,9 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #step .crop { position: relative; flex: none; border: 1px solid var(--strong); border-radius: 6px; background-repeat: no-repeat; background-color: var(--bg); }
 #photo-plan { direction: rtl; }
 #photo-plan > * { direction: ltr; }
+#step .gallery { display: flex; flex-direction: column; gap: 8px; }
+#step .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-height: 360px; overflow: auto; }
+#step .tile { display: flex; flex-direction: column; gap: 2px; min-height: 0; padding: 3px; border-radius: 6px; font-size: 11px; font-weight: 400; color: var(--muted); }
+#step .tile img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 4px; }
+#step .tile.ok { border-color: var(--accent); color: var(--accent-text); }
+#step .tile.refused { opacity: 0.45; }

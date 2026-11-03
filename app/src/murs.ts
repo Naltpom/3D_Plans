@@ -1,7 +1,7 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
 import { drawPlan, metres, type Corner, type DrawnWall, type Fit, type Opening, type Plan } from "./plan2d";
-import { closeGuided, crop, guidedImage, openGuided, showGuided } from "./photos";
+import { closeGuided, crop, guidedImage, openGuided, photoUrl, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
@@ -28,6 +28,7 @@ let current = 0;
 let checks = new Map<string, { ok: boolean; gap_cm: number | null; offset_cm: number | null; message: string }>();
 let applied: Applied | null = null;
 let preparing = false;
+let gallery: { corner: number; items: { name: string; visible: boolean; inside: boolean; hidden: number | null; sees: Record<string, boolean> }[]; only: Set<string> } | null = null;
 
 const plan = () => h.guide().plan!;
 const sub = () => h.guide().sub ?? 1;
@@ -202,7 +203,7 @@ async function ask() {
     const [before, after] = neighbours(p, i);
     if (paired.has(before) && paired.has(after)) continue;
     const [x, z] = metres(p, f.k, p.walls[i].a);
-    const photos = source ? await call<string[]>("plan.corner_photos", { point: [x, z], pose: f.pose, limit: 8 }) : [];
+    const photos = source ? await call<string[]>("plan.corner_photos", { point: [x, z], pose: f.pose, limit: 8, refused: p.refused?.[i] ?? [] }) : [];
     if (photos.length >= 2) list.push({ corner: i, photos });
   }
   questions = list;
@@ -246,12 +247,43 @@ async function skip(mark: boolean) {
   else closeGuided();
 }
 
+async function openGallery(corner: number) {
+  const p = plan(), f = p.fit!, [x, z] = metres(p, f.k, p.walls[corner].a), names = neighbours(p, corner);
+  const walls = Object.fromEntries(p.walls.filter((w) => names.includes(w.name)).map((w) => [w.name, [metres(p, f.k, w.a), metres(p, f.k, w.b)]]));
+  gallery = { corner, items: await call("plan.photo_gallery", { point: [x, z], pose: f.pose, walls }), only: new Set() };
+}
+
+function galleryBox(q: { corner: number; photos: string[] }) {
+  const p = plan(), names = neighbours(p, q.corner), refused = new Set(p.refused?.[q.corner] ?? []), box = el("div", "gallery");
+  const filters = h.row(...[...names.map((n) => [n, `voit le mur ${n}`]), ["coin", "coin visible"]].map(([key, label]) => {
+    const check = Object.assign(el("input"), { type: "checkbox", checked: gallery!.only.has(key) }), line = el("label", "check");
+    check.onchange = () => { if (check.checked) gallery!.only.add(key); else gallery!.only.delete(key); h.render(); };
+    line.append(check, label);
+    return line;
+  }), button("Fermer", "", "Fermer la galerie", () => { gallery = null; h.render(); }));
+  const grid = el("div", "tiles");
+  grid.append(...gallery!.items.filter((v) => [...gallery!.only].every((key) => key === "coin" ? v.visible : v.sees[key])).map((v) => {
+    const tile = button("", `tile ${v.visible ? "ok" : ""} ${refused.has(v.name) ? "refused" : ""}`, v.name, () => run(async () => {
+      q.photos = [v.name, ...q.photos.filter((n) => n !== v.name)];
+      gallery = null;
+      await openCorner(q);
+      await showGuided(v.name);
+    }));
+    tile.append(Object.assign(el("img"), { src: photoUrl(v.name), alt: v.name, loading: "lazy", decoding: "async" }),
+      el("span", "", refused.has(v.name) ? "refusée" : v.visible ? "✓ coin visible" : v.inside ? `caché (${v.hidden ?? "?"})` : "hors cadre"));
+    return tile;
+  }));
+  box.append(filters, grid);
+  return box;
+}
+
 async function hidden() {
   const q = questions![current], shown = guidedImage();
   if (!shown) return;
   q.photos = q.photos.filter((name) => name !== shown);
   const p = plan(), kept = entry(q.corner).clicks.filter((c) => c.image !== shown);
-  await h.save({ plan: { ...p, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { corner: q.corner, clicks: kept }] } }, true);
+  const refused = { ...p.refused ?? {}, [q.corner]: [...new Set([...p.refused?.[q.corner] ?? [], shown])] };
+  await h.save({ plan: { ...p, refused, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { corner: q.corner, clicks: kept }] } }, true);
   if (q.photos.length + kept.length < 2) return skip(true);
   await openCorner(q);
 }
@@ -347,7 +379,8 @@ function pointsStep() {
   const box = h.intro(`Clique le coin sol – mur ${before} – mur ${after}`, "Là où les deux murs se rencontrent, au pied du coin de préférence. Un seul clic par photo : un nouveau clic remplace le précédent.");
   box.querySelector(".kicker")!.textContent = `Point ${current + 1} sur ${questions.length}`;
   const result = clicks.length === 2 ? [verdict ? el("div", verdict.ok ? "note" : "alert", verdict.ok ? `✓ Les 2 clics se recoupent à ${number(verdict.gap_cm ?? 0, 0)} cm près, à ${number(verdict.offset_cm ?? 0, 0)} cm du coin dessiné.` : `⚠ ${verdict.message[0].toUpperCase()}${verdict.message.slice(1)}.`) : el("div", "note", "Vérification des 2 clics…")] : [];
-  return [box, ...steps, ...result, h.row(...open ? [next, button("Ce coin n'est pas visible", "", "Retirer cette photo", () => run(hidden))] : [h.primary("Ouvrir les photos", () => openCorner(q))]),
+  const choose = button("Choisir une photo", "", "Toutes les photos, triées par visibilité du coin", () => run(() => h.act("Recherche des photos", () => openGallery(q.corner))));
+  return [box, ...steps, ...result, ...gallery?.corner === q.corner ? [galleryBox(q)] : [h.row(choose)], h.row(...open ? [next, button("Ce coin n'est pas visible", "", "Retirer cette photo", () => run(hidden))] : [h.primary("Ouvrir les photos", () => openCorner(q))]),
     el("div", "note", "Le plan ne change qu'à la fin de l'étape 4.5. Tu peux annuler chaque clic (Ctrl+Z)."),
     h.footer(button("Passer ce point", "", "Ne pas préciser ce coin", () => run(() => skip(true))), Object.assign(h.primary("Point suivant", () => skip(false)), { disabled: clicks.length !== 2 || !verdict?.ok }))];
 }

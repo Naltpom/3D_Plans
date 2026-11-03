@@ -363,26 +363,40 @@ def check_corner(ctx, clicks, pose, point, lines=()):
     return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message}
 
 
-@rpc('plan.corner_photos')
-def corner_photos(ctx, point, pose, limit=8):
-    project = ctx.require_project(); source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
+def corner_views(project, point, pose, walls=None):
+    source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
     L, c = np.array(pose['L'], float), np.array(pose['c'], float); cloud, _ = photos.cloud_sample(cache, 150000); cloud = cloud @ L.T + c
-    centers = photos.camera_centers(model) @ L.T + c; x, z = point; targets = np.array([[x, h, z] for h in CORNER_HEIGHTS]); scored = []
+    centers = photos.camera_centers(model) @ L.T + c; x, z = point; targets = np.array([[x, h, z] for h in CORNER_HEIGHTS]); views = []
+    framed = lambda p, width, height: p is not None and 0.05 < p[0] / width < 0.95 and 0.05 < p[1] / height < 0.95
     for i, center in enumerate(centers):
         uv, (width, height), _ = photos.project_to_display(model, i, L, c, targets)
-        distance = float(np.linalg.norm(targets[1] - center))
-        if any(p is None or not (0.05 < p[0] / width < 0.95 and 0.05 < p[1] / height < 0.95) for p in uv) or not 0.8 < distance < 8.0: continue
-        if abs(uv[2][0] - uv[0][0]) > 0.35 * abs(uv[2][1] - uv[0][1]): continue
-        hidden = 0
-        for target in targets[1:]:
-            ray = target - center; length = np.linalg.norm(ray); t = (cloud - center) @ ray / length ** 2
-            hidden += int(((t > 0.3 / length) & (t < 1 - TUBE_END_M / length) & (np.linalg.norm(cloud - center - t[:, None] * ray, axis=1) < TUBE_M)).sum())
-        if hidden <= HIDDEN_POINTS: scored.append((hidden, abs(uv[1][0] / width - 0.5) + abs(uv[1][1] / height - 0.5), str(model['names'][i])))
-    chosen = []
-    for _, _, name in sorted(scored):
-        i = photos.image_index(model, name)
-        if all(np.linalg.norm(centers[i] - centers[photos.image_index(model, other)]) > 0.4 for other in chosen): chosen.append(name)
-    return chosen[:int(limit)]
+        distance = float(np.linalg.norm(targets[1] - center)); inside = all(framed(p, width, height) for p in uv) and 0.8 < distance < 8.0
+        view = {'name': str(model['names'][i]), 'index': i, 'inside': bool(inside), 'hidden': None, 'offset': 9.0, 'visible': False,
+                'sees': {name: any(framed(p, width, height) for p in photos.project_to_display(model, i, L, c, [[a[0] + s * (b[0] - a[0]), 1.0, a[1] + s * (b[1] - a[1])] for s in (0.1, 0.3, 0.5, 0.7, 0.9)])[0])
+                         for name, (a, b) in (walls or {}).items()}}
+        if inside and abs(uv[2][0] - uv[0][0]) <= 0.35 * abs(uv[2][1] - uv[0][1]):
+            hidden = 0
+            for target in targets[1:]:
+                ray = target - center; length = np.linalg.norm(ray); t = (cloud - center) @ ray / length ** 2
+                hidden += int(((t > 0.3 / length) & (t < 1 - TUBE_END_M / length) & (np.linalg.norm(cloud - center - t[:, None] * ray, axis=1) < TUBE_M)).sum())
+            view.update(hidden=hidden, offset=float(abs(uv[1][0] / width - 0.5) + abs(uv[1][1] / height - 0.5)), visible=hidden <= HIDDEN_POINTS)
+        views.append(view)
+    return sorted(views, key=lambda v: (not v['visible'], not v['inside'], v['hidden'] if v['hidden'] is not None else 1e9, v['offset'])), centers
+
+
+@rpc('plan.corner_photos')
+def corner_photos(ctx, point, pose, limit=8, refused=()):
+    views, centers = corner_views(ctx.require_project(), point, pose); chosen = []
+    for view in (v for v in views if v['visible'] and v['name'] not in refused):
+        if all(np.linalg.norm(centers[view['index']] - centers[other]) > 0.4 for other in chosen): chosen.append(view['index'])
+    return [next(v['name'] for v in views if v['index'] == i) for i in chosen[:int(limit)]]
+
+
+@rpc('plan.photo_gallery')
+def photo_gallery(ctx, point, pose, walls=None):
+    views, _ = corner_views(ctx.require_project(), point, pose, walls)
+    return [{k: v[k] for k in ('name', 'visible', 'inside', 'hidden', 'sees')} for v in views]
+
 
 def vision_ready():
     from . import ai
