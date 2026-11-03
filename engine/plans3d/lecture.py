@@ -19,7 +19,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
-CLICK_GAP_M, PLANE_GAP_M, CORNER_M, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.05, 0.6, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
+CLICK_GAP_M, PLANE_GAP_M, FAR_M, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -357,10 +357,13 @@ def check_corner(ctx, clicks, pose, point, lines=()):
     rays = [photos.unit(turns[i].T @ [x, y, 1.0]) for _, i, x, y, _ in group]
     gap = max(np.linalg.norm((found - centers[i]) - ((found - centers[i]) @ d) * d) for (_, i, *_), d in zip(group, rays)) * scale * 2
     placed = L @ found + c; offset = float(np.hypot(placed[0] - point[0], placed[2] - point[1]))
-    away = max([abs(cross((np.subtract(b, a)) / np.hypot(*np.subtract(b, a)), placed[[0, 2]] - a)) for a, b in lines] or [0.0])
-    ok = gap < CLICK_GAP_M and offset < CORNER_M and away < PLANE_GAP_M
-    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin' if gap >= CLICK_GAP_M else 'ce point n’est pas sur les murs vus en photo : clique l’arête du coin' if away >= PLANE_GAP_M else 'ce point est loin du coin dessiné : vérifie que c’est le bon coin'
-    return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message}
+    away, wall = max(((abs(cross(np.subtract(b, a) / np.hypot(*np.subtract(b, a)), placed[[0, 2]] - a)), name) for name, a, b in lines), default=(0.0, ''))
+    ok = gap < CLICK_GAP_M
+    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin'
+    notes = [f'à {away * 100:.0f} cm du mur {wall} vu en photo : vérifie que tu as cliqué l’arête du coin, pas un meuble devant'] * (away >= PLANE_GAP_M)
+    notes += [f'à {offset:.1f} m du coin dessiné : vérifie que c’est le bon coin'.replace('.', ',')] * (offset >= FAR_M)
+    note = ' ; '.join(notes) if ok else ''
+    return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message, 'note': note}
 
 
 def corner_views(project, point, pose, walls=None):

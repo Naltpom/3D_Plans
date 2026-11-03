@@ -74,7 +74,7 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
         if len(seen) >= 2: break
     clicks = [{'image': name, 'u': uv[0], 'v': uv[1]} for name in seen[:2] for uv in rpc.call(ctx, 'photos.project_points', {'source': 'photos', 'image': name, 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})['uv']]
     assert len(clicks) == 2 and rpc.call(ctx, 'plan.check_corner', {'clicks': clicks, 'pose': fit['pose'], 'point': [x, z]})['ok']
-    wrong = [clicks[0], {**clicks[1], 'u': clicks[1]['u'] + 300}]
+    wrong = [clicks[0], {**clicks[1], 'v': clicks[1]['v'] + 300}]
     assert not rpc.call(ctx, 'plan.check_corner', {'clicks': wrong, 'pose': fit['pose'], 'point': [x, z]})['ok']
     read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
     lengths = sorted(np.hypot(*np.subtract(w['b'], w['a'])) for w in plan.walls(ctx))

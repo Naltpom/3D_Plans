@@ -25,7 +25,7 @@ let chosen = -1;
 let renaming = false;
 let questions: { corner: number; photos: string[] }[] | null = null;
 let current = 0;
-let checks = new Map<string, { ok: boolean; gap_cm: number | null; offset_cm: number | null; message: string }>();
+let checks = new Map<string, { ok: boolean; gap_cm: number | null; offset_cm: number | null; message: string; note?: string }>();
 let applied: Applied | null = null;
 let preparing = false;
 let gallery: { corner: number; items: { name: string; visible: boolean; inside: boolean; hidden: number | null; sees: Record<string, boolean> }[]; only: Set<string> } | null = null;
@@ -38,6 +38,11 @@ const size = (p: Plan, w: DrawnWall) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a
 const at = (w: DrawnWall, t: number) => w.a.map((v, i) => v + t * (w.b[i] - v));
 const project = (w: DrawnWall, p: number[]) => ((p[0] - w.a[0]) * (w.b[0] - w.a[0]) + (p[1] - w.a[1]) * (w.b[1] - w.a[1])) / Math.max(1e-9, (w.b[0] - w.a[0]) ** 2 + (w.b[1] - w.a[1]) ** 2);
 const neighbours = (p: Plan, i: number) => [p.walls[(i - 1 + p.walls.length) % p.walls.length].name, p.walls[i].name];
+const photoLines = (p: Plan, i: number) => p.fit!.photo.filter((w) => w.wall && neighbours(p, i).includes(w.wall) && (p.fit!.gaps[w.wall] ?? 0) <= 15).map((w) => [w.wall!, metres(p, p.fit!.k, w.a), metres(p, p.fit!.k, w.b)] as const);
+const estimate = (p: Plan, i: number) => photoLines(p, i).reduce(([x, z], [, [ax, az], [bx, bz]]) => {
+  const dx = bx - ax, dz = bz - az, t = ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz);
+  return [ax + t * dx, az + t * dz];
+}, metres(p, p.fit!.k, p.walls[i].a));
 const entry = (corner: number): Corner => plan().points?.find((c) => c.corner === corner) ?? { corner, clicks: [] };
 
 async function savePlan(next: Plan, change: Record<string, unknown> = {}) {
@@ -202,9 +207,9 @@ async function ask() {
   for (let i = 0; f && i < n; i++) {
     const [before, after] = neighbours(p, i);
     if (paired.has(before) && paired.has(after)) continue;
-    const [x, z] = metres(p, f.k, p.walls[i].a);
+    const [x, z] = estimate(p, i);
     const photos = source ? await call<string[]>("plan.corner_photos", { point: [x, z], pose: f.pose, limit: 8, refused: p.refused?.[i] ?? [] }) : [];
-    if (photos.length >= 2) list.push({ corner: i, photos });
+    if (source) list.push({ corner: i, photos });
   }
   questions = list;
   current = Math.max(0, list.findIndex((q) => entry(q.corner).clicks.length < 2 && !entry(q.corner).skipped));
@@ -212,7 +217,10 @@ async function ask() {
 }
 
 async function openCorner(q: { corner: number; photos: string[] }) {
-  const p = plan(), f = p.fit!, [x, z] = metres(p, f.k, p.walls[q.corner].a), [before, after] = neighbours(p, q.corner);
+  if (gallery?.corner !== q.corner) await openGallery(q.corner);
+  const refused = new Set(plan().refused?.[q.corner] ?? []), others = gallery!.items.filter((v) => v.inside && !refused.has(v.name)).map((v) => v.name);
+  if (!q.photos.length) q.photos = others.length ? others : gallery!.items.map((v) => v.name);
+  const p = plan(), f = p.fit!, [x, z] = estimate(p, q.corner), [before, after] = neighbours(p, q.corner);
   await openGuided({ anchor: `coin ${before}-${after}`, text: `Clique le coin sol – mur ${before} – mur ${after}, là où le sol rencontre les deux murs.`,
     points: [[x, 0, z], [x, f.height ?? 2.4, z]], photos: q.photos, pose: f.pose, picks: () => entry(q.corner).clicks, pick: (c) => setPick(q.corner, c),
     plan: () => drawPlan(plan(), { corner: q.corner }) });
@@ -232,7 +240,7 @@ async function verify(corner: number) {
   const p = plan(), clicks = entry(corner).clicks, key = signature(corner);
   if (clicks.length !== 2 || checks.has(key)) return;
   const [x, z] = metres(p, p.fit!.k, p.walls[corner].a);
-  const names = neighbours(p, corner), lines = p.fit!.photo.filter((w) => w.wall && names.includes(w.wall)).map((w) => [metres(p, p.fit!.k, w.a), metres(p, p.fit!.k, w.b)]);
+  const lines = photoLines(p, corner);
   checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z], lines }));
   h.render();
 }
@@ -248,7 +256,7 @@ async function skip(mark: boolean) {
 }
 
 async function openGallery(corner: number) {
-  const p = plan(), f = p.fit!, [x, z] = metres(p, f.k, p.walls[corner].a), names = neighbours(p, corner);
+  const p = plan(), f = p.fit!, [x, z] = estimate(p, corner), names = neighbours(p, corner);
   const walls = Object.fromEntries(p.walls.filter((w) => names.includes(w.name)).map((w) => [w.name, [metres(p, f.k, w.a), metres(p, f.k, w.b)]]));
   gallery = { corner, items: await call("plan.photo_gallery", { point: [x, z], pose: f.pose, walls }), only: new Set() };
 }
@@ -265,7 +273,6 @@ function galleryBox(q: { corner: number; photos: string[] }) {
   grid.append(...gallery!.items.filter((v) => [...gallery!.only].every((key) => key === "coin" ? v.visible : v.sees[key])).map((v) => {
     const tile = button("", `tile ${v.visible ? "ok" : ""} ${refused.has(v.name) ? "refused" : ""}`, v.name, () => run(async () => {
       q.photos = [v.name, ...q.photos.filter((n) => n !== v.name)];
-      gallery = null;
       await openCorner(q);
       await showGuided(v.name);
     }));
@@ -273,7 +280,7 @@ function galleryBox(q: { corner: number; photos: string[] }) {
       el("span", "", refused.has(v.name) ? "refusée" : v.visible ? "✓ coin visible" : v.inside ? `caché (${v.hidden ?? "?"})` : "hors cadre"));
     return tile;
   }));
-  box.append(filters, grid);
+  box.append(el("span", "", "Toutes les photos : clique celle où tu vois le coin"), filters, grid);
   return box;
 }
 
@@ -284,7 +291,6 @@ async function hidden() {
   const p = plan(), kept = entry(q.corner).clicks.filter((c) => c.image !== shown);
   const refused = { ...p.refused ?? {}, [q.corner]: [...new Set([...p.refused?.[q.corner] ?? [], shown])] };
   await h.save({ plan: { ...p, refused, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { corner: q.corner, clicks: kept }] } }, true);
-  if (q.photos.length + kept.length < 2) return skip(true);
   await openCorner(q);
 }
 
