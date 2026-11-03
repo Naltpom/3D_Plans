@@ -74,7 +74,7 @@ def rpc_trace(ctx, points, closed=True, lengths=None, cote_status='mesuré', cot
 
 
 @rpc('plan.place')
-def place(ctx, type, point, width=None, height=None, sill=None):
+def place(ctx, type, point, width=None, height=None, sill=None, sigma=None):
     project = ctx.require_project(); point = np.asarray(point, float); values = current_values(project); best = None
     if type not in components.OPENING_DEFAULTS: raise ValueError(f'ouverture inconnue : {type}')
     for comp in components.load(project).values():
@@ -89,7 +89,7 @@ def place(ctx, type, point, width=None, height=None, sill=None):
     comp = components.add(project, type, comp_id, {'mur': wall['id'], 'pos': position, 'l': width, **({'h': float(height)} if height else {}), **({'al': float(sill)} if sill is not None else {})})
     covered, params = {o.expr for o in project.observations() if o.source == f'comp:{comp_id}'}, project.params()
     for name in comp['params']:
-        if name not in covered: prior(project, comp_id, name, params[name][0], OPENING_SIGMA_M, f"{params[name][2]} (a priori)")
+        if name not in covered: prior(project, comp_id, name, params[name][0], float(sigma or OPENING_SIGMA_M), f"{params[name][2]} (a priori)")
     if height: prior(project, comp_id, f'{comp_id}_h', float(height), MARGIN_M / 5, f"{comp['label']} — hauteur (fiche)")
     project.db.commit()
     return components.summary(comp)

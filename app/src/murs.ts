@@ -25,7 +25,7 @@ let chosen = -1;
 let renaming = false;
 let questions: { corner: number; photos: string[] }[] | null = null;
 let current = 0;
-let found: Opening[] = [];
+let checks = new Map<string, { ok: boolean; gap_cm: number | null; offset_cm: number | null; message: string }>();
 let applied: Applied | null = null;
 let preparing = false;
 
@@ -166,7 +166,7 @@ async function rename(name: string) {
 
 async function read(legend?: Plan["legend"]) {
   const result = await call<Plan>("plan.read_drawing", legend ? { legend } : {});
-  [selected, chosen, questions, found, applied] = ["", -1, null, [], null];
+  [selected, chosen, questions, applied] = ["", -1, null, null];
   await h.save({ plan: { ...result, fit: null, points: [] }, sub: 1 }, true);
 }
 
@@ -222,6 +222,17 @@ async function setPick(corner: number, click: { image: string; u: number; v: num
   const p = plan(), old = entry(corner), clicks = old.clicks.filter((c) => c.image !== click.image);
   if (clicks.length >= 2) clicks.shift();
   await savePlan({ ...p, points: [...(p.points ?? []).filter((c) => c.corner !== corner), { corner, clicks: [...clicks, click] }] });
+  await verify(corner);
+}
+
+const signature = (corner: number) => JSON.stringify(entry(corner).clicks);
+
+async function verify(corner: number) {
+  const p = plan(), clicks = entry(corner).clicks, key = signature(corner);
+  if (clicks.length !== 2 || checks.has(key)) return;
+  const [x, z] = metres(p, p.fit!.k, p.walls[corner].a);
+  checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z] }));
+  h.render();
 }
 
 async function skip(mark: boolean) {
@@ -321,6 +332,8 @@ function pointsStep() {
   h.footer(button("Retour", "", "4.2", () => run(() => goSub(2))), ...questions.length ? [button("Recommencer", "", "Revoir les points", () => run(async () => { current = 0; h.render(); await openCorner(questions![0]); }))] : [],
     h.primary("Portes et fenêtres", () => goSub(4)))];
   const [before, after] = neighbours(p, q.corner), clicks = entry(q.corner).clicks, open = Boolean(guidedImage());
+  const verdict = checks.get(signature(q.corner));
+  if (clicks.length === 2 && !verdict) run(() => verify(q.corner));
   const steps = [0, 1].map((i) => {
     const line = el("div", "tagged");
     line.append(el("span", "tag", clicks[i] ? "✓" : String(i + 1)), el("span", "", clicks[i] ? `Photo ${clicks[i].image} · point posé` : i ? "Même coin sur une 2e photo, prise d'un autre angle" : "Clique le coin sur cette photo"));
@@ -330,11 +343,12 @@ function pointsStep() {
     const shown = guidedImage(), k = q.photos.indexOf(shown ?? "");
     return showGuided(q.photos[(k + 1) % q.photos.length]);
   }));
-  const box = h.intro(`Clique le coin sol – mur ${before} – mur ${after}`, "Là où le sol rencontre les deux murs, sur cette photo. Un seul clic : un nouveau clic remplace le précédent.");
+  const box = h.intro(`Clique le coin sol – mur ${before} – mur ${after}`, "Là où les deux murs se rencontrent, au pied du coin de préférence. Un seul clic par photo : un nouveau clic remplace le précédent.");
   box.querySelector(".kicker")!.textContent = `Point ${current + 1} sur ${questions.length}`;
-  return [box, ...steps, h.row(...open ? [next, button("Ce coin n'est pas visible", "", "Retirer cette photo", () => run(hidden))] : [h.primary("Ouvrir les photos", () => openCorner(q))]),
+  const result = clicks.length === 2 ? [verdict ? el("div", verdict.ok ? "note" : "alert", verdict.ok ? `✓ Les 2 clics se recoupent à ${number(verdict.gap_cm ?? 0, 0)} cm près, à ${number(verdict.offset_cm ?? 0, 0)} cm du coin dessiné.` : `⚠ ${verdict.message[0].toUpperCase()}${verdict.message.slice(1)}.`) : el("div", "note", "Vérification des 2 clics…")] : [];
+  return [box, ...steps, ...result, h.row(...open ? [next, button("Ce coin n'est pas visible", "", "Retirer cette photo", () => run(hidden))] : [h.primary("Ouvrir les photos", () => openCorner(q))]),
     el("div", "note", "Le plan ne change qu'à la fin de l'étape 4.5. Tu peux annuler chaque clic (Ctrl+Z)."),
-    h.footer(button("Passer ce point", "", "Ne pas préciser ce coin", () => run(() => skip(true))), Object.assign(h.primary("Point suivant", () => skip(false)), { disabled: clicks.length !== 2 }))];
+    h.footer(button("Passer ce point", "", "Ne pas préciser ce coin", () => run(() => skip(true))), Object.assign(h.primary("Point suivant", () => skip(false)), { disabled: clicks.length !== 2 || !verdict?.ok }))];
 }
 
 function openingsStep() {
@@ -353,17 +367,15 @@ function openingsStep() {
       const w = Number(width.value.replace(",", ".")) / 100 / length, middle = (o.t0 + o.t1) / 2;
       if (w > 0 && w < 1) change(i, { t0: Math.max(0, middle - w / 2), t1: Math.min(1, middle + w / 2) });
     };
-    line.append(el("span", "tag", o.wall), type, width, el("span", "", "cm"), el("span", "m", o.seen === true ? "✓ vu sur les photos" : o.seen === false ? "pas vu sur les photos" : ""),
+    line.append(el("span", "tag", o.wall), type, width, el("span", "", "cm"), el("span", "m", o.seen === true ? "✓ vue sur les photos" : o.seen === false ? "pas vue : d'après le dessin (± 30 cm)" : "d'après le dessin (± 30 cm)"),
       button("Supprimer", "", "Supprimer cette ouverture (Suppr)", () => run(() => removeOpening(i))));
     line.onclick = (event) => { if (event.target === line) choose(i); };
     return line;
   }));
   if (!p.openings.length) list.append(el("p", "", "Aucune porte ni fenêtre sur le dessin."));
-  const extra = found.map((o) => h.card(`${KINDS[o.type][0]} vue sur les photos, mur ${o.wall}`, `${number((o.t1 - o.t0) * size(p, p.walls.find((w) => w.name === o.wall)!), 2)} m de large, pas dessinée.`,
-    button("L'ajouter", "", "Ajouter cette ouverture", () => run(async () => { found = found.filter((x) => x !== o); await savePlan({ ...p, openings: [...p.openings, { ...o, seen: true }] }); }))));
   const stairs = p.stairs.map((s, i) => tagged("≡", s.kept === false ? "Escalier ignoré" : "Escalier du dessin", "", false, () => run(() => savePlan({ ...p, stairs: p.stairs.map((x, k) => k === i ? { ...x, kept: x.kept === false } : x) }))));
-  return [h.intro("Portes et fenêtres", "Elles viennent de ton dessin. Change le type ou la largeur, supprime ce qui est faux, puis vérifie sur les photos."), list, ...extra, ...stairs,
-    ...p.fit ? [h.row(button("Vérifier sur les photos", "", "Trous dans les points des murs", () => run(() => h.act("Vérification sur les photos", check))))] : [],
+  return [h.intro("Portes et fenêtres", "Elles viennent de ton dessin. Change le type ou la largeur, supprime ce qui est faux, puis vérifie sur les photos."), list, ...stairs,
+    ...p.fit ? [h.row(button("Vérifier sur les photos (IA)", "", "L'IA vision regarde chaque ouverture sur une photo qui la montre", () => run(() => h.act("Vérification des ouvertures par l'IA", check))))] : [],
     h.footer(button("Retour", "", "4.3", () => run(() => goSub(p.fit ? 3 : 1))), h.primary("Récapitulatif", () => goSub(5)))];
 }
 
@@ -374,10 +386,8 @@ async function removeOpening(i: number) {
 }
 
 async function check() {
-  const p = plan(), holes = await call<Opening[]>("plan.check_openings", { plan: p });
-  const overlaps = (a: Opening, b: Opening) => a.wall === b.wall && Math.min(a.t1, b.t1) > Math.max(a.t0, b.t0);
-  found = holes.filter((hole) => !p.openings.some((o) => overlaps(o, hole)));
-  await h.save({ plan: { ...p, openings: p.openings.map((o) => ({ ...o, seen: holes.some((hole) => overlaps(o, hole)) })) } }, true);
+  const p = plan(), results = await call<(Partial<Opening> & { index: number })[]>("plan.check_openings", { plan: p });
+  await h.save({ plan: { ...p, openings: p.openings.map((o, i) => { const { index, ...found } = results.find((r) => r.index === i) ?? { index: i }; return { ...o, ...found }; }) } }, true);
 }
 
 function validStep() {
@@ -418,7 +428,8 @@ export function fourPaint() {
 }
 
 export function resetFour() {
-  [selected, chosen, renaming, questions, current, found, applied] = ["", -1, false, null, 0, [], null];
+  [selected, chosen, renaming, questions, current, applied] = ["", -1, false, null, 0, null];
+  checks = new Map();
   closeGuided();
 }
 

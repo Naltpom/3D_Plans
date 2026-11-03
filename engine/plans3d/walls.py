@@ -205,6 +205,15 @@ def best_fit(photo, traced, turn, cameras=np.zeros((0, 2))):
     return best[1]
 
 
+def set_pose(ctx, project, source, angle, factor, shift):
+    scale, translation, current, _ = photos.current_values(project, source); total = float(np.arctan2(current[0, 2], current[0, 0])) + angle; quarter = round(total / (np.pi / 2))
+    mapping = photos.mapping_matrix(photos.axis_mapping(project, source)); photos.axes(ctx, source, matrix_text(np.rint(turn_matrix(quarter * np.pi / 2)) @ mapping))
+    moved = factor * turn_matrix(angle) @ translation + np.array([shift[0], 0.0, shift[1]])
+    photos.ensure_params(project, source)
+    project.db.executemany('update params set init=? where name=?', [(factor * scale, f'{source}_s'), (float(total - quarter * np.pi / 2), f'{source}_yaw'),
+                                                                      *((float(v), f'{source}_t{a}') for a, v in zip('xyz', moved))])
+
+
 @rpc('photos.fit_walls')
 def fit_walls(ctx, source='photos', turn=None):
     project = ctx.require_project(); found = proposals(project, source); traced = traced_walls(project, source)
@@ -215,12 +224,7 @@ def fit_walls(ctx, source='photos', turn=None):
     if not fit or not any(abs(np.sin(direction(t['a'], t['b']) - direction(u['a'], u['b']))) > 0.5 for _, t, _ in fit[3] for _, u, _ in fit[3]):
         raise ValueError('appariement impossible : il faut au moins 2 murs non parallèles vus sur les photos et tracés')
     angle, factor, shift, paired = fit
-    scale, translation, current, _ = photos.current_values(project, source); total = float(np.arctan2(current[0, 2], current[0, 0])) + angle; quarter = round(total / (np.pi / 2))
-    mapping = photos.mapping_matrix(photos.axis_mapping(project, source)); photos.axes(ctx, source, matrix_text(np.rint(turn_matrix(quarter * np.pi / 2)) @ mapping))
-    moved = factor * turn_matrix(angle) @ translation + np.array([shift[0], 0.0, shift[1]])
-    photos.ensure_params(project, source)
-    project.db.executemany('update params set init=? where name=?', [(factor * scale, f'{source}_s'), (float(total - quarter * np.pi / 2), f'{source}_yaw'),
-                                                                      *((float(v), f'{source}_t{a}') for a, v in zip('xyz', moved))])
+    set_pose(ctx, project, source, angle, factor, shift)
     stale = {plane for w in photo for plane in w['planes']}
     project.db.executemany('delete from photos_assoc where source=? and plane_id=?', [(source, plane) for plane in stale])
     rows = [(source, plane, t['expr'], None) for seg, t, _ in paired for plane in seg['planes']] + [(source, found['floor'], '0', None)] * bool(found['floor'])

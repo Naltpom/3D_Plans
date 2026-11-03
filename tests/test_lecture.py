@@ -32,7 +32,8 @@ def test_read_drawing(tmp_path):
     assert {o['type'] for o in ignored['openings']} == {'porte_fenetre'}
 
 
-def test_apply_replaces_and_undo(tmp_path):
+def test_apply_replaces_and_undo(tmp_path, monkeypatch):
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
     drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
     rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
     read['extra'] = [{**e, 'name': 'G'} if e['inside'] else e for e in read['extra']]
@@ -49,3 +50,29 @@ def test_apply_replaces_and_undo(tmp_path):
     rpc.call(ctx, 'components.remove', {'id': 'murD'})
     assert 'porte_fenetre1' not in components.load(ctx.project) and ctx.project.update().converged
     rpc.call(ctx, 'project.guide', {'guide': {'step': 4}, 'undo': True}); assert rpc.call(ctx, 'history.undo', {})['done']
+
+
+def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    from test_walls import model as photo_model, ROTATION
+    from plans3d import Project, photos
+    import json, os, time
+    folder = str(tmp_path / 'p'); project = Project(folder); ctx = Ctx(project=project)
+    photos.add(ctx, [os.path.join(folder, 'a.jpg')]); cache = photos.source_cache(project, 'photos')[1]; os.makedirs(cache)
+    np.savez(os.path.join(cache, 'model.npz'), **photo_model(np.random.default_rng(3)))
+    with open(os.path.join(cache, 'meta.json'), 'w') as f: json.dump({'root': folder, 'registered': 6, 'model': '0'}, f)
+    photos.extract(ctx)
+    image = Image.new('RGB', (700, 800), 'white'); ImageDraw.Draw(image).rectangle([100, 100, 500, 600], outline=(0, 0, 0), width=5); image.save(tmp_path / 'plan.png')
+    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
+    started = time.perf_counter(); fit = rpc.call(ctx, 'plan.fit', {'plan': read}); read['fit'] = fit
+    assert time.perf_counter() - started < 10 and sorted(fit['pairs']) == list('ABCD') and max(fit['gaps'].values()) < 5
+    for corner in range(4):
+        x, z = lecture.frame(read, fit['k'])[0](read['walls'][corner]['a']); seen = rpc.call(ctx, 'photos.visible', {'source': 'photos', 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})
+        if len(seen) >= 2: break
+    clicks = [{'image': name, 'u': uv[0], 'v': uv[1]} for name in seen[:2] for uv in rpc.call(ctx, 'photos.project_points', {'source': 'photos', 'image': name, 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})['uv']]
+    assert len(clicks) == 2 and rpc.call(ctx, 'plan.check_corner', {'clicks': clicks, 'pose': fit['pose'], 'point': [x, z]})['ok']
+    wrong = [clicks[0], {**clicks[1], 'u': clicks[1]['u'] + 300}]
+    assert not rpc.call(ctx, 'plan.check_corner', {'clicks': wrong, 'pose': fit['pose'], 'point': [x, z]})['ok']
+    read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read}); result = project.update()
+    lengths = sorted(np.hypot(*np.subtract(w['b'], w['a'])) for w in plan.walls(ctx))
+    assert result.converged and not result.conflicts() and lengths[-1] / lengths[0] == pytest.approx(5 / 4, rel=0.03)

@@ -5,15 +5,20 @@ from . import cadastre, components, photos, walls
 from .plan import free_ids, place, sketch, trace
 from .rpc import rpc
 
-PIXELS, SNAP_DEG, EPS, PRIOR_M, STEP_M, ROOM_M = 1000, 20.0, 0.006, 0.3, 0.25, 6.0
+PIXELS, SNAP_DEG, EPS, PRIOR_M, STEP_M, ROOM_M, MATCH_M, SCALES = 1000, 20.0, 0.006, 0.3, 0.25, 6.0, 0.12, (0.6, 1.6)
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 COLORS = {'noir': '#1a1a1a', 'gris': '#8a8a8a', 'rouge': '#e0302c', 'orange': '#e8953a', 'jaune': '#e3c13b', 'vert': '#3aa65a', 'bleu': '#2f8fe0', 'violet': '#9a5bd0'}
 ROLES = {'noir': 'mur', 'gris': 'escalier', 'rouge': 'porte', 'orange': 'porte', 'jaune': 'fenetre', 'vert': 'fenetre', 'bleu': 'porte_fenetre', 'violet': 'ignorer'}
 HUES = [('rouge', 0, 18), ('orange', 18, 45), ('jaune', 45, 70), ('vert', 70, 170), ('bleu', 170, 260), ('violet', 260, 335), ('rouge', 335, 361)]
 WORDS = {'black': 'noir', 'gray': 'gris', 'grey': 'gris', 'red': 'rouge', 'orange': 'orange', 'yellow': 'jaune', 'green': 'vert', 'blue': 'bleu', 'cyan': 'bleu', 'purple': 'violet', 'violet': 'violet'}
 ASKED = {'walls': 'mur', 'doors': 'porte', 'windows': 'fenetre', 'french windows': 'porte_fenetre', 'stairs': 'escalier'}
-LEGEND_ASK = ('This is a hand-drawn floor plan. Which pen color is used for walls, doors, windows, french windows and stairs? '
-              'Output JSON: {"walls": "black", "doors": "red", "windows": "green", "french windows": "blue", "stairs": "gray"}')
+LEGEND_ASK = ('This is a hand-drawn floor plan where each kind of element is drawn with its own pen color. Look at the colors actually used in the drawing. '
+              'Output only JSON with the keys walls, doors, windows, french windows, stairs; each value is the color name used for it in this drawing, or none.')
+OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer only JSON: {{"present": true or false, "kind": "door" or "window" or "french window", '
+               '"left": x, "right": x}} with left and right the horizontal pixel positions of its edges in this {width} px wide image.')
+KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
+KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
+CLICK_GAP_M, CORNER_M = 0.12, 0.6
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -142,7 +147,7 @@ def vision_roles(png):
     s = ai.settings(); listed = {m.get('id') for m in ai.request(s, '/models', timeout=2).get('data', [])}
     if s['vision'] not in listed and f"{s['vision']}:latest" not in listed: return {}
     content, _ = ai.ask_image(LEGEND_ASK, png, lambda *a: None); found = re.search(r'\{.*\}', str(content), re.S)
-    answer = json.loads(found[0]) if found else {}
+    answer = {str(k).replace('_', ' ').lower(): v for k, v in (json.loads(found[0]) if found else {}).items()}
     return {WORDS[word]: ASKED[key] for key, value in answer.items() if key in ASKED for word in re.findall(r'[a-z]+', str(value).lower()) if word in WORDS}
 
 
@@ -157,6 +162,7 @@ def read(path, legend=None, ai=True):
     if legend is None and ai:
         try: asked = vision_roles(buffer.getvalue())
         except Exception: asked = {}
+        if not any(role == 'mur' and masks[color].sum() >= least for color, role in asked.items()): asked = {}
     present = [name for name in COLORS if masks[name].sum() >= least]
     legend = [{'color': name, 'hex': COLORS[name], 'count': int(masks[name].sum()), 'role': roles.get(name) or asked.get(name) or ROLES[name]} for name in present]
     role = lambda kind: np.any([masks[item['color']] for item in legend if item['role'] == kind] or [np.zeros(rgb.shape[:2], bool)], axis=0)
@@ -225,45 +231,164 @@ def default_k(plan):
     return ROOM_M / max(np.ptp(ends, 0).max(), 1.0)
 
 
+def vertical_planes(state):
+    s, found = state['s_est'], []
+    for group in walls.plane_groups(state['planes'], s):
+        k = 'xyz'.index(group[0]['axis']); run, offset = 2 - k, group[0]['offset']
+        low, high = np.min([p['bbox'][0] for p in group], 0) * s, np.max([p['bbox'][1] for p in group], 0) * s
+        if high[1] - low[1] < 0.4 or high[run] - low[run] < 0.3: continue
+        a, b = np.zeros(2), np.zeros(2); a[k // 2], b[k // 2], a[run // 2], b[run // 2] = offset * s, offset * s, low[run], high[run]
+        found.append({'id': group[0]['id'], 'a': a, 'b': b, 'n': int(sum(p['n'] for p in group)), 'planes': [p['id'] for p in group if abs(p['offset'] - offset) * s <= walls.ASSOC_M]})
+    return found
+
+
+def levels(state):
+    height, flat = (lambda p: p['offset'] * state['s_est']), [p for p in state['planes'] if p['axis'] == 'y']
+    floor = max((p for p in flat if abs(height(p)) < walls.FLOOR_M), key=lambda p: p['n'], default=None)
+    ceiling = max((p for p in flat if height(p) > walls.CEILING_M), key=lambda p: p['n'], default=None)
+    return floor and floor['id'], ceiling and ceiling['id'], ceiling and float(height(ceiling))
+
+
+def lined(a, b, **extra):
+    d = np.abs(b - a); axis = 0 if d[0] < 0.05 * d[1] else 1 if d[1] < 0.05 * d[0] else None
+    if axis is None: return None
+    return {'ax': axis, 'pos': float((a[axis] + b[axis]) / 2), 'lo': float(min(a[1 - axis], b[1 - axis])), 'hi': float(max(a[1 - axis], b[1 - axis])), 'len': float(d[1 - axis]), **extra}
+
+
+def match(drawn, photo, f, shift):
+    pairs = {}
+    for i, w in enumerate(drawn):
+        best = None
+        for j, p in enumerate(photo):
+            if p['ax'] != w['ax']: continue
+            gap = abs(w['pos'] - f * p['pos'] - shift[w['ax']]); lo, hi = f * p['lo'] + shift[1 - w['ax']], f * p['hi'] + shift[1 - w['ax']]
+            if gap < MATCH_M * 2.5 and min(hi, w['hi']) - max(lo, w['lo']) > -0.3 and (best is None or gap < best[0]): best = (gap, j)
+        if best: pairs[i] = best
+    return pairs
+
+
+def search(drawn, planes, turns, cameras, traced):
+    found = []
+    for turn in turns:
+        angle = turn * np.pi / 2; photo = [x for p in planes if (x := lined(walls.rotate(p['a'], angle), walls.rotate(p['b'], angle), plane=p)) is not None]
+        X = [np.array([w['pos'] for w in drawn if w['ax'] == ax]) for ax in (0, 1)]; LX = [np.array([w['len'] for w in drawn if w['ax'] == ax]) for ax in (0, 1)]
+        Q = [np.array([p['pos'] for p in photo if p['ax'] == ax]) for ax in (0, 1)]; LQ = [np.array([p['len'] for p in photo if p['ax'] == ax]) for ax in (0, 1)]
+        scales = {1.0} | {round(float(dx / dq), 3) for ax in (0, 1) for dx in (X[ax][:, None] - X[ax][None, :]).ravel() for dq in (Q[ax][:, None] - Q[ax][None, :]).ravel()
+                          if abs(dx) > 0.3 and abs(dq) > 0.3 and SCALES[0] < dx / dq < SCALES[1]}
+        turned = np.array([walls.rotate(c, angle) for c in cameras]).reshape(-1, 2)
+        for f in sorted(scales):
+            total, shift = 0.0, [0.0, 0.0]
+            for ax in (0, 1):
+                if not len(X[ax]) or not len(Q[ax]): continue
+                T = (X[ax][:, None] - f * Q[ax][None, :]).ravel(); R = X[ax][None, :, None] - f * Q[ax][None, None, :] - T[:, None, None]
+                S = (np.minimum(LX[ax][:, None], f * LQ[ax][None, :])[None] * np.exp(-0.5 * (R / MATCH_M) ** 2)).max(2).sum(1); b = int(np.argmax(S))
+                total, shift[ax] = total + float(S[b]), float(T[b])
+            inside = walls.inside_share(f * turned + np.array(shift), traced)
+            found.append((total * (0.1 + 0.9 * inside) ** 2 * np.exp(-(np.log(f) / 0.3) ** 2), turn, f, shift, photo))
+    return max(found, key=lambda item: item[0], default=None)
+
+
+def refine(drawn, photo, f, shift):
+    for _ in range(3):
+        pairs = match(drawn, photo, f, shift)
+        if not pairs: break
+        rows, rhs = [], []
+        for i, (_, j) in pairs.items():
+            w = drawn[i]; rows.append([photo[j]['pos'], float(w['ax'] == 0), float(w['ax'] == 1)]); rhs.append(w['pos'])
+        rows, rhs = np.array(rows), np.array(rhs); axes = [ax for ax in (0, 1) if rows[:, 1 + ax].any()]
+        if len(axes) == 2 and any(len({round(r[0], 1) for r in rows if r[1 + ax]}) >= 2 for ax in (0, 1)):
+            solution = np.linalg.lstsq(rows, rhs, rcond=None)[0]
+            if SCALES[0] < solution[0] < SCALES[1]: f, shift = float(solution[0]), [float(solution[1]), float(solution[2])]; continue
+        shift = [float(np.mean([rhs[n] - f * rows[n, 0] for n in range(len(rows)) if rows[n, 1 + ax]])) if rows[:, 1 + ax].any() else shift[ax] for ax in (0, 1)]
+    return f, shift, match(drawn, photo, f, shift)
+
+
 @rpc('plan.fit', long=True)
 def fit(ctx, plan, turn=None):
     project = ctx.require_project(); source = photo_source(project)
     if not source: raise ValueError('calage : aucune photo positionnée')
-    found = walls.proposals(project, source, raw=True); _, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state)
-    L0, c0 = np.array(pose['L']), np.array(pose['c']); photo = sorted((w for w in found['walls'] if w['sure']), key=lambda w: -w['length'])[:walls.FIT_WALLS]
-    ring = plan['walls']; drawn = np.array([w['a'] for w in ring], float); ends = np.array([p for w in photo for p in (w['a'], w['b'])], float)
-    if len(photo) < 2: raise ValueError('calage : moins de 2 murs sûrs sur les photos')
-    k0 = float(np.sqrt(np.prod(np.ptp(ends, 0).clip(0.5)) / np.prod(np.ptp(drawn, 0).clip(1.0)))); forward, _ = frame(plan, k0)
-    traced = [{'id': w['name'], 'a': forward(w['a']), 'b': forward(w['b'])} for w in ring]
+    _, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state); L0, c0 = np.array(pose['L']), np.array(pose['c'])
+    planes = vertical_planes(state); ring = plan['walls']; drawn_px = np.array([w['a'] for w in ring], float)
+    if len(planes) < 2: raise ValueError('calage : moins de 2 surfaces verticales sur les photos (densifie le nuage)')
+    ends = np.array([p for q in planes for p in (q['a'], q['b'])]); k0 = float(np.sqrt(np.prod(np.ptp(ends, 0).clip(0.5)) / np.prod(np.ptp(drawn_px, 0).clip(1.0))))
+    forward, _ = frame(plan, k0); traced = [{'id': w['name'], 'a': forward(w['a']), 'b': forward(w['b'])} for w in ring]
+    drawn = [x for w in traced if (x := lined(w['a'], w['b'], name=w['id'])) is not None]
     cameras = (photos.camera_centers(photos.load_model(cache)) @ L0.T + c0)[:, [0, 2]]
-    best = walls.best_fit(photo, traced, None if turn is None else int(turn), cameras)
-    if not best: raise ValueError('calage impossible : il faut au moins 2 murs non parallèles vus sur les photos et sur le dessin')
-    angle, factor, shift, paired = best; k = k0 / factor; T = walls.turn_matrix(angle); forward, back = frame(plan, k)
-    placed = lambda p: walls.rotate(np.array(p, float), angle) + shift / factor; pairs, gaps = {}, {}
-    for seg, t, _ in paired:
-        w = next(w for w in ring if w['name'] == t['id']); original = next(p for p in found['walls'] if p['id'] == seg['id'])
-        a, b = forward(w['a']), forward(w['b']); u = (b - a) / np.hypot(*(b - a)); middle = (placed(original['a']) + placed(original['b'])) / 2
-        pairs.setdefault(t['id'], []).append(seg['id']); gaps[t['id']] = max(gaps.get(t['id'], 0.0), round(float(abs(cross(u, middle - a))) * 100, 1))
-    owner = {p: name for name, ids in pairs.items() for p in ids}
-    return {'k': k, 'turn': turn, 'pose': {'L': (T @ L0).tolist(), 'c': (T @ c0 + np.array([shift[0], 0.0, shift[1]]) / factor).tolist()}, 'pairs': pairs, 'gaps': gaps,
-            'height': found['ceiling_height'], 'photo': [{'id': w['id'], 'sure': w['sure'], 'wall': owner.get(w['id']), 'a': back(placed(w['a'])).round(1).tolist(),
-                                                           'b': back(placed(w['b'])).round(1).tolist()} for w in found['walls']]}
+    best = search(drawn, planes, [int(turn)] if turn is not None else range(4), cameras, traced)
+    if not best: raise ValueError('calage impossible : aucun mur du dessin ne correspond aux surfaces des photos')
+    _, quarter, f, shift, photo = best; f, shift, paired = refine(drawn, photo, f, shift)
+    angle, k = quarter * np.pi / 2, k0 / f; T = walls.turn_matrix(angle); moved = np.array(shift) / f; forward, back = frame(plan, k)
+    pairs, gaps, planes_of = {}, {}, {}
+    for i, (gap, j) in paired.items():
+        name, plane = drawn[i]['name'], photo[j]['plane']
+        pairs.setdefault(name, []).append(plane['id']); planes_of.setdefault(name, []).extend(plane['planes']); gaps[name] = round(gap / f * 100, 1)
+    owner = {plane: name for name, ids in pairs.items() for plane in ids}; placed = lambda p: walls.rotate(np.array(p, float), angle) + moved
+    return {'k': k, 'turn': quarter, 'angle': angle, 'shift': moved.tolist(), 'pose': {'L': (T @ L0).tolist(), 'c': (T @ c0 + np.array([moved[0], 0.0, moved[1]])).tolist()},
+            'pairs': pairs, 'planes': planes_of, 'gaps': gaps, 'height': levels(state)[2],
+            'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
+
+@rpc('plan.check_corner')
+def check_corner(ctx, clicks, pose, point):
+    project = ctx.require_project(); source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False)
+    model = photos.load_model(cache); turns = photos.rotation_matrices(model['q']); centers = photos.camera_centers(model); group = []
+    for n, click in enumerate(clicks):
+        i = photos.image_index(model, click['image']); (width, height), orientation = model['wh'][i], int(model['orientation'][i])
+        group.append((n, i, *photos.undistort(model['K'][i], *photos.display_to_raw(orientation, width, height, click['u'], click['v'])), None))
+    found, _ = photos.triangulate(model, turns, group) if len(group) >= 2 else (None, 0.0)
+    if found is None: return {'ok': False, 'gap_cm': None, 'offset_cm': None, 'message': 'les 2 photos sont prises du même endroit : choisis-en une autre'}
+    L, c = np.array(pose['L'], float), np.array(pose['c'], float); scale = float(np.linalg.norm(L[0]))
+    rays = [photos.unit(turns[i].T @ [x, y, 1.0]) for _, i, x, y, _ in group]
+    gap = max(np.linalg.norm((found - centers[i]) - ((found - centers[i]) @ d) * d) for (_, i, *_), d in zip(group, rays)) * scale * 2
+    placed = L @ found + c; offset = float(np.hypot(placed[0] - point[0], placed[2] - point[1]))
+    ok = gap < CLICK_GAP_M and offset < CORNER_M
+    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin' if gap >= CLICK_GAP_M else 'ce point est loin du coin dessiné : vérifie que c’est le bon coin'
+    return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message}
+
+
+def vision_ready():
+    from . import ai
+    s = ai.settings()
+    try: listed = {m.get('id') for m in ai.request(s, '/models', timeout=2).get('data', [])}
+    except Exception: return False
+    return s['vision'] in listed or f"{s['vision']}:latest" in listed
 
 
 @rpc('plan.check_openings', long=True)
-def check_openings(ctx, plan):
-    project = ctx.require_project(); source = photo_source(project); fitted = plan.get('fit')
+def check_openings(ctx, plan, progress=None):
+    from PIL import Image, ImageOps
+    from . import ai
+    project = ctx.require_project(); source = photo_source(project); fitted = plan.get('fit'); progress = progress or (lambda *a: None)
     if not source or not fitted: raise ValueError('vérification : cale d’abord le dessin sur les photos')
-    _, _, cache = photos.photo_state(project, source, compute=False); points, _ = photos.cloud_sample(cache, 400000)
-    points = points @ np.array(fitted['pose']['L']).T + np.array(fitted['pose']['c']); forward, _ = frame(plan, fitted['k']); found = []
-    for w in plan['walls']:
-        a, b = forward(w['a']), forward(w['b']); length = np.hypot(*(b - a)); u = (b - a) / length; flat = points[:, [0, 2]] - a
-        near = np.abs(flat @ np.array([-u[1], u[0]])) < walls.BAND_M
-        for hole in walls.holes(np.stack([flat[near] @ u, points[near, 1]], 1), length, fitted.get('height') or 2.5):
-            found.append({'type': hole['type'], 'wall': w['name'], 't0': (hole['along'] - hole['width'] / 2) / length, 't1': (hole['along'] + hole['width'] / 2) / length,
-                          'width': hole['width'], 'height': hole['height'], 'sill': hole['sill']})
+    if not vision_ready(): raise ValueError('IA vision indisponible : lance Ollama et télécharge le modèle vision (qwen2.5vl:7b)')
+    meta, _, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
+    L, c = np.array(fitted['pose']['L'], float), np.array(fitted['pose']['c'], float); forward, _ = frame(plan, fitted['k']); names = {w['name']: w for w in plan['walls']}; found = []
+    for n, opening in enumerate(plan.get('openings', [])):
+        progress(n / max(1, len(plan['openings'])), f"Ouverture {n + 1} sur {len(plan['openings'])}")
+        result, w = {'index': n, 'seen': None}, names.get(opening['wall'])
+        if not w: found.append(result); continue
+        a, b = forward(w['a']), forward(w['b']); at = lambda t, y: [float(a[0] + t * (b[0] - a[0])), y, float(a[1] + t * (b[1] - a[1]))]
+        corners = [at(opening['t0'], 0.1), at(opening['t1'], 0.1), at(opening['t0'], 2.0), at(opening['t1'], 2.0)]
+        for image in photos.visible(ctx, source, corners, limit=1, pose=fitted['pose']):
+            i = photos.image_index(model, image); ts = np.linspace(0, 1, 41)
+            uv, size, _ = photos.project_to_display(model, i, L, c, corners + [at(t, 1.0) for t in ts])
+            box = np.array(uv[:4]); left, right, top, bottom = box[:, 0].min(), box[:, 0].max(), box[:, 1].min(), box[:, 1].max(); margin = right - left
+            crop = (int(max(0, left - margin)), int(max(0, top - 0.3 * (bottom - top))), int(min(size[0], right + margin)), int(min(size[1], bottom + 0.3 * (bottom - top))))
+            with Image.open(os.path.join(meta['root'], image)) as picture: piece = ImageOps.exif_transpose(picture).convert('RGB').crop(crop)
+            k = min(1.0, 768 / max(piece.size)); piece = piece.resize((max(1, round(piece.width * k)), max(1, round(piece.height * k)))); buffer = io.BytesIO(); piece.save(buffer, 'PNG')
+            content, _ = ai.ask_image(OPENING_ASK.format(kind=KIND_ASK[opening['type']], width=piece.width), buffer.getvalue(), lambda *a: None)
+            answer = re.search(r'\{.*\}', str(content), re.S); answer = json.loads(answer[0]) if answer else {}
+            present = answer.get('present') in (True, 'true', 'yes', 'oui'); kind = KIND_WORDS.get(re.sub(r'[_-]', ' ', str(answer.get('kind', ''))).lower().strip())
+            result.update(seen=present, photo=image)
+            if present and kind: result['type'] = kind
+            line = [p for p in uv[4:]]; us = np.array([p[0] if p else np.nan for p in line])
+            try: edges = sorted(np.interp(crop[0] + float(answer[key]) / k, us[np.argsort(us)], ts[np.argsort(us)]) for key in ('left', 'right'))
+            except (KeyError, TypeError, ValueError): edges = None
+            width = (edges[1] - edges[0]) * np.hypot(*(b - a)) if edges else 0.0
+            if present and edges and 0.4 <= width <= 3.0 and min(edges[1], opening['t1']) - max(edges[0], opening['t0']) > 0.3 * (opening['t1'] - opening['t0']):
+                result.update(t0=round(float(edges[0]), 4), t1=round(float(edges[1]), 4))
+        found.append(result)
+    progress(1.0, 'Ouvertures vérifiées')
     return found
-
 
 def add_stairs(project, stair, forward):
     u0, v0, u1, v1 = stair['box']; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))]); low, size = corners.min(0), np.ptp(corners, 0)
@@ -289,18 +414,19 @@ def apply(ctx, plan):
         trace(ctx, [forward(extra['a']).tolist(), forward(extra['b']).tolist()], False, sigma=PRIOR_M, source='plan', names=[extra['name']], height=f'{ids[0]}_h')
     pairs, clicks = None, []
     if fitted:
-        try: pairs = walls.fit_walls(ctx, source, fitted.get('turn'))['pairs']
-        except ValueError: pairs = None
-        ceiling = walls.proposals(project, source)['ceiling']
-        if ceiling: db.execute('insert or replace into photos_assoc values (?,?,?,?)', (source, ceiling, f'{ids[0]}_h', None))
-        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:a_sol") for p in plan.get('points', []) for c in p.get('clicks', [])]
+        walls.set_pose(ctx, project, source, fitted['angle'], 1.0, np.array(fitted['shift'])); loaded = components.load(project); named = dict(zip([w['name'] for w in ring], ids))
+        line = lambda comp: photos.LINE + ';'.join(str(comp['expressions'][f'{end}_{axis}']) for end in ('start', 'end') for axis in 'xz')
+        floor, ceiling, _ = levels(state); pairs = sorted(n for n in fitted.get('planes', {}) if n in named)
+        rows = [(source, plane, line(loaded[named[n]]), None) for n in pairs for plane in fitted['planes'][n]] + [(source, floor, '0', None)] * bool(floor) + [(source, ceiling, f'{ids[0]}_h', None)] * bool(ceiling)
+        db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
+        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:a") for p in plan.get('points', []) for c in p.get('clicks', [])]
         db.executemany('insert into photos_clicks(source, image, u, v, anchor) values (?,?,?,?,?)', clicks); db.commit(); photos.invalidate(project, source)
     names, placed = {w['name']: w for w in ring}, []
     for opening in plan.get('openings', []):
         w = names.get(opening['wall'])
         if not w: continue
         a, b = forward(w['a']), forward(w['b']); middle = (opening['t0'] + opening['t1']) / 2
-        try: placed.append(place(ctx, opening['type'], (a + middle * (b - a)).tolist(), width=max(0.4, (opening['t1'] - opening['t0']) * np.hypot(*(b - a))))['id'])
+        try: placed.append(place(ctx, opening['type'], (a + middle * (b - a)).tolist(), width=max(0.4, (opening['t1'] - opening['t0']) * np.hypot(*(b - a))), sigma=0.1 if opening.get('seen') else PRIOR_M)['id'])
         except ValueError: continue
     stairs = [add_stairs(project, stair, forward) for stair in plan.get('stairs', []) if stair.get('kept', True)]
     return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks)}
