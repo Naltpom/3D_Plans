@@ -66,6 +66,7 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
     rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
     started = time.perf_counter(); fit = rpc.call(ctx, 'plan.fit', {'plan': read}); read['fit'] = fit
     assert time.perf_counter() - started < 10 and sorted(fit['pairs']) == list('ABCD') and max(fit['gaps'].values()) < 5
+    assert set(rpc.call(ctx, 'plan.corner_photos', {'point': [0.0, 0.0], 'pose': fit['pose']})) <= {f'img{i}.jpg' for i in range(6)}
     for corner in range(4):
         x, z = lecture.frame(read, fit['k'])[0](read['walls'][corner]['a']); seen = rpc.call(ctx, 'photos.visible', {'source': 'photos', 'points_xyz_m': [[x, 1.0, z]], 'pose': fit['pose']})
         if len(seen) >= 2: break

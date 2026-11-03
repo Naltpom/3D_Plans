@@ -18,7 +18,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
                '"left": x, "right": x}} with left and right the horizontal pixel positions of its edges in this {width} px wide image.')
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
-CLICK_GAP_M, CORNER_M = 0.12, 0.6
+CLICK_GAP_M, PLANE_GAP_M, CORNER_M, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.05, 0.6, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -344,7 +344,7 @@ def fit(ctx, plan, turn=None):
             'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
 
 @rpc('plan.check_corner')
-def check_corner(ctx, clicks, pose, point):
+def check_corner(ctx, clicks, pose, point, lines=()):
     project = ctx.require_project(); source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False)
     model = photos.load_model(cache); turns = photos.rotation_matrices(model['q']); centers = photos.camera_centers(model); group = []
     for n, click in enumerate(clicks):
@@ -356,10 +356,32 @@ def check_corner(ctx, clicks, pose, point):
     rays = [photos.unit(turns[i].T @ [x, y, 1.0]) for _, i, x, y, _ in group]
     gap = max(np.linalg.norm((found - centers[i]) - ((found - centers[i]) @ d) * d) for (_, i, *_), d in zip(group, rays)) * scale * 2
     placed = L @ found + c; offset = float(np.hypot(placed[0] - point[0], placed[2] - point[1]))
-    ok = gap < CLICK_GAP_M and offset < CORNER_M
-    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin' if gap >= CLICK_GAP_M else 'ce point est loin du coin dessiné : vérifie que c’est le bon coin'
+    away = max([abs(cross((np.subtract(b, a)) / np.hypot(*np.subtract(b, a)), placed[[0, 2]] - a)) for a, b in lines] or [0.0])
+    ok = gap < CLICK_GAP_M and offset < CORNER_M and away < PLANE_GAP_M
+    message = '' if ok else 'les 2 clics ne désignent pas le même point : reclique le coin' if gap >= CLICK_GAP_M else 'ce point n’est pas sur les murs vus en photo : clique l’arête du coin' if away >= PLANE_GAP_M else 'ce point est loin du coin dessiné : vérifie que c’est le bon coin'
     return {'ok': bool(ok), 'gap_cm': round(float(gap) * 100, 1), 'offset_cm': round(offset * 100, 1), 'message': message}
 
+
+@rpc('plan.corner_photos')
+def corner_photos(ctx, point, pose, limit=8):
+    project = ctx.require_project(); source = photo_source(project); _, _, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
+    L, c = np.array(pose['L'], float), np.array(pose['c'], float); cloud, _ = photos.cloud_sample(cache, 150000); cloud = cloud @ L.T + c
+    centers = photos.camera_centers(model) @ L.T + c; x, z = point; targets = np.array([[x, h, z] for h in CORNER_HEIGHTS]); scored = []
+    for i, center in enumerate(centers):
+        uv, (width, height), _ = photos.project_to_display(model, i, L, c, targets)
+        distance = float(np.linalg.norm(targets[1] - center))
+        if any(p is None or not (0.05 < p[0] / width < 0.95 and 0.05 < p[1] / height < 0.95) for p in uv) or not 0.8 < distance < 8.0: continue
+        if abs(uv[2][0] - uv[0][0]) > 0.35 * abs(uv[2][1] - uv[0][1]): continue
+        hidden = 0
+        for target in targets[1:]:
+            ray = target - center; length = np.linalg.norm(ray); t = (cloud - center) @ ray / length ** 2
+            hidden += int(((t > 0.3 / length) & (t < 1 - TUBE_END_M / length) & (np.linalg.norm(cloud - center - t[:, None] * ray, axis=1) < TUBE_M)).sum())
+        if hidden <= HIDDEN_POINTS: scored.append((hidden, abs(uv[1][0] / width - 0.5) + abs(uv[1][1] / height - 0.5), str(model['names'][i])))
+    chosen = []
+    for _, _, name in sorted(scored):
+        i = photos.image_index(model, name)
+        if all(np.linalg.norm(centers[i] - centers[photos.image_index(model, other)]) > 0.4 for other in chosen): chosen.append(name)
+    return chosen[:int(limit)]
 
 def vision_ready():
     from . import ai
@@ -435,7 +457,7 @@ def apply(ctx, plan):
         floor, ceiling, _ = levels(state); pairs = sorted(n for n in fitted.get('planes', {}) if n in named)
         rows = [(source, plane, line(loaded[named[n]]), None) for n in pairs for plane in fitted['planes'][n]] + [(source, floor, '0', None)] * bool(floor) + [(source, ceiling, f'{ids[0]}_h', None)] * bool(ceiling)
         db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
-        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:a") for p in plan.get('points', []) for c in p.get('clicks', [])]
+        clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:a") for p in plan.get('points', []) if not p.get('skipped') and len(p.get('clicks', [])) == 2 for c in p['clicks']]
         db.executemany('insert into photos_clicks(source, image, u, v, anchor) values (?,?,?,?,?)', clicks); db.commit(); photos.invalidate(project, source)
     names, placed = {w['name']: w for w in ring}, []
     for opening in plan.get('openings', []):

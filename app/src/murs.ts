@@ -1,7 +1,7 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
 import { drawPlan, metres, type Corner, type DrawnWall, type Fit, type Opening, type Plan } from "./plan2d";
-import { closeGuided, guidedImage, openGuided, showGuided } from "./photos";
+import { closeGuided, crop, guidedImage, openGuided, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
@@ -202,7 +202,7 @@ async function ask() {
     const [before, after] = neighbours(p, i);
     if (paired.has(before) && paired.has(after)) continue;
     const [x, z] = metres(p, f.k, p.walls[i].a);
-    const photos = await call<string[]>("photos.visible", { source, points_xyz_m: [[x, 0.02, z], [x, 1.2, z]], pose: f.pose, limit: 6 });
+    const photos = source ? await call<string[]>("plan.corner_photos", { point: [x, z], pose: f.pose, limit: 8 }) : [];
     if (photos.length >= 2) list.push({ corner: i, photos });
   }
   questions = list;
@@ -231,13 +231,14 @@ async function verify(corner: number) {
   const p = plan(), clicks = entry(corner).clicks, key = signature(corner);
   if (clicks.length !== 2 || checks.has(key)) return;
   const [x, z] = metres(p, p.fit!.k, p.walls[corner].a);
-  checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z] }));
+  const names = neighbours(p, corner), lines = p.fit!.photo.filter((w) => w.wall && names.includes(w.wall)).map((w) => [metres(p, p.fit!.k, w.a), metres(p, p.fit!.k, w.b)]);
+  checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z], lines }));
   h.render();
 }
 
 async function skip(mark: boolean) {
   const q = questions![current], p = plan();
-  if (mark) await h.save({ plan: { ...p, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { ...entry(q.corner), skipped: true }] } }, true);
+  if (mark) await h.save({ plan: { ...p, points: [...(p.points ?? []).filter((c) => c.corner !== q.corner), { corner: q.corner, clicks: [], skipped: true }] } }, true);
   current++;
   const next = questions![current];
   h.render();
@@ -336,7 +337,7 @@ function pointsStep() {
   if (clicks.length === 2 && !verdict) run(() => verify(q.corner));
   const steps = [0, 1].map((i) => {
     const line = el("div", "tagged");
-    line.append(el("span", "tag", clicks[i] ? "✓" : String(i + 1)), el("span", "", clicks[i] ? `Photo ${clicks[i].image} · point posé` : i ? "Même coin sur une 2e photo, prise d'un autre angle" : "Clique le coin sur cette photo"));
+    line.append(el("span", "tag", clicks[i] ? "✓" : String(i + 1)), ...clicks[i] ? [crop(clicks[i].image, clicks[i].u, clicks[i].v)] : [], el("span", "", clicks[i] ? `Photo ${clicks[i].image} · point posé` : i ? "Même coin sur une 2e photo, prise d'un autre angle" : "Clique le coin sur cette photo"));
     return line;
   });
   const next = button("Photo suivante qui montre ce coin", "", "Autre photo", () => run(() => {

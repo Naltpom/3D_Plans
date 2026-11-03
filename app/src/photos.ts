@@ -412,7 +412,7 @@ async function drawPlane() {
 function drawMarks() {
   const r = 6 / zoom.k, mark = ([u, v]: UV, text: string, className = "") => {
     const group = svg("g", { class: className });
-    group.append(svg("circle", { cx: u, cy: v, r }),
+    group.append(svg("circle", { cx: u, cy: v, r }), ...guided?.picks ? [svg("path", { d: `M${u - 4 * r} ${v}H${u - r}M${u + r} ${v}H${u + 4 * r}M${u} ${v - 4 * r}V${v - r}M${u} ${v + r}V${v + 4 * r}`, class: "cross" })] : [],
       Object.assign(svg("text", { x: u + 1.6 * r, y: v - 1.6 * r, "font-size": 13 / zoom.k, "stroke-width": 3 / zoom.k }), { textContent: text }));
     return group;
   };
@@ -476,7 +476,30 @@ stage.onpointerdown = (event) => {
   drag = { x: event.clientX, y: event.clientY, moved: false };
   stage.setPointerCapture(event.pointerId);
 };
+const loupe = Object.assign(el("div"), { id: "photo-loupe", hidden: true });
+stage.append(loupe);
+stage.onpointerleave = () => { loupe.hidden = true; };
+
+export function crop(name: string, u: number, v: number, px = 72, k = 0.3) {
+  const camera = cameras().find((c) => c.name === name), box = el("span", "crop");
+  if (camera) Object.assign(box.style, { backgroundImage: `url("${host.photoUrl(camera.path)}")`, backgroundSize: `${size0(camera)[0] * k}px ${size0(camera)[1] * k}px`,
+    backgroundPosition: `${px / 2 - u * k}px ${px / 2 - v * k}px`, width: `${px}px`, height: `${px}px` });
+  return box;
+}
+
+const size0 = (camera: Camera): UV => camera.orientation === 6 || camera.orientation === 8 ? [camera.size[1], camera.size[0]] : [camera.size[0], camera.size[1]];
+
+function magnify(event: PointerEvent) {
+  const rect = frame.getBoundingClientRect(), u = (event.clientX - rect.left) / rect.width * size[0], v = (event.clientY - rect.top) / rect.height * size[1];
+  loupe.hidden = !guided?.pick || drag?.moved === true || u < 0 || v < 0 || u > size[0] || v > size[1];
+  if (loupe.hidden) return;
+  const box = stage.getBoundingClientRect(), k = zoom.k * 3, half = 80;
+  Object.assign(loupe.style, { left: `${Math.min(event.clientX - box.left + 24, box.width - 2 * half - 8)}px`, top: `${Math.max(8, event.clientY - box.top - 2 * half - 24)}px`,
+    backgroundImage: `url("${picture.src}")`, backgroundSize: `${size[0] * k}px ${size[1] * k}px`, backgroundPosition: `${half - u * k}px ${half - v * k}px` });
+}
+
 stage.onpointermove = (event) => {
+  magnify(event);
   if (!drag || !drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return;
   apply({ ...zoom, x: zoom.x + event.clientX - drag.x, y: zoom.y + event.clientY - drag.y });
   drag = { x: event.clientX, y: event.clientY, moved: true };
@@ -562,3 +585,7 @@ document.addEventListener("plans3d:pick", (event) => {
 document.addEventListener("plans3d:photo", (event) => {
   if (!document.body.classList.contains("guided")) run(() => openPhoto((event as CustomEvent<string>).detail));
 });
+
+const miniPlan = $("#photo-plan"), PLAN_SIZE = "plans3d.miniplan", savedPlan = JSON.parse(localStorage.getItem(PLAN_SIZE) ?? "null") as UV | null;
+if (savedPlan) Object.assign(miniPlan.style, { width: `${savedPlan[0]}px`, height: `${savedPlan[1]}px` });
+new ResizeObserver(() => { if (miniPlan.offsetWidth) localStorage.setItem(PLAN_SIZE, JSON.stringify([miniPlan.offsetWidth, miniPlan.offsetHeight])); }).observe(miniPlan);
