@@ -5,7 +5,8 @@ export const button = (text: string, className: string, title: string, onclick: 
   Object.assign(el("button", className, text), { type: "button", title, onclick, ariaLabel: text === "×" ? title : null });
 export const number = (x: number, digits = 1) => x.toLocaleString("fr-FR", { maximumFractionDigits: digits });
 export const cm = (m: number) => `${number(m * 100)} cm`;
-export const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+export const typing = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+export const message =(error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function report(error: unknown) {
   const text = message(error), stale = text.includes("cliquez sur « Mettre à jour »");

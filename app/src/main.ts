@@ -6,4 +6,5 @@ import "./lumiere";
 import "./photos";
 import "./projects";
 import "./guide";
+import "./history";
 import "./updates";

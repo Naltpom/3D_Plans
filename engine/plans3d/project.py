@@ -101,6 +101,7 @@ class Project:
     def last_solution(self):
         try:
             m = self.model() or {}
+            if any(p.get('axis') == 'échelle' and p['value'] <= 1e-6 for p in m['params'].values()): return {}
             return {n: float(p['value']) for n, p in m['params'].items() if p['sigma'] is not None and np.isfinite(p['value'])} if m.get('converged', True) else {}
         except (OSError, ValueError, KeyError, TypeError): return {}
 

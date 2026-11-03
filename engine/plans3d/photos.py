@@ -462,8 +462,8 @@ def axis_expression(source, yaw, expr, axis, along, across=0.0):
 
 def rotated_terms(source, yaw, coordinates):
     delta = {axis: f'(({coordinates[axis]}) - {source}_t{axis})' if axis in coordinates else '0' for axis in 'xyz'}
-    if yaw == '0': return [delta['x'], delta['y'], delta['z'], f'{source}_s']
-    return [f'(cos({yaw}) * {delta["x"]} - sin({yaw}) * {delta["z"]})', delta['y'], f'(sin({yaw}) * {delta["x"]} + cos({yaw}) * {delta["z"]})', f'{source}_s']
+    terms = [delta['x'], delta['y'], delta['z']] if yaw == '0' else [f'(cos({yaw}) * {delta["x"]} - sin({yaw}) * {delta["z"]})', delta['y'], f'(sin({yaw}) * {delta["x"]} + cos({yaw}) * {delta["z"]})']
+    return [f'{term} / {source}_s' for term in terms] + ['1']
 
 
 def click_observations(project, source, model, frame, scale_estimate):
@@ -483,7 +483,7 @@ def click_observations(project, source, model, frame, scale_estimate):
         terms = rotated_terms(source, yaw, coordinates)
         for click_id, i, x, y, _ in group:
             to_camera = cameras[i] @ rotation.T; columns = np.column_stack([to_camera, model['t'][i] - to_camera @ offset])
-            depth_m = scale_estimate * ((cameras[i] @ point + model['t'][i])[2] if point is not None else scene_depth(model, i))
+            depth_m = (cameras[i] @ point + model['t'][i])[2] if point is not None else scene_depth(model, i)
             fx, fy = model['K'][i][:2]; label = f'clic {click_id} sur {anchor}'
             if len(known) == 3:
                 observations += [Obs(f'{source}:clic{click_id}:u', linear(fx / depth_m * (columns[0] - x * columns[2]), terms), 0.0, CLICK_SIGMA_PX, source, 'photo', label),
@@ -533,12 +533,19 @@ def resolved_scale(project, source, fallback):
 def current_values(project, source):
     values = {name: init for name, init in project.db.execute('select name, init from params where name like ?', (f'{source}%',))}
     solved = os.path.exists(model_path := os.path.join(project.folder, 'model.json'))
-    if solved: values.update({name: p['value'] for name, p in load_json(model_path)['params'].items() if name in values})
+    solution = {name: p['value'] for name, p in load_json(model_path)['params'].items() if name in values} if solved else {}
+    solved = solved and solution.get(f'{source}_s', 1.0) > 1e-6
+    if solved: values.update(solution)
     yaw = values.get(f'{source}_yaw', 0.0); turn = np.array([[np.cos(yaw), 0, np.sin(yaw)], [0, 1, 0], [-np.sin(yaw), 0, np.cos(yaw)]])
     return values.get(f'{source}_s', 1.0), np.array([values.get(f'{source}_t{axis}', 0.0) for axis in 'xyz']), turn, solved
 
 
-def project_transform(project, source, frame):
+def raw_pose(frame):
+    return {'L': (frame['s_est'] * np.array(frame['R'])).tolist(), 'c': (frame['s_est'] * np.array(frame['t'])).tolist()}
+
+
+def project_transform(project, source, frame, pose=None):
+    if pose: return np.array(pose['L'], float), np.array(pose['c'], float), True
     scale, translation, turn, solved = current_values(project, source); rotation, offset = mapped_frame(project, source, frame)
     return scale * turn @ rotation, scale * turn @ offset + translation, solved
 
@@ -648,9 +655,9 @@ def cameras(ctx, source='photos'):
 
 
 @rpc('photos.project_points')
-def project_points(ctx, source, image, points_xyz_m):
+def project_points(ctx, source, image, points_xyz_m, pose=None):
     project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False); model = load_model(cache)
-    linear_map, shift, _ = project_transform(project, source, frame)
+    linear_map, shift, _ = project_transform(project, source, frame, pose)
     uv, size, orientation = project_to_display(model, image_index(model, image), linear_map, shift, points_xyz_m)
     return {'uv': uv, 'size': size, 'orientation': orientation}
 
@@ -713,9 +720,9 @@ def cloud(ctx, source='photos', limit=50000):
 
 
 @rpc('photos.visible')
-def visible(ctx, source, points_xyz_m, limit=8):
+def visible(ctx, source, points_xyz_m, limit=8, pose=None):
     project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False); model = load_model(cache)
-    linear_map, shift, _ = project_transform(project, source, frame); centers = camera_centers(model) @ linear_map.T + shift; scored, chosen = [], []
+    linear_map, shift, _ = project_transform(project, source, frame, pose); centers = camera_centers(model) @ linear_map.T + shift; scored, chosen = [], []
     for i in range(len(model['names'])):
         uv, (width, height), _ = project_to_display(model, i, linear_map, shift, points_xyz_m)
         if all(p and 0.05 < p[0] / width < 0.95 and 0.05 < p[1] / height < 0.95 for p in uv):

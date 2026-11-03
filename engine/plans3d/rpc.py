@@ -1,4 +1,4 @@
-import csv, inspect, json, os, re, threading
+import csv, inspect, json, os, re, sqlite3, threading
 import numpy as np
 from datetime import datetime
 from .core import FUNCS, STATUS, compile_expr, next_best as core_next_best, variance_factors as core_variance_factors
@@ -30,6 +30,7 @@ class Ctx:
         self.send = send or (lambda message: None)
         self.update_lock = threading.Lock()
         self.current = threading.local()
+        self.history = {'undo': [], 'redo': []}
 
     def emit(self, event):
         request_id = getattr(self.current, 'request_id', None)
@@ -53,14 +54,65 @@ def call(ctx, name, params):
     if 'progress' in names and 'progress' not in params:
         params = {**params, 'progress': lambda fraction, message='': ctx.emit(
             {'event': 'progress', 'method': name, 'fraction': fraction, 'message': message})}
-    return fn(ctx, **params)
+    state = snapshot(ctx.project) if ctx.project and undoable(name, params) else None
+    result = fn(ctx, **params)
+    if state:
+        ctx.history = {'undo': (ctx.history['undo'] + [state])[-HISTORY:], 'redo': []}
+        signal_history(ctx)
+    return result
+
+
+HISTORY, HISTORY_FILES = 50, ('model.json', 'project.json', os.path.join('sources', 'cotes.csv'))
+UNDOABLE = set('components.add components.remove furniture.add furniture.move furniture.rotate furniture.options furniture.remove layout.apply cadastre.add terrain.add '
+               'photos.add photos.associate photos.unassociate photos.axes photos.click photos.unclick photos.create_walls photos.fit_walls photos.snap_walls '
+               'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove'.split())
+
+
+def undoable(name, params):
+    return name in UNDOABLE or name == 'project.guide' and params.get('undo') or name == 'plan.cadastre' and params.get('create') \
+        or name == 'plan.sketch' and any(params.get(k) is not None for k in ('path', 'points')) or name == 'layout.rules' and params.get('rules') is not None
+
+
+def snapshot(project):
+    memory = sqlite3.connect(':memory:', check_same_thread=False); project.db.commit(); project.db.backup(memory)
+    files = {name: open(path, 'rb').read() if os.path.exists(path := os.path.join(project.folder, name)) else None for name in HISTORY_FILES}
+    return memory, files
+
+
+def restore(project, state):
+    memory, files = state; memory.backup(project.db)
+    for name, data in files.items():
+        path = os.path.join(project.folder, name)
+        if data is not None: open(path, 'wb').write(data)
+        elif os.path.exists(path): os.remove(path)
+
+
+def signal_history(ctx): ctx.send({'event': 'history', 'undo': len(ctx.history['undo']), 'redo': len(ctx.history['redo'])})
+
+
+def travel(ctx, back):
+    project = ctx.require_project(); taken, other = ('undo', 'redo') if back else ('redo', 'undo')
+    if not ctx.history[taken]: return {'done': False, **{k: len(v) for k, v in ctx.history.items()}}
+    if ctx.update_lock.locked(): raise RpcError('mise à jour en cours : réessayez une fois terminée')
+    ctx.history[other].append(snapshot(project)); restore(project, ctx.history[taken].pop()); ctx.result = None
+    signal_history(ctx)
+    return {'done': True, **{k: len(v) for k, v in ctx.history.items()}}
+
+
+@rpc('history.undo')
+def history_undo(ctx): return travel(ctx, True)
+
+
+@rpc('history.redo')
+def history_redo(ctx): return travel(ctx, False)
 
 
 def open_project(ctx, folder):
     if ctx.update_lock.locked(): raise RpcError('mise à jour en cours : réessayez une fois terminée')
     if ctx.project: ctx.project.db.close()
     for sub in ('sources', 'cache'): os.makedirs(os.path.join(folder, sub), exist_ok=True)
-    ctx.project, ctx.result = Project(folder), None
+    ctx.project, ctx.result, ctx.history = Project(folder), None, {'undo': [], 'redo': []}
+    signal_history(ctx)
     return project_info(ctx)
 
 
@@ -104,7 +156,7 @@ def project_meta(project, **changes):
 
 
 @rpc('project.guide')
-def project_guide(ctx, guide):
+def project_guide(ctx, guide, undo=False):
     return project_meta(ctx.require_project(), guide=guide)['guide']
 
 

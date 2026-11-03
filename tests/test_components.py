@@ -103,7 +103,6 @@ def test_store_remove_rpc(tmp_path):
     project = build_room(str(tmp_path)); ctx = Ctx(project=project)
     expected = {'mur', 'porte', 'fenetre', 'porte_fenetre', 'sol', 'plafond', 'escalier', 'boite', 'parcelle'}
     assert expected <= {t['type'] for t in C.rpc_types(ctx)} and [c['id'] for c in C.rpc_list(ctx)][:4] == ['m1', 'm2', 'm3', 'm4']
-    with pytest.raises(ValueError, match='m2'): C.rpc_remove(ctx, 'm1')
     with pytest.raises(ValueError): C.rpc_add(ctx, 'mur', 'm1')
     with pytest.raises(KeyError): C.rpc_add(ctx, 'mur', 'mx', {'axe': 'x', 'z': 'zz_z'})
     added = C.rpc_add(ctx, 'boite', 'b1', {'nature': 'placard', 'x0': 1.0, 'y0': 0.1})
@@ -117,6 +116,8 @@ def test_store_remove_rpc(tmp_path):
     for comp_id in ('b1', 'pa', 'p1'): C.rpc_remove(ctx, comp_id)
     assert not any(n.startswith(('b1_', 'pa_', 'p1_')) for n in project.params()) and not [o for o in project.observations() if o.source == 'comp:p1']
     assert call(ctx, 'components.measure_expr', {'a': 'm4:face', 'b': 'm2:face', 'axis': 'x'})['expr'] == 'm1_x1'
+    assert 'm1' in C.rpc_remove(ctx, 'm1')['removed'] and 'm1' not in C.load(project) and 'm1_x1' in project.params()
+    assert project.update().converged
 
 
 def test_rotated_box(tmp_path):

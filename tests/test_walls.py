@@ -2,7 +2,7 @@ import json, os
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
-from plans3d import Project, components, photos, rpc, walls
+from plans3d import Project, components, photos, plan, rpc, walls
 from plans3d.rpc import Ctx, cotes_add, read_cotes
 
 SCALE, ROOM, CAMERA_HEIGHT = 0.4, (4.0, 2.5, 5.0), 1.6
@@ -89,8 +89,10 @@ def test_create_walls_scale_and_replay(setup):
     walls.create_walls(ctx, 'photos', room_walls[:3] + [listed[('x', round(0.6 * scale, 1))]['id']])
     assert walls.SCALE_COTE not in [row['id'] for row in read_cotes(project)] and len(components.load(project)) == 4
     cotes_add(ctx, 'm1', next(iter(components.load(project).values()))['params'][0], 100); project.update()
-    with pytest.raises(ValueError, match='utilisé'): walls.create_walls(ctx, 'photos', room_walls)
-    assert len(components.load(project)) == 4 and project.db.execute('select count(*) from photos_assoc').fetchone()[0] > 4
+    walls.create_walls(ctx, 'photos', room_walls)
+    assert len(components.load(project)) == 4 and 'm1' not in [row['id'] for row in read_cotes(project)] and project.update().converged
+    rpc.call(ctx, 'plan.trace', {'points': [[0, 0], [4, 0], [4, 5], [0, 5]]}); walls.create_walls(ctx, 'photos', room_walls)
+    assert sorted(components.load(project)) == sorted(created) and project.db.execute('select count(*) from photos_assoc').fetchone()[0] > 4
 
 
 def test_cloud_and_visible(setup):
@@ -177,3 +179,11 @@ def test_snap_rough_walls(setup):
     result = project.update(); values = dict(zip(result.names, result.x))
     assert len(paired) == 3 and not result.contradictions and sorted(round(p['moved_cm']) for p in paired) == [10, 15, 20]
     assert [values['mur4_x'], values['mur2_x'], values['mur1_z']] == pytest.approx([xs[0], xs[-1], zs[0]], abs=0.03)
+
+def test_inconsistent_clicks_keep_scale(setup):
+    ctx, project = setup; listed = by_position(walls.propose_walls(ctx)); scale = photos.CAMERA_HEIGHT_M / CAMERA_HEIGHT
+    room_walls = [listed[key]['id'] for key in (('x', 0.0), ('x', round(4 * scale, 1)), ('z', 0.0), ('z', round(5 * scale, 1)))]
+    created = walls.create_walls(ctx, 'photos', room_walls)['created']; before = project.update().value('photos_s')[0]
+    for i, (u, v) in enumerate([(100, 200), (700, 900), (300, 650), (1100, 100)]):
+        photos.click(ctx, 'photos', f'img{i % 2}.jpg', u, v, f'{created[0]}:a_sol'); photos.click(ctx, 'photos', f'img{i % 2}.jpg', v, u, f'{created[1]}:b')
+    assert project.update().value('photos_s')[0] > 0.5 * before > 0

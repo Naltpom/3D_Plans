@@ -27,12 +27,13 @@ def wall_ends(comp, values):
     return [np.array([components.evaluate(comp['expressions'][f'{end}_{axis}'], values) for axis in 'xz']) for end in ('start', 'end')]
 
 
-def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward=False, sigma=CLICK_SIGMA_M, source='tracé', cote_status='mesuré', cote_sigma=TYPED_SIGMA_CM):
+def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward=False, sigma=CLICK_SIGMA_M, source='tracé', cote_status='mesuré', cote_sigma=TYPED_SIGMA_CM, names=None):
     project = ctx.require_project(); points = np.asarray(points, float).reshape(-1, 2); n = len(points)
     edges = list(range(n if closed else n - 1)); after = lambda e: (e + 1) % n
     if len(edges) < (3 if closed else 1): raise ValueError('tracé : au moins 2 points, 3 pour une pièce fermée')
     if any(np.linalg.norm(points[after(e)] - points[e]) < 0.01 for e in edges): raise ValueError('tracé : deux points confondus')
-    ids = free_ids(project, 'mur', len(edges)); labels = [f'Mur {i[3:]}' for i in ids]; created = {}
+    taken = set(components.load(project)); ids = [f'mur{n}' if f'mur{n}' not in taken else free_ids(project, f'mur{n}_', 1)[0] for n in names] if names else free_ids(project, 'mur', len(edges))
+    labels = [f'Mur {n}' for n in names] if names else [f'Mur {i[3:]}' for i in ids]; created = {}
     runs = ['' if refs else 'x' if abs(points[after(e)][1] - points[e][1]) < 1e-6 else 'z' if abs(points[after(e)][0] - points[e][0]) < 1e-6 else '' for e in edges]
 
     def coordinate(i, axis):
@@ -56,7 +57,7 @@ def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward
         run, start, stop = runs[e], e, after(e)
         if run: geometry = {'axe': run, ('z' if run == 'x' else 'x'): coordinate(start, 'z' if run == 'x' else 'x'), f'{run}0': coordinate(start, run), f'{run}1': coordinate(stop, run)}
         else: geometry = {'x0': coordinate(start, 'x'), 'z0': coordinate(start, 'z'), 'x1': coordinate(stop, 'x'), 'z1': coordinate(stop, 'z')}
-        options.append({**geometry, 'sens': sens(e), 'source': source, 'h': height if height is not None else 2.5 if e == 0 else f'{ids[0]}_h'})
+        options.append({**geometry, 'sens': sens(e), 'source': source, 'h': height if isinstance(height, str) else (height or 2.5) if e == 0 else f'{ids[0]}_h'})
     for name, (value, axis, label, _) in created.items(): project.add_param(name, float(value), axis, label)
     for e, opts in zip(edges, options): components.add(project, 'mur', ids[e], opts, labels[e])
     for name, (value, _, label, owner) in created.items(): prior(project, owner, name, value, sigma, f'{label} (tracé)')

@@ -4,7 +4,7 @@ from .rpc import read_cotes, rpc, write_cotes
 
 MERGE_M, ASSOC_M, SPAN_M, TOP_M, LENGTH_M, SURE_LENGTH_M, CORNER_M, FRONT_M, FLOOR_M, CEILING_M = 0.1, 0.03, 0.8, 1.3, 0.5, 1.0, 0.75, 0.1, 0.2, 1.8
 SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 13, 'echelle', 1.0
-LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+LETTERS, KEPT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ('cadastre', 'gabarit')
 
 
 def plane_groups(planes, scale):
@@ -43,12 +43,12 @@ def candidates(frame, model):
     return found
 
 
-def proposals(project, source):
+def proposals(project, source, raw=False):
     meta, frame, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
-    linear_map, shift, _ = photos.project_transform(project, source, frame); rotation, offset = np.array(frame['R']), np.array(frame['t'])
+    linear_map, shift, _ = photos.project_transform(project, source, frame, photos.raw_pose(frame) if raw else None); rotation, offset = np.array(frame['R']), np.array(frame['t'])
     to_project = lambda point: ((np.asarray(point, float) - offset) @ rotation) @ linear_map.T + shift
-    mapping, cameras = photos.axis_mapping(project, source), photos.camera_centers(model) @ linear_map.T + shift
-    guided = [c for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') == source]
+    mapping = {axis: (axis, 1.0) for axis in 'xyz'} if raw else photos.axis_mapping(project, source); cameras = photos.camera_centers(model) @ linear_map.T + shift
+    guided = [] if raw else [c for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') == source]
     values = {name: value for name, (value, _) in components.param_values(project).items()}
     corner = lambda comp, end: np.array([components.evaluate(comp['expressions'][f'{end}_x'], values), 0.0, components.evaluate(comp['expressions'][f'{end}_z'], values)])
     clicked = {}
@@ -91,15 +91,9 @@ def corners(wall, chosen):
 
 
 def clear(project, source):
-    guided = [c for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') == source]
-    if not guided: return
-    owned, planes = {n for c in guided for n in c['params']}, {p for c in guided for p in c['options'].get('plans', [])}
-    stale = [(source, plane) for plane, expr in project.db.execute('select plane_id, expr from photos_assoc where source=?', (source,)).fetchall()
-             if plane in planes or owned & set(components.NAME.findall(expr))]
-    project.db.executemany('delete from photos_assoc where source=? and plane_id=?', stale)
-    project.db.execute('delete from obs where source=? or id=?', (source, f'cotes:{SCALE_COTE}'))
-    try: components.remove(project, *(c['id'] for c in guided))
-    except ValueError: project.db.rollback(); raise
+    stale = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in KEPT or c['options'].get('source') == 'plan']
+    if stale: components.remove(project, *stale)
+    project.db.execute('delete from photos_assoc where source=?', (source,)); project.db.commit()
     rows = read_cotes(project)
     if any(row['id'] == SCALE_COTE for row in rows): write_cotes(project, [row for row in rows if row['id'] != SCALE_COTE])
 

@@ -18,6 +18,8 @@
         <button id="conflict-chip" class="chip" type="button" title="Voir les contradictions"></button>
         <span id="scale-chip" class="chip"></span>
       </span>
+      <button id="undo-button" class="small" type="button" title="Annuler la dernière action (Ctrl+Z)" disabled>↶ Annuler</button>
+      <button id="redo-button" class="small" type="button" title="Rétablir (Ctrl+Y)" aria-label="Rétablir" disabled>↷</button>
       <button id="update-button" class="primary" disabled>Mettre à jour</button>
       <button id="mode-button" class="small" type="button">Mode expert</button>
       <button id="about-button" class="small" type="button" title="Version, notes de version, mises à jour">À propos</button>
@@ -178,6 +180,8 @@
       <canvas id="scene" aria-label="Vue 3D du modèle"></canvas>
       <div id="views" class="row" role="group" aria-label="Point de vue"><button data-view="dessus">Dessus</button><button data-view="face">Face</button><button data-view="3d">3D</button></div>
       <aside id="info" hidden></aside>
+      <div id="plan2d" hidden></div>
+      <div id="pick-tools" role="toolbar" aria-label="Élément sélectionné" hidden><strong id="pick-name"></strong><button id="pick-remove" class="small">Supprimer</button><button id="pick-close" class="remove" title="Désélectionner" aria-label="Désélectionner">×</button></div>
       <div id="furniture-tools" role="toolbar" aria-label="Objet sélectionné" hidden>
         <strong id="furniture-name"></strong>
         <button data-turn="-15" class="small" title="Tourner de −15°">−15°</button>
@@ -266,6 +270,7 @@
         </section>
       </aside>
       <div id="photo-strip"></div>
+      <div id="photo-plan" hidden></div>
       <div id="photo-guide" role="status" hidden>
         <span id="photo-guide-text"></span>
         <span id="photo-guide-count" class="chip"></span>

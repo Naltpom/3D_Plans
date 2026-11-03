@@ -108,7 +108,8 @@ def wall_anchors(comp):
     def opposite(x, z): return {'x': x + expr['normal_x'] * expr['ep'], 'z': z + expr['normal_z'] * expr['ep']}
     anchors = {'a': {'x': expr['start_x'], 'z': expr['start_z']}, 'b': {'x': expr['end_x'], 'z': expr['end_z']},
                'a_ext': opposite(expr['start_x'], expr['start_z']), 'b_ext': opposite(expr['end_x'], expr['end_z']),
-               'bas': {'y': expr['y0']}, 'haut': {'y': expr['y0'] + expr['h']}}
+               'bas': {'y': expr['y0']}, 'haut': {'y': expr['y0'] + expr['h']},
+               'a_sol': {'x': expr['start_x'], 'y': expr['y0'], 'z': expr['start_z']}, 'b_sol': {'x': expr['end_x'], 'y': expr['y0'], 'z': expr['end_z']}}
     pos_axis = OTHER_AXIS.get(comp['options'].get('axe'))
     if pos_axis: anchors.update(face={pos_axis: expr[f'start_{pos_axis}']}, face_ext={pos_axis: anchors['a_ext'][pos_axis]})
     return anchors
@@ -368,14 +369,28 @@ def add(project, type, id, options=None, label=None):
 
 
 def remove(project, *ids):
-    components = load(project); removed = [components.pop(comp_id, None) for comp_id in ids]
-    if None in removed: raise ValueError(f'composant inconnu : {ids[removed.index(None)]}')
-    own, sources = {n for comp in removed for n in comp['params']}, {f'comp:{comp_id}' for comp_id in ids}
-    users = [k for k, other in components.items() if own & param_names(other)]
-    users += [o.id for o in project.observations() if o.source not in sources and own & set(NAME.findall(o.expr))]
-    if users: raise ValueError(f'{", ".join(ids)} {"est utilisé" if len(ids) == 1 else "sont utilisés"} par : {", ".join(users[:5])}' + (f', … ({len(users)} au total)' if len(users) > 5 else ''))
-    db = project.db; db.executemany('delete from params where name=?', [(n,) for n in own])
-    db.executemany('delete from obs where source=?', [(s,) for s in sources]); db.executemany('delete from components where id=?', [(i,) for i in ids]); db.commit()
+    from .rpc import read_cotes, write_cotes
+    components = load(project); unknown = [i for i in ids if i not in components]
+    if unknown: raise ValueError(f'composant inconnu : {unknown[0]}')
+    ids = set(ids) | {k for k, c in components.items() if c['options'].get('mur') in ids}
+    removed = [components.pop(i) for i in sorted(ids)]; own, sources = {n for c in removed for n in c['params']}, {f'comp:{i}' for i in ids}; db = project.db
+    for name in sorted(own):
+        user = next((k for k, other in components.items() if name in param_names(other)), None)
+        if not user: continue
+        own.discard(name); components[user]['params'].append(name)
+        db.execute('update components set json=? where id=?', (json.dumps(components[user], ensure_ascii=False), user))
+        db.executemany('update obs set id=?, source=? where source=? and expr=?', [(f'comp:{user}:{name}', f'comp:{user}', s, name) for s in sources])
+    uses = lambda expr: bool(own & set(NAME.findall(str(expr))))
+    tables = {row[0] for row in db.execute("select name from sqlite_master where type='table'")}
+    if 'photos_assoc' in tables: db.executemany('delete from photos_assoc where source=? and plane_id=?', [r[:2] for r in db.execute('select source, plane_id, expr from photos_assoc').fetchall() if uses(r[2])])
+    if 'photos_clicks' in tables: db.executemany('delete from photos_clicks where id=?', [(r[0],) for r in db.execute('select id, anchor from photos_clicks').fetchall() if r[1].partition(':')[0] in ids])
+    stale = {source for source, expr in db.execute('select source, expr from obs').fetchall() if source not in sources and not source.startswith('comp:') and uses(expr)}
+    db.executemany("update sources set hash='' where id=?", [(s,) for s in stale])
+    db.executemany('delete from obs where source=?', [(s,) for s in sources | stale]); db.executemany('delete from params where name=?', [(n,) for n in own])
+    db.executemany('delete from components where id=?', [(i,) for i in ids]); db.commit()
+    rows = read_cotes(project); kept = [row for row in rows if not uses(row['expr'])]
+    if len(kept) < len(rows): write_cotes(project, kept)
+    return sorted(ids)
 
 
 def obs_unit(obs): return '°' if obs.source.startswith('comp:') and obs.id.rpartition('_')[2] in ANGLE_PRIORS else 'm'
@@ -491,8 +506,7 @@ def rpc_list(ctx): return [summary(comp) for comp in load(ctx.require_project())
 
 @rpc('components.remove')
 def rpc_remove(ctx, id):
-    remove(ctx.require_project(), id)
-    return {'removed': id}
+    return {'removed': remove(ctx.require_project(), id)}
 
 
 @rpc('components.anchors')

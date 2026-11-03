@@ -1,6 +1,6 @@
 {
   "productName": "3D_Plans",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "identifier": "com.naltpom.plans3d",
   "build": {
     "beforeDevCommand": "python scripts/prepare_runtime.py && npm run dev",
@@ -52,7 +52,6 @@
       "endpoints": [
         "https://github.com/Naltpom/3D_Plans/releases/latest/download/latest.json"
       ],
-      "dangerousInsecureTransportProtocol": true,
       "windows": {
         "installMode": "passive"
       }
