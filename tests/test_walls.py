@@ -38,13 +38,10 @@ def model(rng):
             'wh': np.tile([1600, 1200], (count, 1)), 'orientation': np.ones(count, int), 'P': room(rng)}
 
 
-def write_tracks(cache, m):
-    folder = os.path.join(cache, 'sparse', '0'); os.makedirs(folder, exist_ok=True); local = np.einsum('nij,pj->npi', photos.rotation_matrices(m['q']), m['P']) + m['t'][:, None]
-    fx, fy, cx, cy = m['K'][0, :4]; u, v = fx * local[..., 0] / local[..., 2] + cx, fy * local[..., 1] / local[..., 2] + cy
-    seen = (local[..., 2] > 0) & (u > 0) & (u < 1600) & (v > 0) & (v < 1200)
-    with open(os.path.join(folder, 'images.txt'), 'w') as f: f.write('# images\n' + ''.join(f'{i + 7} 1 0 0 0 0 0 0 1 {name}\n\n' for i, name in enumerate(m['names'])))
-    with open(os.path.join(folder, 'points3D.txt'), 'w') as f:
-        f.write('# points\n' + ''.join(f"{n + 1} {x} {y} {z} 0 0 0 0.5 {' '.join(f'{i + 7} 0' for i in np.flatnonzero(seen[:, n]))}\n" for n, (x, y, z) in enumerate(m['P'])))
+def tracked(m):
+    local = np.einsum('nij,pj->npi', photos.rotation_matrices(m['q']), m['P']) + m['t'][:, None]; fx, fy, cx, cy = m['K'][0, :4]
+    u, v = fx * local[..., 0] / local[..., 2] + cx, fy * local[..., 1] / local[..., 2] + cy; seen = (local[..., 2] > 0) & (u > 0) & (u < 1600) & (v > 0) & (v < 1200)
+    return {**m, 'Tptr': np.concatenate([[0], np.cumsum(seen.sum(0))]), 'Timg': np.nonzero(seen.T)[1]}
 
 
 @pytest.fixture
@@ -77,11 +74,15 @@ def test_propose_walls(setup):
 
 
 def test_furniture_seen_through(setup):
-    ctx, project = setup; cache = photos.source_cache(project, 'photos')[1]; write_tracks(cache, photos.load_model(cache))
+    ctx, project = setup; cache = photos.source_cache(project, 'photos')[1]; np.savez(os.path.join(cache, 'model.npz'), **tracked(photos.load_model(cache)))
     listed = by_position(walls.propose_walls(ctx)); scale = photos.CAMERA_HEIGHT_M / CAMERA_HEIGHT
     assert listed[('x', round(0.6 * scale, 1))]['reason'] == walls.FURNITURE and listed[('x', round(0.6 * scale, 1))]['meuble'] and not listed[('x', round(0.6 * scale, 1))]['sure']
     assert all(listed[key]['reason'] != walls.FURNITURE for key in (('x', 0.0), ('x', round(4 * scale, 1)), ('z', 0.0)))
-    assert os.path.exists(os.path.join(cache, 'tracks.npz')) and walls.point_tracks(cache, '0')[1].min() == 0
+
+
+def test_furniture_moved():
+    points = np.column_stack([np.full(100, 1.0), np.linspace(0.2, 2.0, 100), np.linspace(0.0, 2.0, 100)]); rays = (np.zeros((0, 3)), np.zeros((0, 3)))
+    assert walls.furniture((rays, points, np.ones(100, bool)), 0, 1.0, 0.0, 2.0, 2.5) == walls.MOVED and walls.furniture((rays, points, np.zeros(100, bool)), 0, 1.0, 0.0, 2.0, 2.5) == ''
 
 
 def test_create_walls_scale_and_replay(setup):

@@ -250,7 +250,7 @@ def default_k(plan):
     return ROOM_M / max(np.ptp(ends, 0).max(), 1.0)
 
 
-def vertical_planes(state, rays=None):
+def vertical_planes(state, seen=None):
     s, found, height = state['s_est'], [], walls.levels(state)[2]
     for group in walls.plane_groups(state['planes'], s):
         k = 'xyz'.index(group[0]['axis']); run, offset = 2 - k, group[0]['offset']
@@ -258,7 +258,7 @@ def vertical_planes(state, rays=None):
         if high[1] - low[1] < 0.4 or high[run] - low[run] < 0.3: continue
         a, b = np.zeros(2), np.zeros(2); a[k // 2], b[k // 2], a[run // 2], b[run // 2] = offset * s, offset * s, low[run], high[run]
         found.append({'id': group[0]['id'], 'a': a, 'b': b, 'n': int(sum(p['n'] for p in group)), 'planes': [p['id'] for p in group if abs(p['offset'] - offset) * s <= walls.ASSOC_M],
-                      'meuble': walls.see_through(rays, k, offset * s, low[run], high[run], height) >= walls.SEE_SHARE})
+                      'meuble': bool(walls.furniture(seen, k, offset * s, low[run], high[run], height))})
     return found
 
 
@@ -342,8 +342,8 @@ def refine(drawn, photo, f, shift):
 def fit(ctx, plan, turn=None):
     project = ctx.require_project(); source = photo_source(project)
     if not source: raise ValueError('calage : aucune photo positionnée')
-    meta, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state); L0, c0 = np.array(pose['L']), np.array(pose['c']); model = photos.load_model(cache)
-    planes = vertical_planes(state, walls.sight(state, model, walls.point_tracks(cache, meta.get('model', '0')))); ring = plan['walls']; drawn_px = np.array([w['a'] for w in ring], float)
+    _, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state); L0, c0 = np.array(pose['L']), np.array(pose['c']); model = walls.tracked(cache)
+    planes = vertical_planes(state, walls.evidence(project, source, state, model)); ring = plan['walls']; drawn_px = np.array([w['a'] for w in ring], float)
     if sum(not p['meuble'] for p in planes) < 2: raise ValueError('calage : moins de 2 surfaces verticales sur les photos (densifie le nuage)')
     ends = np.array([p for q in planes for p in (q['a'], q['b'])]); k0 = float(np.sqrt(np.prod(np.ptp(ends, 0).clip(0.5)) / np.prod(np.ptp(drawn_px, 0).clip(1.0))))
     forward, _ = frame(plan, k0); traced = [{'id': w['name'], 'a': forward(w['a']), 'b': forward(w['b'])} for w in ring]

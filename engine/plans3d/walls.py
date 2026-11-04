@@ -1,12 +1,13 @@
 import os
 import numpy as np
-from . import components, photos
+from . import components, groupes, photos
 from .rpc import read_cotes, rpc, write_cotes
 
 MERGE_M, ASSOC_M, SPAN_M, TOP_M, LENGTH_M, SURE_LENGTH_M, CORNER_M, FRONT_M, FLOOR_M, CEILING_M = 0.1, 0.03, 0.8, 1.3, 0.5, 1.0, 0.75, 0.1, 0.2, 1.8
 SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 13, 'echelle', 1.0
 LETTERS, KEPT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ('cadastre', 'gabarit')
-SEE_M, SEE_BAND_M, SEE_SHARE, SEE_CELL_M, FURNITURE = 0.2, 0.45, 0.5, 0.1, 'meuble : on voit la pièce au-dessus'
+SEE_M, SEE_BAND_M, SEE_SHARE, SEE_CELL_M, MOVED_POINTS, MOVED_SHARE = 0.2, 0.45, 0.5, 0.1, 20, 0.5
+FURNITURE, MOVED = 'meuble : on voit la pièce au-dessus', 'meuble : déplacé entre deux séances'
 
 
 def plane_groups(planes, scale):
@@ -25,25 +26,25 @@ def levels(frame):
     return floor and floor['id'], ceiling and ceiling['id'], ceiling and float(height(ceiling))
 
 
-def point_tracks(cache, name):
-    folder, saved = os.path.join(cache, 'sparse', str(name)), os.path.join(cache, 'tracks.npz'); text = os.path.join(folder, 'points3D.txt')
-    if not os.path.exists(text): return None
-    stamp = f'{os.path.getsize(text)}:{os.path.getmtime(text)}'
-    if os.path.exists(saved):
-        with np.load(saved) as data:
-            if str(data['stamp']) == stamp: return data['owner'], data['seen']
-    lines = [line for line in open(os.path.join(folder, 'images.txt'), encoding='utf-8') if line[0] != '#']
-    index = {int(line.split(maxsplit=1)[0]): i for i, line in enumerate(line for line in lines[::2] if line.strip())}
-    tracks = [[index[int(v)] for v in line.split()[8::2]] for line in open(text, encoding='utf-8') if line[0] != '#' and line.strip()]
-    owner, seen = np.repeat(np.arange(len(tracks)), [len(t) for t in tracks]), np.array([i for t in tracks for i in t], int)
-    np.savez(saved, owner=owner, seen=seen, stamp=stamp)
-    return owner, seen
+def tracked(cache):
+    folder = os.path.join(cache, 'sparse', str(photos.load_json(os.path.join(cache, 'meta.json')).get('model', '0')))
+    return groupes.tracks(cache) if os.path.exists(os.path.join(folder, 'points3D.txt')) else photos.load_model(cache)
 
 
-def sight(frame, model, tracks):
-    if tracks is None or not len(tracks[0]) or tracks[0].max() >= len(model['P']) or tracks[1].max() >= len(model['q']): return None
-    rotation, shift, scale = np.array(frame['R']), np.array(frame['t']), frame['s_est']
-    return (model['P'][tracks[0]] @ rotation.T + shift) * scale, (photos.camera_centers(model)[tracks[1]] @ rotation.T + shift) * scale
+def evidence(project, source, frame, model):
+    if 'Tptr' not in model or not len(model['Timg']): return None
+    rotation, shift, scale = np.array(frame['R']), np.array(frame['t']), frame['s_est']; owner = np.repeat(np.arange(len(model['P'])), np.diff(model['Tptr']))
+    try: moving = ~groupes.fixed(project, source)
+    except (OSError, KeyError, ValueError): moving = np.zeros(len(model['P']), bool)
+    points = (model['P'] @ rotation.T + shift) * scale
+    return (points[owner], (photos.camera_centers(model)[model['Timg']] @ rotation.T + shift) * scale), points, moving
+
+
+def furniture(seen, k, offset, low, high, height):
+    if seen is None or not height: return ''
+    rays, points, moving = seen; run = 2 - k
+    band = (np.abs(points[:, k] - offset) < BAND_M) & (points[:, run] > low) & (points[:, run] < high) & (points[:, 1] > 0.1) & (points[:, 1] < height - 0.1)
+    return FURNITURE if see_through(rays, k, offset, low, high, height) >= SEE_SHARE else MOVED if band.sum() >= MOVED_POINTS and moving[band].mean() >= MOVED_SHARE else ''
 
 
 def see_through(rays, k, offset, low, high, height):
@@ -59,31 +60,31 @@ def overlap(wall, other):
     return min(wall['high'][run], other['high'][run]) - max(wall['low'][run], other['low'][run])
 
 
-def candidates(frame, model, tracks=None):
-    scale, rotation, shift = frame['s_est'], np.array(frame['R']), np.array(frame['t']); rays, height = sight(frame, model, tracks), levels(frame)[2]
+def candidates(frame, model, seen=None):
+    scale, rotation, shift = frame['s_est'], np.array(frame['R']), np.array(frame['t']); height = levels(frame)[2]
     centers = photos.camera_centers(model) @ rotation.T + shift; forwards = photos.rotation_matrices(model['q'])[:, 2] @ rotation.T; found = []
     for group in plane_groups(frame['planes'], scale):
         k = 'xyz'.index(group[0]['axis']); run = 2 - k; offset = group[0]['offset']
         low, high = np.min([p['bbox'][0] for p in group], 0), np.max([p['bbox'][1] for p in group], 0)
-        if (high[1] - low[1]) * scale < SPAN_M or rays is None and high[1] * scale < TOP_M or (high[run] - low[run]) * scale < LENGTH_M: continue
+        if (high[1] - low[1]) * scale < SPAN_M or seen is None and high[1] * scale < TOP_M or (high[run] - low[run]) * scale < LENGTH_M: continue
         side = np.sign(np.median(centers[:, k]) - offset) or 1.0; middle = (low + high) / 2; middle[k] = offset; towards = middle - centers
-        seen = (np.einsum('ij,ij->i', forwards, towards) > np.cos(np.radians(40)) * np.linalg.norm(towards, axis=1)) & ((centers[:, k] - offset) * side > 0)
-        found.append({'k': k, 'run': run, 'offset': offset, 'low': low, 'high': high, 'side': side, 'n': sum(p['n'] for p in group), 'photos': int(seen.sum()),
-                      'meuble': see_through(rays, k, offset * scale, low[run] * scale, high[run] * scale, height) >= SEE_SHARE,
+        facing = (np.einsum('ij,ij->i', forwards, towards) > np.cos(np.radians(40)) * np.linalg.norm(towards, axis=1)) & ((centers[:, k] - offset) * side > 0)
+        found.append({'k': k, 'run': run, 'offset': offset, 'low': low, 'high': high, 'side': side, 'n': sum(p['n'] for p in group), 'photos': int(facing.sum()),
+                      'meuble': furniture(seen, k, offset * scale, low[run] * scale, high[run] * scale, height),
                       'planes': [p['id'] for p in group if abs(p['offset'] - offset) * scale <= ASSOC_M],
                       'names': {name for p in group for name in [p['id'], *p.get('aliases', [])]}})
     found = sorted(found, key=lambda wall: -wall['n'])[:len(LETTERS)]; threshold = max(SURE_POINTS, SURE_SHARE * sum(wall['n'] for wall in found))
     for letter, wall in zip(LETTERS, found): wall['id'] = letter
     for wall in found:
-        behind = rays is None and next((other for other in found if other['k'] == wall['k'] and other['side'] == wall['side'] and FRONT_M < (wall['offset'] - other['offset']) * wall['side'] * scale <= FRONT_MAX_M
+        behind = seen is None and next((other for other in found if other['k'] == wall['k'] and other['side'] == wall['side'] and FRONT_M < (wall['offset'] - other['offset']) * wall['side'] * scale <= FRONT_MAX_M
                        and overlap(wall, other) > 0.3 * (wall['high'][wall['run']] - wall['low'][wall['run']])), None)
         length = (wall['high'][wall['run']] - wall['low'][wall['run']]) * scale
-        wall['reason'] = FURNITURE if wall['meuble'] else f"devant le mur {behind['id']} : meuble ?" if behind else 'peu de points' if wall['n'] < threshold else 'court' if length < SURE_LENGTH_M else ''
+        wall['reason'] = wall['meuble'] or (f"devant le mur {behind['id']} : meuble ?" if behind else 'peu de points' if wall['n'] < threshold else 'court' if length < SURE_LENGTH_M else '')
     return found
 
 
 def proposals(project, source, raw=False):
-    meta, frame, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache)
+    meta, frame, cache = photos.photo_state(project, source, compute=False); model = tracked(cache)
     linear_map, shift, _ = photos.project_transform(project, source, frame, photos.raw_pose(frame) if raw else None); rotation, offset = np.array(frame['R']), np.array(frame['t'])
     to_project = lambda point: ((np.asarray(point, float) - offset) @ rotation) @ linear_map.T + shift
     mapping = {axis: (axis, 1.0) for axis in 'xyz'} if raw else photos.axis_mapping(project, source); cameras = photos.camera_centers(model) @ linear_map.T + shift
@@ -93,7 +94,7 @@ def proposals(project, source, raw=False):
     clicked = {}
     for image, anchor in project.db.execute('select image, anchor from photos_clicks where source=?', (source,)): clicked.setdefault(anchor, set()).add(image)
     walls = []
-    for wall in candidates(frame, model, point_tracks(cache, meta.get('model', '0'))):
+    for wall in candidates(frame, model, evidence(project, source, frame, model)):
         axis = mapping['xyz'[wall['k']]][0]
         if axis == 'y': continue
         def at(value, height=0.0):
@@ -106,7 +107,7 @@ def proposals(project, source, raw=False):
         walls.append({'id': wall['id'], 'label': f"Mur {wall['id']}", 'axis': axis, 'position': position, 'a': [float(ends[0][0]), float(ends[0][2])],
                       'b': [float(ends[1][0]), float(ends[1][2])], 'length': float(np.linalg.norm(ends[1] - ends[0])),
                       'height': float(at(wall['low'][wall['run']], wall['high'][1])[1] - points[0][1]), 'n': int(wall['n']), 'photos': wall['photos'],
-                      'sure': not wall['reason'], 'reason': wall['reason'], 'meuble': wall['meuble'], 'planes': wall['planes'],
+                      'sure': not wall['reason'], 'reason': wall['reason'], 'meuble': bool(wall['meuble']), 'planes': wall['planes'],
                       'sens': float(np.sign(position - np.median(cameras[:, 'xyz'.index(axis)])) or 1.0),
                       'component': comp and comp['id'], 'angles': {end: comp and angle(end) for end in 'ab'}})
     floor, ceiling, height = levels(frame); closed = [wall for wall in walls if wall['component'] and all(wall['angles'].values())]
