@@ -1,5 +1,6 @@
 import { call, host, onEvent } from "./host";
 import { $, button, el, number, report, run as runTask } from "./ui";
+import { sessions } from "./seances";
 
 type Project = { name: string; path: string; guide?: unknown; type?: string; step?: string; opened?: string };
 type Source = { id: string; path: string; kind: string; extracted: boolean; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
@@ -82,6 +83,7 @@ export async function refreshSources() {
     return item;
   }));
   if (!sources.length) sourceList.append(el("li", "empty", "Aucune source : glisse ici un dossier de photos, un PDF ou un CSV de cotes."));
+  $("#sessions").replaceChildren(...sources.filter((s) => s.kind === "photos_colmap" && s.photos).map((s) => sessions(s.id, true)));
   document.dispatchEvent(new CustomEvent("plans3d:sources", { detail: sources }));
 }
 

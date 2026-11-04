@@ -48,6 +48,7 @@
           <button id="add-source-button" class="small">Ajouter</button>
         </div>
         <ul id="source-list" class="list"></ul>
+        <div id="sessions"></div>
         <div id="photos" hidden>
           <select id="photo-source" aria-label="Source photo" hidden></select>
           <div id="photo-tools">
@@ -198,6 +199,8 @@
         <button id="render-export" class="small">Exporter PNG</button>
         <button id="render-exit" class="small primary">Temps réel</button>
       </div>
+      <div id="cloud-colors" class="row" role="group" aria-label="Couleur du nuage" hidden><span>Couleur du nuage</span></div>
+      <div id="cloud-legend" hidden></div>
       <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
       <div id="warnings" role="status" hidden></div>
     </main>

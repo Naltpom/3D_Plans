@@ -458,3 +458,27 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #photo-plan { grid-area: stage; z-index: 2; align-self: start; justify-self: end; box-sizing: border-box; width: 300px; height: 240px; min-width: 180px; min-height: 160px; max-width: 70vw; max-height: 80vh; margin: 12px; padding: 8px; overflow: hidden; resize: both; direction: rtl; border: 1px solid var(--strong); border-radius: 10px; background: var(--panel); font-size: 12px; color: var(--muted); box-shadow: 0 8px 24px #0008; }
 #photo-plan > * { direction: ltr; }
 #photo-plan svg { width: 100%; height: calc(100% - 18px); }
+.sessions { display: flex; flex-direction: column; gap: 8px; }
+.sessions .head { flex-wrap: wrap; gap: 8px 12px; }
+.sessions .head small { flex: 1; color: var(--muted); }
+.sessions > small { color: var(--muted); font-size: 12px; }
+.sessions label.gap { flex-direction: row; align-items: center; gap: 6px; }
+.sessions label.gap input { width: 64px; }
+.list.sessions li.session { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 12px; border: 1px solid var(--border); }
+.list.sessions li.session.off { border-style: dashed; background: none; }
+.list.sessions li.session.off .thumbs { opacity: 0.35; }
+.list.sessions li.session.off input.name { color: var(--muted); }
+.session .dot { width: 12px; height: 12px; border-radius: 50%; }
+.session input.name { min-height: 30px; margin-left: -7px; padding: 3px 6px; border-color: transparent; background: none; font-weight: 600; }
+.session input.name:hover, .session input.name:focus { border-color: var(--strong); }
+.list.sessions .session small { grid-column: 2 / 4; color: var(--muted); }
+.session .thumbs { grid-column: 2 / 4; display: flex; gap: 4px; overflow: hidden; }
+.session .thumbs img { height: 40px; border-radius: 4px; }
+.sessions.compact { padding: 10px 0 0; }
+.sessions.compact label.gap input { width: 48px; min-height: 26px; padding: 2px 6px; }
+.sessions.compact li.session { padding: 6px 8px; border: 0; }
+.sessions.compact .session input.name { min-height: 24px; font-weight: 500; }
+.sessions.compact .session .thumbs img { height: 22px; }
+#cloud-colors { position: absolute; right: 12px; bottom: 12px; gap: 6px; padding: 4px 6px 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; color: var(--muted); }
+#cloud-legend { position: absolute; right: 12px; bottom: 58px; display: flex; flex-direction: column; gap: 4px; max-width: 360px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--soft); }
+#cloud-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: -1px; background: var(--key); }

@@ -6,6 +6,7 @@ import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPo
 import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
 import type { Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
+import { sessions } from "./seances";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; scale?: number; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean };
@@ -241,7 +242,7 @@ function sourcesStep() {
   if (!sources.length) list.append(el("li", "empty", "Aucun fichier pour l'instant : glisse un dossier de photos ou un plan ici."));
   const more = button("Ajouter des cotes ou un relief", "link fit", "CSV de cotes, grille d'altitudes", () => run(async () => addSources((await host.pickFiles("Cotes ou relief")) ?? [])));
   return [intro("D'où viennent les murs ?", "Choisis une ou plusieurs entrées : elles se combinent, un mur tracé se précise ensuite avec des photos ou des cotes."),
-    grid, list, more, footer(back(), onward(sources.length > 0 || Boolean(sketch) || Boolean(guide.manual)))];
+    grid, list, ...photos?.photos ? [sessions(photos.id)] : [], more, footer(back(), onward(sources.length > 0 || Boolean(sketch) || Boolean(guide.manual)))];
 }
 
 function progress(method: string, fraction: number, message: string, started: number) {

@@ -64,7 +64,7 @@ def call(ctx, name, params):
 
 HISTORY, HISTORY_FILES = 50, ('model.json', 'project.json', os.path.join('sources', 'cotes.csv'))
 UNDOABLE = set('components.add components.remove furniture.add furniture.move furniture.rotate furniture.options furniture.remove layout.apply cadastre.add terrain.add '
-               'photos.add photos.associate photos.unassociate photos.axes photos.click photos.unclick photos.create_walls photos.fit_walls photos.snap_walls '
+               'photos.add photos.set_gap photos.set_group photos.associate photos.unassociate photos.axes photos.click photos.unclick photos.create_walls photos.fit_walls photos.snap_walls '
                'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove'.split())
 
 

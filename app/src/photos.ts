@@ -2,6 +2,7 @@ import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
 import { refreshSources } from "./projects";
 import { refit, showCameras, showCloud, type Shape } from "./view3d";
+import { cloudMode, showColors } from "./seances";
 
 type UV = [number, number];
 type Point = number[];
@@ -99,6 +100,12 @@ const schedule = () => {
   timer = window.setTimeout(() => run(refresh), 30);
 };
 
+async function cloudOf(id: string | null) {
+  const empty = { points: [] as number[], colors: [] as number[] };
+  const ask = (color: string) => call<typeof empty>("photos.cloud", { source: id, color, ...preview ? { pose: preview } : {} });
+  return id ? ask(cloudMode()).catch(() => ask("photo")).catch(() => empty) : empty;
+}
+
 async function refresh() {
   const n = ++sequence;
   const sources = (await call<{ id: string; kind: string }[]>("sources.list")).filter((s) => s.kind === "photos_colmap");
@@ -106,7 +113,7 @@ async function refresh() {
   const ask = <T>(method: string, fallback: T) => id ? call<T>(method, { source: id, ...preview && ["photos.cameras", "photos.cloud"].includes(method) ? { pose: preview } : {} }).catch(() => fallback) : Promise.resolve(fallback);
   const [status, found, detected, listed, cloud] = await Promise.all([
     id ? call<{ colmap: boolean }>("tools.status").catch(() => ({ colmap: true })) : { colmap: true },
-    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), ask("photos.cloud", { points: [] as number[], colors: [] as number[] })]);
+    ask<Located | null>("photos.cameras", null), ask<Planes | null>("photos.planes", null), ask<Click[]>("photos.clicks", []), cloudOf(id)]);
   if (found) await host.allowAssets(found.cameras.map((c) => c.path)).catch(report);
   if (n !== sequence) return;
   [source, installed, located, planes, clicks] = [id, status.colmap, found, detected, listed];
@@ -115,6 +122,7 @@ async function refresh() {
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
   if (busy !== "photos.extract") showCloud(cloud.points, cloud.colors);
+  showColors(source, busy !== "photos.extract" && cloud.points.length > 0);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
   if (image) await draw();
@@ -655,6 +663,7 @@ document.addEventListener("plans3d:opened", (event) => {
   closePhoto();
   section.hidden = true;
 });
+document.addEventListener("plans3d:cloud", schedule);
 document.addEventListener("plans3d:updated", () => {
   dirty = false;
   schedule();

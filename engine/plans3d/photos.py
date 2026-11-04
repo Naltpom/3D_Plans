@@ -1,4 +1,4 @@
-import base64, io, json, os, re, shutil, sqlite3, struct, subprocess, time
+import base64, hashlib, io, json, os, re, shutil, sqlite3, struct, subprocess, time
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -21,7 +21,10 @@ LINE = 'ligne:'
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
 SCHEMA = '''create table if not exists photos_assoc(source text, plane_id text, expr text, sigma real, primary key(source, plane_id));
 create table if not exists photos_axes(source text primary key, map text);
-create table if not exists photos_clicks(id integer primary key autoincrement, source text, image text, u real, v real, anchor text);'''
+create table if not exists photos_clicks(id integer primary key autoincrement, source text, image text, u real, v real, anchor text);
+create table if not exists photos_excluded(source text, path text, primary key(source, path));
+create table if not exists photos_groups(source text, first text, name text, primary key(source, first));
+create table if not exists photos_gap(source text primary key, minutes real);'''
 
 
 class Stopped(ValueError): pass
@@ -29,6 +32,7 @@ class Stopped(ValueError): pass
 
 def no_progress(fraction, message=''): pass
 def unit(vector): return vector / np.linalg.norm(vector)
+def unit_rows(vectors): return vectors / np.linalg.norm(vectors, axis=1, keepdims=True).clip(1e-12)
 def load_json(path): return json.load(open(path, encoding='utf-8'))
 def write_lines(path, lines): open(path, 'w', encoding='utf-8').write(''.join(f'{line}\n' for line in lines))
 def number(value): return f'{float(value):.12g}'
@@ -159,10 +163,12 @@ def read_text_model(folder):
     lines = [line for line in open(os.path.join(folder, 'images.txt'), encoding='utf-8') if line[0] != '#']
     images = [line.split(maxsplit=9) for line in lines[::2] if line.strip()]
     points = rows('points3D.txt'); errors = np.array([row[7] for row in points], float); tracks = np.array([(len(row) - 8) // 2 for row in points])
+    ids = {int(row[0]): i for i, row in enumerate(images)}
     model = {'names': np.array([row[9].strip() for row in images]), 'q': np.array([row[1:5] for row in images], float),
              't': np.array([row[5:8] for row in images], float), 'K': np.array([cameras[int(row[8])][2] for row in images]),
              'wh': np.array([cameras[int(row[8])][:2] for row in images]), 'P': np.array([row[1:4] for row in points], float).reshape(-1, 3),
-             'C': np.array([row[4:7] for row in points], np.uint8).reshape(-1, 3)}
+             'C': np.array([row[4:7] for row in points], np.uint8).reshape(-1, 3), 'Tptr': np.concatenate([[0], np.cumsum(tracks)]).astype(np.int64),
+             'Timg': np.array([ids[int(image)] for row in points for image in row[8::2]], np.int64)}
     return model, float((errors * tracks).sum() / max(tracks.sum(), 1))
 
 
@@ -425,10 +431,25 @@ def expand_paths(paths):
     return expanded
 
 
+def excluded_photos(project, source):
+    ensure_schema(project); return {row[0] for row in project.db.execute('select path from photos_excluded where source=?', (source,))}
+
+
+def cache_folder(project, source, manifest):
+    excluded = sorted(excluded_photos(project, source)); suffix = '-' + hashlib.sha256('|'.join(excluded).encode()).hexdigest()[:12] if excluded else ''
+    return os.path.join(project.folder, 'cache', 'photos', file_hash(manifest) + suffix)
+
+
+def active_photos(project, source, manifest):
+    excluded = excluded_photos(project, source); photos = [path for path in read_manifest(manifest) if path not in excluded]
+    if not photos: raise ValueError('toutes les séances de photos sont exclues')
+    return photos
+
+
 def source_cache(project, source):
     ensure_schema(project); row = project.db.execute('select path from sources where id=?', (source,)).fetchone()
     if not row: raise ValueError(f'source photo inconnue : {source}')
-    return row[0], os.path.join(project.folder, 'cache', 'photos', file_hash(row[0]))
+    return row[0], cache_folder(project, source, row[0])
 
 
 def photo_state(project, source, progress=no_progress, compute=True, emit=None):
@@ -438,7 +459,7 @@ def photo_state(project, source, progress=no_progress, compute=True, emit=None):
         key, error_path = (os.path.abspath(project.folder), source), os.path.join(cache, 'error.txt'); RUNNING.add(key); STOPPED.discard(cache)
         try:
             if os.path.exists(error_path): os.remove(error_path)
-            reconstruct(read_manifest(manifest), cache, progress, emit)
+            reconstruct(active_photos(project, source, manifest), cache, progress, emit)
         except Stopped: raise
         except Exception as error:
             os.makedirs(cache, exist_ok=True); open(error_path, 'w', encoding='utf-8').write(str(error) or type(error).__name__); raise
@@ -449,7 +470,7 @@ def photo_state(project, source, progress=no_progress, compute=True, emit=None):
 
 def source_status(project, source, manifest):
     if not os.path.exists(manifest): return {'photos': 0, 'registered': None, 'state': 'échec', 'error': f'manifeste introuvable : {manifest}'}
-    cache = os.path.join(project.folder, 'cache', 'photos', file_hash(manifest)); meta, error = os.path.join(cache, 'meta.json'), os.path.join(cache, 'error.txt')
+    cache = cache_folder(project, source, manifest); meta, error = os.path.join(cache, 'meta.json'), os.path.join(cache, 'error.txt')
     status = {'photos': len(read_manifest(manifest)), 'registered': load_json(meta)['registered'] if os.path.exists(meta) else None}
     if (os.path.abspath(project.folder), source) in RUNNING: return {**status, 'state': 'en cours'}
     if status['registered'] is not None: return {**status, 'state': 'calculé'}
@@ -807,9 +828,10 @@ def cloud_sample(cache, limit):
 
 
 @rpc('photos.cloud')
-def cloud(ctx, source='photos', limit=50000, pose=None):
-    project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False)
-    points, colors = cloud_sample(cache, int(limit)); linear_map, shift, _ = project_transform(project, source, frame, pose); points = points @ linear_map.T + shift
+def cloud(ctx, source='photos', limit=50000, pose=None, color='photo'):
+    project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False); points, colors = cloud_sample(cache, int(limit))
+    if color != 'photo': from . import groupes; colors = groupes.colours(project, source, points, color)
+    linear_map, shift, _ = project_transform(project, source, frame, pose); points = points @ linear_map.T + shift
     low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
     kept = np.all((points > low - margin) & (points < high + margin), 1); kept[np.flatnonzero(kept)[int(limit):]] = False
     return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [],
