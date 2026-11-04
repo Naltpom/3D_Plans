@@ -14,6 +14,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 RUNNING, STOPPED, PROCESSES = set(), set(), {}
 LIVE_POINTS, LIVE_PERIOD_S = 50000, 2.0
+ALIGN_M, FRESH = 0.05, '.new'
 POINT_RECORD = struct.Struct('<Q3d3BdQ')
 PROCESSED = re.compile(r'Name:\s+(\S+)')
 REGISTERED = re.compile(r'Registering (?:initial image pair #(\d+) and #(\d+)|image #(\d+) \(num_reg_frames=(\d+)\))')
@@ -468,6 +469,49 @@ def photo_state(project, source, progress=no_progress, compute=True, emit=None):
     return load_json(os.path.join(cache, 'meta.json')), frame_and_planes(cache, progress), cache
 
 
+def realign(old, fresh, progress):
+    meta, old_meta = load_json(os.path.join(fresh, 'meta.json')), load_json(os.path.join(old, 'meta.json')); folder = os.path.join(fresh, 'sparse', meta['model'])
+    scale = load_json(os.path.join(old, 'frame.json'))['s_est']; before = read_text_model(folder)[0]['names']
+    run_colmap(['model_aligner', '--input_path', folder, '--output_path', folder, '--ref_model_path', os.path.join(old, 'sparse', old_meta['model']), '--ref_is_gps', '0',
+                '--alignment_max_error', number(ALIGN_M / scale)], os.path.join(fresh, 'align.log'), progress, .95, .96, 'recalage')
+    run_colmap(['model_converter', '--input_path', folder, '--output_path', folder, '--output_type', 'TXT'], os.path.join(fresh, 'convert.log'), progress, .96, .96, 'recalage')
+    model, kept, previous = read_text_model(folder)[0], load_model(fresh), load_model(old); originals, orientation = dict(zip(before, kept['names'])), dict(zip(before, kept['orientation']))
+    model.update(orientation=np.array([orientation[name] for name in model['names']]), names=np.array([originals[name] for name in model['names']]))
+    np.savez(os.path.join(fresh, 'model.npz'), **model); index = {name: i for i, name in enumerate(previous['names'])}
+    shared = [(i, index[name]) for i, name in enumerate(model['names']) if name in index]
+    if len(shared) < 3: return None
+    (a, b), centers = zip(*shared), camera_centers(previous)
+    error = float(np.median(np.linalg.norm(camera_centers(model)[list(a)] - centers[list(b)], axis=1)) * scale)
+    if error > ALIGN_M: return None
+    frame = load_json(os.path.join(old, 'frame.json')); json.dump({**frame, 'cloud': None}, open(os.path.join(fresh, 'frame.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    return error
+
+
+def rebuild(project, source, progress=no_progress, emit=None):
+    manifest, cache = source_cache(project, source); fresh, key = cache + FRESH, (os.path.abspath(project.folder), source)
+    if not os.path.exists(os.path.join(cache, 'meta.json')): return {}
+    images, linked = os.path.join(cache, 'images'), os.path.join(fresh, 'images')
+    shutil.rmtree(fresh, ignore_errors=True); os.makedirs(fresh, exist_ok=True); STOPPED.discard(fresh); RUNNING.add(key)
+    # liens physiques vers des photos souvent en lecture seule : impossibles à supprimer, donc déplacés
+    if os.path.isdir(images) and not os.path.exists(linked): os.replace(images, linked)
+    try:
+        reconstruct(active_photos(project, source, manifest), fresh, progress, emit)
+        try: error = realign(cache, fresh, progress)
+        except Stopped: raise
+        except (OSError, ValueError, KeyError): error = None
+    except BaseException:
+        if os.path.isdir(linked) and not os.path.exists(images): os.replace(linked, images)
+        shutil.rmtree(fresh, ignore_errors=True); raise
+    finally:
+        RUNNING.discard(key)
+    old = f'{cache}.old{time.time_ns()}'; os.replace(cache, old); os.replace(fresh, cache); shutil.rmtree(old, ignore_errors=True)
+    meta = {**load_json(os.path.join(cache, 'meta.json')), 'image_dir': os.path.join(cache, 'images')}; json.dump(meta, open(os.path.join(cache, 'meta.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    if error is None:
+        project.db.execute('delete from photos_assoc where source=?', (source,)); project.db.execute('delete from photos_axes where source=?', (source,)); project.db.commit()
+    invalidate(project, source)
+    return {'fresh': True, 'realigned_m': error}
+
+
 def source_status(project, source, manifest):
     if not os.path.exists(manifest): return {'photos': 0, 'registered': None, 'state': 'échec', 'error': f'manifeste introuvable : {manifest}'}
     cache = cache_folder(project, source, manifest); meta, error = os.path.join(cache, 'meta.json'), os.path.join(cache, 'error.txt')
@@ -682,12 +726,14 @@ def add(ctx, paths, source='photos'):
 
 
 @rpc('photos.extract', long=True)
-def extract(ctx, source='photos', progress=no_progress):
+def extract(ctx, source='photos', fresh=False, progress=no_progress):
     project = ctx.require_project(); started = time.perf_counter()
-    try: meta, frame, _ = photo_state(project, source, progress, emit=ctx.emit)
+    try:
+        restarted = rebuild(project, source, progress, ctx.emit) if fresh else {}
+        meta, frame, _ = photo_state(project, source, progress, emit=ctx.emit)
     except Stopped: return {'stopped': True}
     project.db.execute('update params set init=? where name=?', (frame['s_est'], f'{source}_s')); project.db.commit(); progress(1.0, 'terminé')
-    return {**meta, 'planes': len(frame['planes']), 's_est': frame['s_est'], 'total_s': time.perf_counter() - started}
+    return {**meta, **restarted, 'planes': len(frame['planes']), 's_est': frame['s_est'], 'total_s': time.perf_counter() - started}
 
 
 @rpc('photos.densify', long=True)
@@ -710,8 +756,10 @@ def densified(cache, meta, max_size, progress, started):
 
 @rpc('photos.stop')
 def stop(ctx, source='photos'):
-    _, cache = source_cache(ctx.require_project(), source); STOPPED.add(cache); process = PROCESSES.get(cache)
-    if process: process.kill()
+    _, cache = source_cache(ctx.require_project(), source)
+    for folder in (cache, cache + FRESH):
+        STOPPED.add(folder)
+        if process := PROCESSES.get(folder): process.kill()
 
 
 @rpc('photos.planes')

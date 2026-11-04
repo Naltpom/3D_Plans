@@ -51,6 +51,7 @@ const PHASES: Record<string, [string, string][]> = {
     ["fusion", "Fusion en un nuage dense"], ["plans", "Recherche des murs"]],
   "tools.install": [["", "Téléchargement et installation de COLMAP"]],
 };
+PHASES["photos.restart"] = [...PHASES["photos.extract"].slice(0, 3), ["recalage", "Recalage sur l'ancien calcul"], PHASES["photos.extract"][3]];
 const KINDS: Record<string, string> = { cotes_csv: "Cotes", photos_colmap: "Photos", cadastre_pdf: "Cadastre", cadastre_geojson: "Cadastre", grille_alti: "Relief" };
 const MODE = "plans3d.mode";
 const OPENINGS: [string, string][] = [["porte", "Porte"], ["fenetre", "Fenêtre"], ["porte_fenetre", "Porte-fenêtre"]];
@@ -98,6 +99,7 @@ const lower = (label: string) => label[0].toLowerCase() + label.slice(1);
 const decimal = (text: string) => Number(text.trim().replace(",", "."));
 const target = () => `${parent.replace(/[\\/]+$/, "")}\\${draft.name.trim().replace(/[<>:"/\\|?*]+/g, "_")}`;
 const photoSource = () => sources.find((s) => s.kind === "photos_colmap");
+let restarted: { realigned_m?: number | null; stopped?: boolean; error?: string } | null = null, restarting = false;
 const walls = () => proposal?.walls ?? [];
 const created = () => walls().filter((w) => w.component);
 const side = (wall: Wall, end: End) => wall.axis === "z" ? end === "a" ? "bout de gauche" : "bout de droite" : end === "a" ? "bout du haut" : "bout du bas";
@@ -259,23 +261,53 @@ function progress(method: string, fraction: number, message: string, started: nu
   return [list, bar, el("small", "", `${known ? `${Math.round(fraction * 100)} % · ` : ""}${Math.floor(seconds / 60)} min ${String(Math.floor(seconds % 60)).padStart(2, "0")} s${known ? ` · encore ≈ ${left} min` : ""}`)];
 }
 
+const minutes = (source: Source) => Math.max(2, Math.round((source.photos ?? 0) * 2.5 / 60));
+
+function cta(title: string, text: string, className: string, action: () => unknown) {
+  const b = button("", `cta ${className}`, title, () => run(action));
+  b.append(el("b", "", title), el("span", "", text));
+  return b;
+}
+
+function alert(title: string, text: string) {
+  const box = el("div", "alert");
+  box.append(el("b", "", title), el("span", "", text));
+  return box;
+}
+
+async function restart() {
+  restarting = true;
+  restarted = await photoTask("photos.extract", { fresh: true }).catch((error: Error) => ({ error: error.message })).finally(() => { restarting = false; });
+  if (restarted?.realigned_m === null && guide.plan?.fit) await save({ plan: { ...guide.plan, fit: null } });
+  render();
+}
+
 function positionsStep() {
   const photo = photoInfo(), source = photoSource();
   if (photo.busy === "tools.install") return [intro("Installation des outils photo", "Tu peux laisser l'appli travailler : le calcul des positions suit."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
-  if (photo.busy === "photos.extract") return [intro("Je place tes photos",
-    "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
-    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
+  if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
+    : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
+    ...progress(restarting ? "photos.restart" : photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre."), footer(back(), onward())];
   if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
     footer(back(), primary("Installer les outils photo", autoPositions))];
-  if (photo.count) return [intro(`${photo.count} photos positionnées sur ${source.photos}`,
-    "Dans la vue, chaque cône bleu est une photo et les points sont les détails retrouvés sur plusieurs photos. Les murs se cachent dans ces points : l'étape suivante les trouve."),
-  card("Pour tourner la vue", "Glisse avec le bouton gauche, zoome avec la molette. « Dessus » montre le plan."), footer(back(), onward())];
-  const minutes = Math.max(2, Math.round((source.photos ?? 0) * 2.5 / 60));
+  if (photo.count) {
+    const lost = restarted?.realigned_m === null, again = button("Relancer le recalcul", "link", "Tout recalculer depuis les photos", () => run(restart));
+    const outcome = !restarted ? [] : restarted.stopped ? [card("Recalcul arrêté", "L'ancien résultat est gardé tel quel, rien n'a changé.", again)]
+      : restarted.error ? [card("Le recalcul a échoué", `${restarted.error} L'ancien résultat est gardé.`, again)]
+      : lost ? [alert("Nouveau repère", `Le nouveau calcul ne se superpose pas à l'ancien. Gardé : points 4.3, mesures de l'étape 5, séances exclues. À refaire : ${drawn() ? "4.2 « Caler sur les photos », puis valider en 4.5" : "l'étape Murs"}.`)]
+      : [card("Nouveau calcul recalé sur l'ancien", `Écart médian des positions de photos : ${cm(restarted.realigned_m ?? 0)}. Murs, calage, points 4.3 et mesures restent valables : rien à refaire.`)];
+    const next = lost && drawn() ? cta("Refaire le calage (4.2)", "Les murs : caler le dessin sur les nouvelles positions", "primary", async () => { await save({ sub: 2 }); await complete(guide.step); })
+      : cta("Passer à l'étape suivante", "Les murs : valider ce qui est trouvé", "primary", () => complete(guide.step));
+    return [intro(`${photo.count} photos positionnées sur ${source.photos}`, "Les positions sont déjà calculées. Dans la vue, chaque cône bleu est une photo, les points sont les détails retrouvés sur plusieurs photos."),
+      ...outcome, row(next, cta("Recommencer l'analyse", `Tout recalculer depuis les photos, sans rien réutiliser (≈ ${minutes(source)} min)`, "", restart)),
+      card("Si tu recommences", "Gardé : points cliqués en 4.3, mesures de l'étape 5, séances exclues. Le nouveau calcul est recalé sur l'ancien ; s'il ne colle pas, il faudra refaire le calage des murs. Arrêté en route, l'ancien résultat reste en place."),
+      footer(back())];
+  }
   phase = -1;
   return [intro("Calculer la position des photos", "L'appli retrouve d'où chaque photo a été prise et place en 3D les détails qu'elles ont en commun."),
-    ...progress("photos.extract", NaN, "", Date.now()).slice(0, 1), el("p", "", `Durée estimée : ≈ ${minutes} min pour ${plural(source.photos ?? 0, "photo")}.`),
+    ...progress("photos.extract", NaN, "", Date.now()).slice(0, 1), el("p", "", `Durée estimée : ≈ ${minutes(source)} min pour ${plural(source.photos ?? 0, "photo")}.`),
     ...source.state === "échec" ? [card("Le dernier calcul a échoué", source.error ?? "")] : [],
     footer(back(), primary("Calculer les positions", autoPositions))];
 }
@@ -715,7 +747,7 @@ async function go(step: number) {
   const forward = step > guide.step;
   creating = false;
   if (drawing()) stopDrawing();
-  if (step !== guide.step) closeGuided();
+  if (step !== guide.step) { closeGuided(); restarted = null; }
   await save({ step });
   await loadPlan();
   if (["murs", "echelle", "facades"].includes(key(step))) await loadProposal();
@@ -759,7 +791,7 @@ host.documents().then((folder) => { parent ||= `${folder}\\3D_Plans`; if (!info)
 
 document.addEventListener("plans3d:opened", (event) => run(async () => {
   const opened = (event as CustomEvent<Info | null>).detail;
-  [info, creating, proposal, result, next, checked, fitted, everything] = [opened, false, null, null, null, new Set(), null, false];
+  [info, creating, proposal, result, next, checked, fitted, everything, restarted] = [opened, false, null, null, null, new Set(), null, false, null];
   resetFour();
   guide = info ? await resume(info.guide) : { type: draft.type, step: 1, done: [] };
   render();

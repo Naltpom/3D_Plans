@@ -498,3 +498,8 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #cloud-colors { position: absolute; right: 12px; bottom: 12px; gap: 6px; padding: 4px 6px 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; color: var(--muted); }
 #cloud-legend { position: absolute; right: 12px; bottom: 58px; display: flex; flex-direction: column; gap: 4px; max-width: 360px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--soft); }
 #cloud-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: -1px; background: var(--key); }
+#step .cta { display: flex; flex: 1 1 100%; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 64px; padding: 12px 16px; text-align: left; }
+#step .cta b { font-size: 15px; font-weight: 600; }
+#step .cta span { font-size: 13px; font-weight: 400; color: var(--soft); }
+#step .cta.primary span { color: #0e1116; }
+#step .alert b { color: var(--warn-text); font-weight: 600; }

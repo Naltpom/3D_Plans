@@ -131,7 +131,8 @@ async function refresh() {
 function render() {
   const count = cameras().length, plural = count > 1 ? "s" : "";
   installButton.hidden = installed;
-  extractButton.hidden = !installed || Boolean(located);
+  extractButton.hidden = !installed;
+  extractButton.textContent = located ? "Recommencer l'analyse" : "Calculer les positions";
   densifyButton.hidden = openButton.hidden = !located;
   title.textContent = `${source} · photo ${cameras().findIndex((c) => c.name === image) + 1} / ${count}`;
   toolsState.textContent = source ? `Outils photo : ${installed ? "COLMAP installé" : "non installés"}` : "";
@@ -519,7 +520,7 @@ function showStep() {
   signal();
 }
 
-export async function photoTask(method: string) {
+export async function photoTask(method: string, params: Record<string, unknown> = {}) {
   const label = TASKS[method];
   busy = method;
   step = { fraction: NaN, message: "", started: Date.now() };
@@ -533,8 +534,9 @@ export async function photoTask(method: string) {
   showStep();
   const ticking = window.setInterval(showStep, 1000);
   try {
-    const result = await call<{ stopped?: boolean } | null>(method, method === "tools.install" ? {} : { source });
+    const result = await call<Record<string, unknown> | null>(method, method === "tools.install" ? {} : { source, ...params });
     status.textContent = `${label} : ${result?.stopped ? "arrêté" : "terminé"}`;
+    return result;
   } catch (error) {
     status.textContent = `${label} : échec`;
     throw error;
@@ -615,7 +617,7 @@ document.querySelectorAll<HTMLButtonElement>("[data-zoom]").forEach((zoomButton)
 new ResizeObserver(() => { if (image) fit(); }).observe(stage);
 
 installButton.onclick = () => run(() => photoTask("tools.install"));
-extractButton.onclick = () => run(() => photoTask("photos.extract"));
+extractButton.onclick = () => run(() => photoTask("photos.extract", located ? { fresh: true } : {}));
 densifyButton.onclick = () => run(() => photoTask("photos.densify"));
 openButton.onclick = () => view.hidden ? run(() => openPhoto(cameras()[0]?.name ?? "")) : closePhoto();
 $("#photo-close").onclick = closePhoto;
