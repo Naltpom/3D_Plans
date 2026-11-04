@@ -1,6 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, run } from "./ui";
-import { addSources, openProject, recent, refreshSources, update, type UpdateResult } from "./projects";
+import { addSources, openProject, refreshSources, remember, update, type UpdateResult } from "./projects";
+import { idle, showHome } from "./home";
 import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPose, stopTask } from "./photos";
 import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
 import type { Plan } from "./plan2d";
@@ -173,8 +174,7 @@ function projectStep() {
     return option;
   }));
   if (info && !creating) return [intro("Ton projet", `${info.name} · ${info.path}`), options,
-    footer(button("Nouveau projet", "", "Créer un autre projet", () => { creating = true; draft = { type: "piece", name: "" }; render(); }),
-      button("Ouvrir un autre projet", "", "Choisir le dossier d'un projet", () => run(pick)), onward())];
+    footer(button("Changer de projet", "", "Accueil : tous les projets", () => showHome()), onward())];
   const name = Object.assign(el("input"), { value: draft.name, placeholder: "Salon", autocomplete: "off", ariaLabel: "Nom du projet" });
   const where = el("small", "", draft.name.trim() ? `Enregistré dans ${target()}` : "Donne un nom au projet.");
   const create = primary("Créer et continuer", createProject);
@@ -191,29 +191,14 @@ function projectStep() {
     parent = (await host.pickFolder("Dossier où créer le projet")) ?? parent;
     name.dispatchEvent(new Event("input"));
   }));
-  const places = el("ul", "list");
-  places.append(...recent().map((project) => {
-    const item = el("li");
-    const open = button("", "item", project.path, () => run(() => openProject("project.open", { path: project.path })));
-    open.append(el("strong", "", project.name), el("small", "", project.path));
-    item.append(open);
-    return item;
-  }));
-  const resume = el("div", "card plain");
-  resume.append(el("b", "", "Reprendre un projet"), ...places.children.length ? [places] : [el("span", "", "Aucun projet récent.")],
-    row(button("Ouvrir un dossier de projet…", "", "Choisir le dossier d'un projet", () => run(pick))));
   const form = el("div", "card plain");
   form.append(label, row(where, folder));
   return [intro("Que veux-tu reconstruire ?", "Le choix règle les éléments proposés ensuite. Il se change plus tard."), options, form,
-    footer(...info ? [button("Annuler", "", "Revenir au projet ouvert", () => { creating = false; render(); })] : [], create), resume];
-}
-
-async function pick() {
-  const path = await host.pickFolder("Ouvrir un projet (dossier contenant project.db)");
-  if (path) await openProject("project.open", { path });
+    footer(button("Annuler", "", "Revenir sans créer de projet", () => info ? run(() => go(guide.step)) : showHome()), create)];
 }
 
 async function createProject() {
+  idle();
   fresh = draft.type;
   await openProject("project.create", { path: target(), name: draft.name.trim() });
 }
@@ -739,7 +724,9 @@ function render() {
 
 async function save(change: Partial<Guide> = {}, undo = false) {
   guide = { ...guide, ...change };
-  if (info) await call("project.guide", { guide, undo });
+  if (!info) return;
+  remember({ type: TYPES.find(([id]) => id === guide.type)?.[3], step: `Étape ${guide.step} · ${flow()[guide.step - 1]?.[1] ?? ""}` });
+  await call("project.guide", { guide, undo });
 }
 
 async function go(step: number) {
@@ -796,6 +783,13 @@ document.addEventListener("plans3d:opened", (event) => run(async () => {
   render();
   if (info) await go(guide.step);
 }));
+document.addEventListener("plans3d:new", () => {
+  if (mode !== "guide") return $<HTMLButtonElement>("#new-project-button").click();
+  if (drawing()) stopDrawing();
+  closeGuided();
+  [creating, draft] = [true, { type: "piece", name: "" }];
+  render();
+});
 document.addEventListener("plans3d:sources", (event) => {
   sources = (event as CustomEvent<Source[]>).detail;
   if (mode === "guide" && ["sources", "positions", "cadastre", "relief", "facades"].includes(key())) render();

@@ -39,7 +39,7 @@ onEvent((event) => {
 document.addEventListener("plans3d:pick", (event) => run(() => pick((event as CustomEvent<string | null>).detail)));
 document.addEventListener("plans3d:opened", () => run(() => pick(null)));
 window.addEventListener("keydown", (event) => {
-  if (typing(event.target)) return;
+  if (typing(event.target) || document.body.classList.contains("home")) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key === "z" && !event.shiftKey) undoButton.click();
   else if ((event.ctrlKey || event.metaKey) && (key === "y" || key === "z" && event.shiftKey)) redoButton.click();

@@ -7,11 +7,11 @@
   </head>
   <body>
     <header id="toolbar">
-      <div class="brand">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z" /><path d="M3 7l9 5 9-5M12 12v10" /></svg>
-        3D_Plans
-      </div>
-      <span id="project-name"></span>
+      <nav class="brand" aria-label="Fil d'Ariane">
+        <button id="home-link" class="crumb" type="button" title="Accueil : tous les projets"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7z" /><path d="M3 7l9 5 9-5M12 12v10" /></svg>3D_Plans</button>
+        <button id="project-name" class="crumb" type="button" title="Revenir au projet"></button>
+      </nav>
+      <button id="projects-button" class="small" type="button" aria-pressed="false" title="Changer de projet">Projets</button>
       <span class="spacer"></span>
       <span id="summary" class="row" hidden>
         <span id="chi2-chip" class="chip"></span>
@@ -235,6 +235,24 @@
         <ul id="factor-list" class="list"></ul>
       </section>
     </aside>
+    <section id="home" hidden>
+      <div class="intro">
+        <div>
+          <span class="kicker">Accueil</span>
+          <h1>Projets</h1>
+          <p>Un projet ouvert reprend à l'étape où tu l'as laissé. Rien n'est perdu en changeant : tout est enregistré dans son dossier.</p>
+        </div>
+        <button id="home-back" type="button" hidden></button>
+      </div>
+      <div class="grid">
+        <div class="card"><b>Nouveau projet</b><span>Une pièce, une maison ou un véhicule : tu choisis le type, puis le nom et le dossier.</span><div><button id="home-new" class="primary" type="button">Nouveau projet</button></div></div>
+        <div class="card"><b>Ouvrir un dossier</b><span>Un projet absent de la liste : choisis son dossier (celui qui contient project.db).</span><div><button id="home-open" type="button">Ouvrir un dossier…</button></div></div>
+      </div>
+      <div class="recent">
+        <div class="cols head"><span>Récents</span><span>Type</span><span>Étape</span><span>Dernière ouverture</span></div>
+        <ul id="home-list" class="list"></ul>
+      </div>
+    </section>
     <footer id="statusbar">
       <progress id="progress" max="1" hidden></progress>
       <span id="status"></span>

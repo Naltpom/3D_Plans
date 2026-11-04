@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, el, number, report, run as runTask } from "./ui";
 
-type Project = { name: string; path: string; guide?: unknown };
+type Project = { name: string; path: string; guide?: unknown; type?: string; step?: string; opened?: string };
 type Source = { id: string; path: string; kind: string; extracted: boolean; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 export type UpdateResult = { chi2: number; dof: number; params: { name: string; value: number; sigma: number | null; axis: string; label: string }[];
   conflicts: { id: string; label: string }[][]; warnings?: { code: string; message: string }[] };
@@ -29,6 +29,8 @@ let parent = "";
 
 export const recent = (): Project[] => JSON.parse(localStorage.getItem(RECENT) ?? "[]");
 const saveRecent = (list: Project[]) => localStorage.setItem(RECENT, JSON.stringify(list.slice(0, 12)));
+export const forget = (path: string) => { saveRecent(recent().filter((p) => p.path !== path)); render(); };
+export const remember = (change: Partial<Project>) => current && saveRecent(recent().map((p) => p.path === current!.path ? { ...p, ...change } : p));
 const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? "s" : ""}`;
 const target = () => `${parent.replace(/[\\/]+$/, "")}\\${nameInput.value.trim().replace(/[<>:"/\\|?*]+/g, "_")}`;
 
@@ -44,7 +46,7 @@ function render() {
     open.append(el("strong", "", project.name), el("small", "", project.path));
     open.title = project.path;
     open.onclick = () => run(() => openProject("project.open", { path: project.path }));
-    item.append(open, button("×", "remove", "Retirer de la liste", () => { saveRecent(recent().filter((p) => p.path !== project.path)); render(); }));
+    item.append(open, button("×", "remove", "Retirer de la liste", () => forget(project.path)));
     return item;
   }));
   if (!projectList.children.length) projectList.append(el("li", "empty", "Aucun projet"));
@@ -56,7 +58,7 @@ function render() {
 export async function openProject(method: string, params: Record<string, unknown>) {
   const info = await call<Project | null>(method, params);
   current = info && { name: info.name, path: info.path };
-  if (current) saveRecent([current, ...recent().filter((p) => p.path !== current!.path)]);
+  if (current) saveRecent([{ ...recent().find((p) => p.path === current!.path), ...current, opened: new Date().toISOString() }, ...recent().filter((p) => p.path !== current!.path)]);
   status.textContent = "";
   summary.hidden = true;
   render();
