@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
 import { refreshSources } from "./projects";
-import { showCameras, showCloud, type Shape } from "./view3d";
+import { refit, showCameras, showCloud, type Shape } from "./view3d";
 
 type UV = [number, number];
 type Point = number[];
@@ -84,6 +84,8 @@ let stripKey = "";
 let sequence = 0;
 let timer = 0;
 let guided: Guided | null = null;
+let live: { total: number; done: Set<number>; placed: number[]; pairs: number; points: number } | null = null;
+let touched = false;
 
 const cameras = () => located?.cameras ?? [];
 const guidedClicks = (): { id: number; image: string; u: number; v: number; anchor: string }[] => guided?.picks ? guided.picks().map((p) => ({ ...p, id: 0, anchor: guided!.anchor })) : clicks.filter((c) => c.anchor === guided?.anchor);
@@ -112,7 +114,7 @@ async function refresh() {
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
-  showCloud(cloud.points, cloud.colors);
+  if (busy !== "photos.extract") showCloud(cloud.points, cloud.colors);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
   if (image) await draw();
@@ -134,8 +136,49 @@ function render() {
   renderClicks();
   renderPlanes();
   renderGuide();
-  showCameras(cameras(), image);
+  if (busy !== "photos.extract") showCameras(cameras(), image);
+  renderLive();
   signal();
+}
+
+const liveBox = Object.assign(el("section"), { id: "live", hidden: true, ariaLabel: "Calcul en direct" });
+const liveCount = el("div", "count"), liveTiles = el("div", "tiles");
+liveBox.append(liveCount, liveTiles);
+viewport.append(liveBox);
+canvas.addEventListener("pointerdown", () => { touched = true; });
+canvas.addEventListener("wheel", () => { touched = true; }, { passive: true });
+
+function showLive(event: Record<string, unknown>) {
+  const total = Number(event.total);
+  if (!live || live.total !== total) {
+    live = { total, done: new Set(), placed: [], pairs: 0, points: 0 };
+    liveTiles.replaceChildren(...Array.from({ length: total }, () => el("span")));
+  }
+  if (typeof event.index === "number") {
+    live.done.add(event.index);
+    if (event.thumb) liveTiles.children[event.index]?.replaceChildren(Object.assign(el("img"), { src: String(event.thumb), alt: "" }));
+  }
+  if (event.pairs) live.pairs = Number(event.pairs);
+  if (Array.isArray(event.placed)) live.placed = event.placed as number[];
+  if (Array.isArray(event.points)) {
+    const shown = event.cameras as { index: number; center: [number, number, number]; R: number[][] }[];
+    showCloud(event.points as number[], event.colors as number[]);
+    showCameras(shown.map((c) => ({ ...c, name: String(c.index) })), live.placed.slice(-3).map(String));
+    live.points = event.points.length / 3;
+    if (!touched) refit();
+  }
+  renderLive();
+}
+
+function renderLive() {
+  liveBox.hidden = !live || busy !== "photos.extract";
+  if (!live || liveBox.hidden) return;
+  const placing = /poses|lecture|plans/.test(step.message), matching = step.message.includes("appariement");
+  const placed = new Set(live.placed), fresh = new Set(live.placed.slice(-3));
+  const [count, label] = placing ? [`${live.placed.length} / ${live.total}`, "photos placées"] : matching && live.pairs ? [number(live.pairs, 0), "paires de photos à comparer"]
+    : matching ? [String(live.total), "photos à mettre en relation"] : [`${live.done.size} / ${live.total}`, "photos analysées"];
+  liveCount.replaceChildren(el("b", "", count), el("span", "", label), ...placing && live.points ? [el("small", "", `${number(live.points, 0)} points`)] : []);
+  [...liveTiles.children].forEach((tile, i) => { tile.className = fresh.has(i) ? "fresh" : placed.has(i) ? "placed" : live!.done.has(i) ? "done" : ""; });
 }
 
 const miniPlan = $("#photo-plan"), PLAN_SIZE = "plans3d.miniplan", savedPlan = JSON.parse(localStorage.getItem(PLAN_SIZE) ?? "null") as UV | null;
@@ -464,6 +507,7 @@ function showStep() {
   }
   state.textContent = status.textContent = `${TASKS[busy]}${step.message ? ` : ${step.message}` : "…"}${known ? ` (${Math.round(step.fraction * 100)} %)` : ""}`
     + ` · ${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`;
+  renderLive();
   signal();
 }
 
@@ -471,13 +515,18 @@ export async function photoTask(method: string) {
   const label = TASKS[method];
   busy = method;
   step = { fraction: NaN, message: "", started: Date.now() };
+  [live, touched] = [null, false];
+  if (method === "photos.extract") {
+    showCloud([]);
+    showCameras([], null);
+  }
   localStorage.setItem(TASK_KEY, JSON.stringify({ method, project: projectPath, source }));
   render();
   showStep();
   const ticking = window.setInterval(showStep, 1000);
   try {
-    await call(method, method === "tools.install" ? {} : { source });
-    status.textContent = `${label} : terminé`;
+    const result = await call<{ stopped?: boolean } | null>(method, method === "tools.install" ? {} : { source });
+    status.textContent = `${label} : ${result?.stopped ? "arrêté" : "terminé"}`;
   } catch (error) {
     status.textContent = `${label} : échec`;
     throw error;
@@ -488,7 +537,17 @@ export async function photoTask(method: string) {
     for (const bar of bars) bar.hidden = true;
     render();
     await Promise.all([refresh(), refreshSources()]).catch(report);
+    if (method === "photos.extract") refit();
   }
+}
+
+export const stopTask = () => call("photos.stop", { source });
+
+export async function autoPositions() {
+  await refresh();
+  if (busy || !source || cameras().length) return;
+  if (!installed) await photoTask("tools.install");
+  if (installed && !cameras().length) await photoTask("photos.extract");
 }
 
 let drag: { x: number; y: number; moved: boolean } | null = null;
@@ -582,6 +641,7 @@ form.onsubmit = (event) => {
 };
 
 onEvent((event) => {
+  if (event.event === "photos.live" && busy === "photos.extract") return showLive(event);
   if (event.event !== "progress" || event.method !== busy) return;
   step = { ...step, fraction: Number(event.fraction), message: String(event.message ?? "") };
   showStep();

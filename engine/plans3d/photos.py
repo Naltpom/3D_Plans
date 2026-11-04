@@ -1,4 +1,4 @@
-import json, os, re, shutil, sqlite3, subprocess, time
+import base64, io, json, os, re, shutil, sqlite3, struct, subprocess, time
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
@@ -12,12 +12,19 @@ CLICK_SIGMA_M = 0.04
 PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 5
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
-RUNNING = set()
+RUNNING, STOPPED, PROCESSES = set(), set(), {}
+LIVE_POINTS, LIVE_PERIOD_S = 50000, 2.0
+POINT_RECORD = struct.Struct('<Q3d3BdQ')
+PROCESSED = re.compile(r'Name:\s+(\S+)')
+REGISTERED = re.compile(r'Registering (?:initial image pair #(\d+) and #(\d+)|image #(\d+) \(num_reg_frames=(\d+)\))')
 LINE = 'ligne:'
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
 SCHEMA = '''create table if not exists photos_assoc(source text, plane_id text, expr text, sigma real, primary key(source, plane_id));
 create table if not exists photos_axes(source text primary key, map text);
 create table if not exists photos_clicks(id integer primary key autoincrement, source text, image text, u real, v real, anchor text);'''
+
+
+class Stopped(ValueError): pass
 
 
 def no_progress(fraction, message=''): pass
@@ -45,18 +52,82 @@ def read_exif(path):
         return {'size': None, 'date': '', 'focal35': 0.0, 'orientation': 1}
 
 
-def run_colmap(arguments, log_path, progress, start, end, message, image_count=1, line_total=None):
+def run_colmap(arguments, log_path, progress, start, end, message, image_count=1, line_total=None, watch=None):
+    cache = os.path.dirname(log_path)
+    if cache in STOPPED: raise Stopped('calcul arrêté')
     with open(log_path, 'w', encoding='utf-8') as log, subprocess.Popen(
             [colmap_executable(), *arguments], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             errors='replace', creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)) as process:
-        matched = 0
-        for line in process.stdout:
-            log.write(line); found = PROGRESS_PATTERN.search(line)
-            if not found: continue
-            matched += 1
-            done, total = (matched, line_total) if line_total else (found[1], found[2]) if found[1] else (found[3], found[4]) if found[3] else (found[5], image_count)
-            progress(start + (end - start) * min(1.0, int(done) / int(total)), message)
+        PROCESSES[cache] = process; matched = 0
+        if cache in STOPPED: process.kill()
+        try:
+            for line in process.stdout:
+                log.write(line); found = PROGRESS_PATTERN.search(line)
+                if watch: watch(line)
+                if not found: continue
+                matched += 1
+                done, total = (matched, line_total) if line_total else (found[1], found[2]) if found[1] else (found[3], found[4]) if found[3] else (found[5], image_count)
+                progress(start + (end - start) * min(1.0, int(done) / int(total)), message)
+        finally:
+            PROCESSES.pop(cache, None)
+    if cache in STOPPED: raise Stopped('calcul arrêté')
     if process.returncode: raise ValueError(f'COLMAP {arguments[0]} a échoué (journal : {log_path})')
+
+
+def thumbnail(path, size=96):
+    from PIL import Image, ImageOps
+    try:
+        with Image.open(path) as image:
+            image.draft('RGB', (2 * size, 2 * size)); image = ImageOps.exif_transpose(image).convert('RGB')
+        image.thumbnail((size, size)); buffer = io.BytesIO(); image.save(buffer, 'JPEG', quality=70)
+        return 'data:image/jpeg;base64,' + base64.b64encode(buffer.getvalue()).decode()
+    except OSError:
+        return ''
+
+
+def read_snapshot(folder, limit=LIVE_POINTS):
+    data = open(os.path.join(folder, 'images.bin'), 'rb').read(); count, = struct.unpack_from('<Q', data); at = 8; names, poses = [], []
+    for _ in range(count):
+        poses.append(struct.unpack_from('<I7dI', data, at)[1:8]); end = data.index(b'\0', at + 64); names.append(data[at + 64:end].decode())
+        at = end + 9 + 24 * struct.unpack_from('<Q', data, end + 1)[0]
+    data = open(os.path.join(folder, 'points3D.bin'), 'rb').read(); count, = struct.unpack_from('<Q', data); at = 8; step = -(-count // limit); kept = []
+    for _ in range(count):
+        point_id, x, y, z, r, g, b, _, track = POINT_RECORD.unpack_from(data, at); at += POINT_RECORD.size + 8 * track
+        if point_id % step == 0: kept.append((x, y, z, r, g, b))
+    poses, kept = np.array(poses, float).reshape(-1, 7), np.array(kept, float).reshape(-1, 6)
+    return names, poses[:, :4], poses[:, 4:], kept[:, :3], kept[:, 3:].astype(np.uint8)
+
+
+def live_view(names, q, t, points, colors, position, orientation):
+    model = {'q': q, 't': t, 'orientation': np.array([orientation[position[name]] for name in names])}; centers = camera_centers(model)
+    up = unit(image_ups(model).sum(0)); x = unit(np.cross(up, [1, 0, 0] if abs(up[0]) < .9 else [0, 1, 0])); frame = np.array([x, up, np.cross(x, up)])
+    floor = np.percentile(points @ up, 2); scale = CAMERA_HEIGHT_M / max(np.median(centers @ up) - floor, 1e-9)
+    shift = -np.array([np.mean(centers @ frame[0]), floor, np.mean(centers @ frame[2])]); points = (points @ frame.T + shift) * scale
+    low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); kept = np.all((points > 1.1 * low - 0.1 * high) & (points < 1.1 * high - 0.1 * low), 1)
+    rotations = np.einsum('ij,nkj->nik', frame, rotation_matrices(q))
+    return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist(),
+            'cameras': [{'index': position[name], 'center': center.round(3).tolist(), 'R': rotation.round(4).tolist()}
+                        for name, center, rotation in zip(names, (centers @ frame.T + shift) * scale, rotations)]}
+
+
+def mapper_watch(database, folder, position, orientation, live):
+    connection = sqlite3.connect(database); ids = {image_id: position[name] for image_id, name in connection.execute('select image_id, name from images') if name in position}
+    connection.close(); state = {'next': 0.0, 'seen': '', 'placed': [], 'best': [], 'shown': 0}
+
+    def watch(line):
+        if found := REGISTERED.search(line):
+            state['placed'] = state['placed'][:int(found[4])] + [ids[int(found[3])]] if found[3] else [ids[int(found[1])], ids[int(found[2])]]
+            if len(state['placed']) >= len(state['best']): state['best'] = state['placed']; live(placed=state['best'])
+        if time.monotonic() < state['next']: return
+        state['next'] = time.monotonic() + LIVE_PERIOD_S
+        ready = [name for name in sorted(os.listdir(folder)) if os.path.exists(path := os.path.join(folder, name, 'points3D.bin')) and time.time() - os.path.getmtime(path) > 0.5]
+        if not ready or ready[-1] == state['seen']: return
+        for name in ready[:-1]: shutil.rmtree(os.path.join(folder, name), ignore_errors=True)
+        state['seen'] = ready[-1]
+        try: snapshot = read_snapshot(os.path.join(folder, ready[-1]))
+        except (OSError, ValueError, struct.error): return
+        if len(snapshot[0]) >= state['shown'] - 2: state['shown'] = max(state['shown'], len(snapshot[0])); live(**live_view(*snapshot, position, orientation))
+    return watch
 
 
 def neighbour_pairs(count, window=10):
@@ -90,7 +161,8 @@ def read_text_model(folder):
     points = rows('points3D.txt'); errors = np.array([row[7] for row in points], float); tracks = np.array([(len(row) - 8) // 2 for row in points])
     model = {'names': np.array([row[9].strip() for row in images]), 'q': np.array([row[1:5] for row in images], float),
              't': np.array([row[5:8] for row in images], float), 'K': np.array([cameras[int(row[8])][2] for row in images]),
-             'wh': np.array([cameras[int(row[8])][:2] for row in images]), 'P': np.array([row[1:4] for row in points], float).reshape(-1, 3)}
+             'wh': np.array([cameras[int(row[8])][:2] for row in images]), 'P': np.array([row[1:4] for row in points], float).reshape(-1, 3),
+             'C': np.array([row[4:7] for row in points], np.uint8).reshape(-1, 3)}
     return model, float((errors * tracks).sum() / max(tracks.sum(), 1))
 
 
@@ -107,14 +179,17 @@ def link_images(paths, image_dir):
     return image_dir, names
 
 
-def reconstruct(paths, cache, progress=no_progress):
+def reconstruct(paths, cache, progress=no_progress, emit=None):
     in_cache = lambda *parts: os.path.join(cache, *parts)
     if os.path.exists(in_cache('meta.json')): return load_json(in_cache('meta.json'))
     os.makedirs(cache, exist_ok=True); timings = {}; started = time.perf_counter()
     lap = lambda key: timings.__setitem__(key, time.perf_counter() - started - sum(timings.values()))
     exif = {path: read_exif(path) for path in paths}; paths = sorted(paths, key=lambda path: (exif[path]['date'], path)); count = len(paths)
     root = os.path.commonpath([os.path.dirname(path) for path in paths]); originals = [os.path.relpath(path, root).replace('\\', '/') for path in paths]
-    image_dir, names = link_images(paths, in_cache('images')); database = in_cache('database.db')
+    image_dir, names = link_images(paths, in_cache('images')); database = in_cache('database.db'); position = {name: i for i, name in enumerate(names)}
+    live = lambda **event: (emit or no_progress)({'event': 'photos.live', 'total': count, **event}); live()
+    def extracted(line):
+        if (found := PROCESSED.search(line)) and found[1] in position: live(index=position[found[1]], thumb=thumbnail(os.path.join(image_dir, found[1])))
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
     shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse'), exist_ok=True); write_lines(in_cache('images.txt'), names)
@@ -124,7 +199,7 @@ def reconstruct(paths, cache, progress=no_progress):
         camera = ['--ImageReader.single_camera', '1', '--ImageReader.camera_params', f'{focal:.1f},{focal:.1f},{width / 2},{height / 2},0,0,0,0']
     run_colmap(['feature_extractor', '--database_path', database, '--image_path', image_dir, '--image_list_path', in_cache('images.txt'),
                 '--ImageReader.camera_model', 'OPENCV', *camera, '--FeatureExtraction.use_gpu', '1', '--SiftExtraction.max_num_features', '16384'],
-               in_cache('features.log'), progress, 0, .1, 'points clés', count)
+               in_cache('features.log'), progress, 0, .1, 'points clés', count, watch=extracted)
     lap('features_s')
     if count * (count - 1) // 2 <= 1000:
         matcher, pair_count = ['exhaustive_matcher'], count * (count - 1) // 2
@@ -135,9 +210,14 @@ def reconstruct(paths, cache, progress=no_progress):
         pairs = sorted(verified_pairs(in_cache('pre.db'), names) | neighbour_pairs(count)); os.remove(in_cache('pre.db')); pair_count = len(pairs)
         write_lines(in_cache('pairs.txt'), [f'{names[i]} {names[j]}' for i, j in pairs]); lap('prematching_s')
         matcher = ['matches_importer', '--match_list_path', in_cache('pairs.txt'), '--match_type', 'pairs']
-    run_colmap([*matcher, '--database_path', database, '--FeatureMatching.use_gpu', '1'], in_cache('matching.log'), progress, .13, .3, 'appariement')
-    lap('matching_s')
-    run_colmap(['mapper', '--database_path', database, '--image_path', image_dir, '--output_path', in_cache('sparse')], in_cache('mapper.log'), progress, .3, .95, 'poses', count)
+    live(pairs=pair_count); run_colmap([*matcher, '--database_path', database, '--FeatureMatching.use_gpu', '1'], in_cache('matching.log'), progress, .13, .3, 'appariement')
+    lap('matching_s'); snapshots = in_cache('snapshots'); shutil.rmtree(snapshots, ignore_errors=True); os.makedirs(snapshots)
+    try:
+        run_colmap(['mapper', '--database_path', database, '--image_path', image_dir, '--output_path', in_cache('sparse'), '--Mapper.snapshot_path', snapshots,
+                    '--Mapper.snapshot_frames_freq', str(max(2, count // 30))], in_cache('mapper.log'), progress, .3, .95, 'poses', count,
+                   watch=mapper_watch(database, snapshots, position, [exif[path]['orientation'] for path in paths], live))
+    finally:
+        shutil.rmtree(snapshots, ignore_errors=True)
     lap('mapper_s'); models = []
     for name in os.listdir(in_cache('sparse')):
         run_colmap(['model_converter', '--input_path', in_cache('sparse', name), '--output_path', in_cache('sparse', name), '--output_type', 'TXT'],
@@ -351,14 +431,15 @@ def source_cache(project, source):
     return row[0], os.path.join(project.folder, 'cache', 'photos', file_hash(row[0]))
 
 
-def photo_state(project, source, progress=no_progress, compute=True):
+def photo_state(project, source, progress=no_progress, compute=True, emit=None):
     manifest, cache = source_cache(project, source)
     if not os.path.exists(os.path.join(cache, 'meta.json')):
         if not compute: raise ValueError(f'source {source} : reconstruction non faite (photos.extract)')
-        key, error_path = (os.path.abspath(project.folder), source), os.path.join(cache, 'error.txt'); RUNNING.add(key)
+        key, error_path = (os.path.abspath(project.folder), source), os.path.join(cache, 'error.txt'); RUNNING.add(key); STOPPED.discard(cache)
         try:
             if os.path.exists(error_path): os.remove(error_path)
-            reconstruct(read_manifest(manifest), cache, progress)
+            reconstruct(read_manifest(manifest), cache, progress, emit)
+        except Stopped: raise
         except Exception as error:
             os.makedirs(cache, exist_ok=True); open(error_path, 'w', encoding='utf-8').write(str(error) or type(error).__name__); raise
         finally:
@@ -581,14 +662,21 @@ def add(ctx, paths, source='photos'):
 
 @rpc('photos.extract', long=True)
 def extract(ctx, source='photos', progress=no_progress):
-    project = ctx.require_project(); started = time.perf_counter(); meta, frame, _ = photo_state(project, source, progress)
+    project = ctx.require_project(); started = time.perf_counter()
+    try: meta, frame, _ = photo_state(project, source, progress, emit=ctx.emit)
+    except Stopped: return {'stopped': True}
     project.db.execute('update params set init=? where name=?', (frame['s_est'], f'{source}_s')); project.db.commit(); progress(1.0, 'terminé')
     return {**meta, 'planes': len(frame['planes']), 's_est': frame['s_est'], 'total_s': time.perf_counter() - started}
 
 
 @rpc('photos.densify', long=True)
 def densify(ctx, source='photos', max_size=1000, progress=no_progress):
-    project = ctx.require_project(); meta, _, cache = photo_state(project, source, compute=False); started = time.perf_counter()
+    project = ctx.require_project(); meta, _, cache = photo_state(project, source, compute=False); started = time.perf_counter(); STOPPED.discard(cache)
+    try: return densified(cache, meta, max_size, progress, started)
+    except Stopped: return {'stopped': True}
+
+
+def densified(cache, meta, max_size, progress, started):
     dense = lambda *parts: os.path.join(cache, 'dense', *parts)
     run_colmap(['image_undistorter', '--image_path', meta.get('image_dir', meta['root']), '--input_path', os.path.join(cache, 'sparse', meta['model']), '--output_path', dense(),
                 '--max_image_size', str(max_size)], os.path.join(cache, 'undistort.log'), progress, 0, .03, 'redressement')
@@ -597,6 +685,12 @@ def densify(ctx, source='photos', max_size=1000, progress=no_progress):
     run_colmap(['stereo_fusion', '--workspace_path', dense(), '--output_path', dense('fused.ply')], os.path.join(cache, 'fusion.log'), progress, .95, .99, 'fusion')
     frame = frame_and_planes(cache, progress); progress(1.0, 'terminé')
     return {'dense_points': len(read_ply(dense('fused.ply'))[0]), 'planes': len(frame['planes']), 'total_s': time.perf_counter() - started}
+
+
+@rpc('photos.stop')
+def stop(ctx, source='photos'):
+    _, cache = source_cache(ctx.require_project(), source); STOPPED.add(cache); process = PROCESSES.get(cache)
+    if process: process.kill()
 
 
 @rpc('photos.planes')
@@ -698,7 +792,9 @@ def unclick(ctx, id):
 
 def cloud_sample(cache, limit):
     dense, saved = os.path.join(cache, 'dense', 'fused.ply'), os.path.join(cache, 'cloud.npz')
-    if not os.path.exists(dense): points = load_model(cache)['P']; return points[np.random.default_rng(0).permutation(len(points))[:limit]], np.zeros((0, 3), np.uint8)
+    if not os.path.exists(dense):
+        model = load_model(cache); kept = np.random.default_rng(0).permutation(len(model['P']))[:limit]
+        return model['P'][kept], model['C'][kept] if 'C' in model else np.zeros((0, 3), np.uint8)
     signature = f'{os.path.getsize(dense)}:{os.path.getmtime(dense)}:{limit}'
     if os.path.exists(saved):
         with np.load(saved) as data:
@@ -717,7 +813,7 @@ def cloud(ctx, source='photos', limit=50000, pose=None):
     low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
     kept = np.all((points > low - margin) & (points < high + margin), 1); kept[np.flatnonzero(kept)[int(limit):]] = False
     return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [],
-            'dense': bool(len(colors)) or os.path.exists(os.path.join(cache, 'dense', 'fused.ply'))}
+            'dense': os.path.exists(os.path.join(cache, 'dense', 'fused.ply'))}
 
 
 @rpc('photos.visible')

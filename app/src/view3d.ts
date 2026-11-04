@@ -187,11 +187,12 @@ export function highlight(id: string | string[] | null, color = 0x1f6f8a) {
     if (o instanceof THREE.Mesh) o.userData.material.emissive.set(ids.includes(o.userData.id) ? color : o.userData.glow ?? 0x000000);
 }
 
-export function showCameras(cameras: { name: string; center: Vec; R: number[][] }[], current: string | null) {
+export function showCameras(cameras: { name: string; center: Vec; R: number[][] }[], current: string | string[] | null) {
+  const hot = [current ?? []].flat();
   photos.children.forEach((o) => ((o as THREE.Mesh).material as THREE.Material).dispose());
   photos.clear();
   for (const { name, center, R } of cameras) {
-    const cone = new THREE.Mesh(CONE, new THREE.MeshBasicMaterial({ color: name === current ? 0xf5c451 : 0x3fb6d9, wireframe: true, side: THREE.DoubleSide }));
+    const cone = new THREE.Mesh(CONE, new THREE.MeshBasicMaterial({ color: hot.includes(name) ? 0xf5c451 : 0x3fb6d9, wireframe: true, side: THREE.DoubleSide }));
     const column = (j: number) => new THREE.Vector3(R[0][j], R[1][j], R[2][j]);
     cone.matrixAutoUpdate = false;
     cone.matrix.makeBasis(column(0), column(1), column(2)).setPosition(...center);
@@ -216,6 +217,8 @@ export function setView(name: string) {
   controls.update();
   document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => { button.ariaPressed = String(button.dataset.view === name); });
 }
+
+export const refit = () => setView(viewName);
 
 document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((button) => { button.onclick = () => setView(button.dataset.view!); });
 

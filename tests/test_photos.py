@@ -1,4 +1,4 @@
-import json, os
+import json, os, struct, sys
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -237,3 +237,49 @@ def test_source_status_in_sources_list(tmp_path, monkeypatch):
     cache = photos.source_cache(ctx.project, 'photos')[1]
     with open(os.path.join(cache, 'meta.json'), 'w') as f: json.dump({'registered': 2}, f)
     assert {k: status()[k] for k in ('registered', 'state')} == {'registered': 2, 'state': 'calculé'} and 'error' not in status()
+
+
+def write_snapshot(folder, model, names):
+    os.makedirs(folder)
+    with open(os.path.join(folder, 'images.bin'), 'wb') as f:
+        f.write(struct.pack('<Q', len(names)))
+        for i, name in enumerate(names): f.write(struct.pack('<I7dI', i + 1, *model['q'][i], *model['t'][i], 1) + name.encode() + b'\0' + struct.pack('<Q', 2) + bytes(48))
+    with open(os.path.join(folder, 'points3D.bin'), 'wb') as f:
+        f.write(struct.pack('<Q', len(model['P'])))
+        for i, p in enumerate(model['P']): f.write(struct.pack('<Q3d3BdQ', i, *p, 200, 100, 50, 0.5, 2) + bytes(16))
+
+
+def test_live_snapshot(tmp_path):
+    model = synthetic_model(np.random.default_rng(0)); names = [f'{i:05d}.jpg' for i in range(len(model['q']))]; write_snapshot(str(tmp_path / 's'), model, names)
+    read = photos.read_snapshot(str(tmp_path / 's'), limit=2000)
+    assert read[0] == names and len(read[3]) <= 2000 and np.allclose(read[1], model['q']) and set(read[4].ravel()) == {200, 100, 50}
+    view = photos.live_view(*read, {name: i for i, name in enumerate(names)}, list(model['orientation']))
+    centers = np.array([c['center'] for c in view['cameras']]); points = np.array(view['points']).reshape(-1, 3)
+    assert [c['index'] for c in view['cameras']] == list(range(len(names))) and len(view['colors']) == points.size
+    assert np.ptp(centers[:, 1]) < 0.05 and np.median(centers[:, 1]) == pytest.approx(photos.CAMERA_HEIGHT_M)
+    assert np.percentile(points[:, 1], 2) == pytest.approx(0, abs=0.05) and np.ptp(points[:, 1]) < 3
+
+
+def test_stop_and_thumbnail(tmp_path, monkeypatch):
+    from PIL import Image
+    folder = tmp_path / 'photos'; folder.mkdir(); Image.new('RGB', (400, 300), (10, 200, 30)).save(folder / 'a.jpg'); (folder / 'b.jpg').write_bytes(b'rien')
+    assert photos.thumbnail(str(folder / 'a.jpg')).startswith('data:image/jpeg;base64,') and photos.thumbnail(str(folder / 'b.jpg')) == ''
+    project = Project(str(tmp_path / 'projet')); ctx = Ctx(project=project); photos.add(ctx, [str(folder)]); cache = photos.source_cache(project, 'photos')[1]; os.makedirs(cache)
+    monkeypatch.setattr(photos, 'colmap_executable', lambda: sys.executable); seen = []
+    def watch(line): seen.append(line); photos.stop(ctx)
+    with pytest.raises(photos.Stopped): photos.run_colmap(['-c', 'import time; print("go", flush=True); time.sleep(60)'], os.path.join(cache, 'x.log'), photos.no_progress, 0, 1, '', watch=watch)
+    assert seen == ['go\n'] and not photos.PROCESSES
+    def stopped(arguments, *rest, **options): raise photos.Stopped('calcul arrêté')
+    monkeypatch.setattr(photos, 'run_colmap', stopped)
+    assert photos.extract(ctx) == {'stopped': True} and photos.source_status(project, 'photos', photos.source_cache(project, 'photos')[0])['state'] == 'à calculer'
+
+
+def test_mapper_watch_counts_registered_frames(tmp_path):
+    import sqlite3
+    database = str(tmp_path / 'db.db'); connection = sqlite3.connect(database); connection.execute('create table images(image_id integer, name text)')
+    connection.executemany('insert into images values (?,?)', [(i + 1, f'{i:05d}.jpg') for i in range(6)]); connection.commit(); connection.close()
+    (tmp_path / 'snap').mkdir(); events = []
+    watch = photos.mapper_watch(database, str(tmp_path / 'snap'), {f'{i:05d}.jpg': i for i in range(6)}, [1] * 6, lambda **event: events.append(event.get('placed')))
+    for line in ['Registering initial image pair #3 and #1', 'Registering image #2 (num_reg_frames=2)', 'Registering image #5 (num_reg_frames=3)',
+                 'Registering image #6 (num_reg_frames=3)', 'Registering initial image pair #4 and #5']: watch(line)
+    assert events == [[2, 0], [2, 0, 1], [2, 0, 1, 4], [2, 0, 1, 5]]

@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, recent, refreshSources, update, type UpdateResult } from "./projects";
-import { closeGuided, openGuided, photoInfo, photoTask, previewPose } from "./photos";
+import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPose, stopTask } from "./photos";
 import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
 import type { Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
@@ -128,6 +128,7 @@ function footer(...actions: HTMLButtonElement[]) {
 
 const primary = (text: string, action: () => unknown) => button(text, "primary", text, () => run(action));
 const back = () => button("Retour", "", "Étape précédente", () => run(() => go(guide.step - 1)));
+const stop = () => button("Arrêter le calcul", "", "Arrêter le calcul en cours", () => run(stopTask));
 const onward = (enabled = true, main = true) => Object.assign(button("Étape suivante", main ? "primary" : "", "Passer à l'étape suivante", () => run(() => complete(guide.step))), { disabled: !enabled });
 
 function summary(step: number) {
@@ -273,20 +274,23 @@ function progress(method: string, fraction: number, message: string, started: nu
 
 function positionsStep() {
   const photo = photoInfo(), source = photoSource();
-  if (photo.busy && photo.busy !== "photos.densify") return [intro(photo.busy === "tools.install" ? "Installation des outils photo" : "Calcul des positions en cours",
-    "Tu peux laisser l'appli travailler. La vue se remplit à la fin."), ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
+  if (photo.busy === "tools.install") return [intro("Installation des outils photo", "Tu peux laisser l'appli travailler : le calcul des positions suit."),
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
+  if (photo.busy === "photos.extract") return [intro("Je place tes photos",
+    "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre."), footer(back(), onward())];
   if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
-    footer(back(), primary("Installer les outils photo", () => photoTask("tools.install")))];
+    footer(back(), primary("Installer les outils photo", autoPositions))];
   if (photo.count) return [intro(`${photo.count} photos positionnées sur ${source.photos}`,
-    "Dans la vue, chaque cône bleu est une photo et les points sont les détails retrouvés sur plusieurs photos, en couleur après densification. Les murs se cachent dans ces points : l'étape suivante les trouve."),
+    "Dans la vue, chaque cône bleu est une photo et les points sont les détails retrouvés sur plusieurs photos. Les murs se cachent dans ces points : l'étape suivante les trouve."),
   card("Pour tourner la vue", "Glisse avec le bouton gauche, zoome avec la molette. « Dessus » montre le plan."), footer(back(), onward())];
   const minutes = Math.max(2, Math.round((source.photos ?? 0) * 2.5 / 60));
   phase = -1;
   return [intro("Calculer la position des photos", "L'appli retrouve d'où chaque photo a été prise et place en 3D les détails qu'elles ont en commun."),
     ...progress("photos.extract", NaN, "", Date.now()).slice(0, 1), el("p", "", `Durée estimée : ≈ ${minutes} min pour ${plural(source.photos ?? 0, "photo")}.`),
     ...source.state === "échec" ? [card("Le dernier calcul a échoué", source.error ?? "")] : [],
-    footer(back(), primary("Calculer les positions", () => photoTask("photos.extract")))];
+    footer(back(), primary("Calculer les positions", autoPositions))];
 }
 
 function photoWalls() {
@@ -331,7 +335,7 @@ function photoWalls() {
 function wallsStep() {
   const photo = photoInfo(), tool = drawing();
   if (photo.busy === "photos.densify") return [intro("Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
-    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (tool === "trace") return [intro("Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
     ...controls(), ...sketch?.points ? [opacity(sketch)] : []];
   if (tool) return [intro(`Pose : ${OPENINGS.find(([id]) => id === tool)?.[1].toLowerCase()}`, "Clique sur un mur dans la vue : l'ouverture se centre sur le clic. Clique un autre mur pour en poser d'autres."),
@@ -740,6 +744,7 @@ async function save(change: Partial<Guide> = {}, undo = false) {
 
 async function go(step: number) {
   if (!info || step < 1 || step > flow().length) return;
+  const forward = step > guide.step;
   creating = false;
   if (drawing()) stopDrawing();
   if (step !== guide.step) closeGuided();
@@ -751,6 +756,7 @@ async function go(step: number) {
   if (mode !== "guide") return;
   if (key(step) !== "projet" && key(step) !== "sources") setView(["positions", "toit", "relief", "verifier", "meubler"].includes(key(step)) ? "3d" : "dessus");
   if (key(step) === "verifier") await check();
+  if (forward && key(step) === "positions") void run(autoPositions);
 }
 
 async function complete(step: number) {
