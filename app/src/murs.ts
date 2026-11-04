@@ -391,7 +391,7 @@ function fitStep() {
     f.pairs[w.name] ? `écart ${number(f.gaps[w.name], 0)} cm` : `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))));
   const turn = (q: number) => () => run(() => h.act("Calage sur les photos", () => fit(((f.turn ?? 0) + q) % 4)));
   return [h.intro(`Calé sur ${plural(names.length, "mur")} vu${names.length > 1 ? "s" : ""} en photo`,
-    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Écart le plus grand entre ton dessin et les photos : ${number(worst, 0)} cm.${f.photo.some((q) => q.meuble) ? " Les surfaces où l'on voit la pièce au-dessus sont des meubles : je ne cale aucun mur dessus." : ""} Les murs non vus gardent les proportions du dessin.`),
+    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Écart le plus grand entre ton dessin et les photos : ${number(worst, 0)} cm.${f.photo.some((q) => q.meuble) ? " Les meubles (la pièce se voit au-dessus, ou ils ont bougé entre deux séances) sont écartés : je ne cale aucun mur dessus." : ""} Les murs non vus gardent les proportions du dessin.`),
   list, h.card("Le sens ne colle pas ?", "Si la pièce est presque symétrique, le calage peut se tromper de sens.", button("Tourner de 90°", "", "Autre sens", turn(1)), button("Tourner de 180°", "", "Autre sens", turn(2))),
   h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Points à préciser", () => goSub(3)))];
 }
