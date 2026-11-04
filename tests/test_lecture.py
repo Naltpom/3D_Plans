@@ -80,7 +80,8 @@ def test_fit_all_walls_and_corner_check(tmp_path, monkeypatch):
     assert not check([at(a, 0.0, 'bas'), at(b, 0.0, 'bas', 300.0)])['ok'] and not check([at(a, 1.0, 'arete'), at(a, 1.5, 'arete')])['ok']
     assert not rpc.call(ctx, 'plan.check_corner', {'clicks': [at(a, 2.0, 'haut'), at(b, 0.0, 'bas')], 'pose': fit['pose'], 'point': [x, z]})['ok']
     clicks = [at(a, 0.0, 'bas'), at(b, 1.0, 'arete')]
-    read['points'] = [{'corner': corner, 'clicks': clicks}]; rpc.call(ctx, 'plan.apply', {'plan': read})
+    read['points'] = [{'corner': corner, 'clicks': clicks}]; assert rpc.call(ctx, 'plan.apply', {'plan': read})['clicks'] == 2
+    refit = {**read, 'fit': rpc.call(ctx, 'plan.fit', {'plan': read, 'turn': fit['turn']})}; assert rpc.call(ctx, 'plan.apply', {'plan': refit})['clicks'] == 2 and project.update().converged
     state = photos.photo_state(project, 'photos', compute=False)[1]; turned = {**read, 'fit': rpc.call(ctx, 'plan.fit', {'plan': read, 'turn': 2}), 'points': []}
     preview = rpc.call(ctx, 'photos.cloud', {'source': 'photos', 'limit': 300, 'pose': turned['fit']['pose']})['points']; rpc.call(ctx, 'plan.apply', {'plan': turned})
     assert np.allclose(photos.project_transform(project, 'photos', state)[0], turned['fit']['pose']['L']) and np.allclose(rpc.call(ctx, 'photos.cloud', {'source': 'photos', 'limit': 300})['points'], preview, atol=1e-3)
@@ -102,12 +103,16 @@ def test_apply_keeps_measures(tmp_path, monkeypatch):
     from plans3d.rpc import cotes_add, read_cotes
     monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
     drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
-    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {}); rpc.call(ctx, 'plan.apply', {'plan': read})
-    wall, door = (components.load(ctx.project)[i] for i in ('murC', 'porte1'))
-    cotes_add(ctx, 'longueur.murC', components.measure_expr((wall, 'a'), (wall, 'b')), 410); cotes_add(ctx, 'largeur.porte1', door['params'][1], 85)
+    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
+    door = next(o for o in read['openings'] if o['type'] == 'porte'); read['openings'] = [{**door, 't0': 0.2, 't1': 0.35}, {**door, 't0': 0.62, 't1': 0.8}]
+    rpc.call(ctx, 'plan.apply', {'plan': read}); wall = components.load(ctx.project)['murC']
+    cotes_add(ctx, 'longueur.murC', components.measure_expr((wall, 'a'), (wall, 'b')), 410)
+    for k in (1, 2): cotes_add(ctx, f'largeur.porte{k}', f'porte{k}_l', 80, label=f'Largeur de la porte {k}')
     done = rpc.call(ctx, 'plan.apply', {'plan': read})
-    assert sorted(done['kept']) == ['largeur.porte1', 'longueur.murC'] and sorted(r['id'] for r in read_cotes(ctx.project)) == sorted(done['kept'])
-    assert rpc.call(ctx, 'plan.apply', {'plan': {**read, 'openings': []}})['kept'] == ['longueur.murC'] and ctx.project.update().converged
+    assert sorted(done['kept']) == ['largeur.porte1', 'largeur.porte2', 'longueur.murC'] and not done['dropped'] and len(read_cotes(ctx.project)) == 3
+    done = rpc.call(ctx, 'plan.apply', {'plan': {**read, 'openings': read['openings'][1:]}}); rows = {r['id']: r['expr'] for r in read_cotes(ctx.project)}
+    assert rows == {'longueur.murC': rows['longueur.murC'], 'largeur.porte2': 'porte1_l'} and done['dropped'] == [{'id': 'largeur.porte1', 'label': 'Largeur de la porte 1', 'reason': "Porte porte1 n'existe plus"}]
+    assert ctx.project.update().converged
 
 
 def test_match_outermost_and_beyond():

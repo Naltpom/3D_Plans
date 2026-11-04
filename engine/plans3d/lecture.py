@@ -20,7 +20,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
-FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5
+FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M, SAME_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5, 0.6
 CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 AXIS_TOL = np.tan(np.radians(2))
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
@@ -616,10 +616,31 @@ def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axi
     return created
 
 
+def identities(project):
+    loaded, values = components.load(project), current_values(project)
+    hosted = [(c['type'], loaded[c['options']['mur']]['label'], components.evaluate(c['expressions']['pos'], values), c['id']) for c in loaded.values() if c['options'].get('mur') in loaded]
+    return hosted, {(c['type'], c['label']): c['id'] for c in loaded.values() if c['options'].get('source') == 'plan'}, {c['id']: c['label'] for c in loaded.values()}
+
+
+def reattached(project, measured, before):
+    (hosted, named, labels), (now_hosted, now_named, present) = before, identities(project); moved = {named[k]: now_named[k] for k in named if k in now_named}
+    for _, old, new in sorted((abs(p - q), a, b) for t, h, p, a in hosted for u, g, q, b in now_hosted if (t, h) == (u, g) and abs(p - q) < SAME_M):
+        if old not in moved and new not in moved.values(): moved[old] = new
+    replaced, names, taken = {a for *_, a in hosted} | set(named.values()), set(project.params()), {row['id'] for row in read_cotes(project)}
+    owner = lambda name: max((cid for cid in labels if name.startswith(f'{cid}_')), key=len, default=None); kept, dropped = [], []
+    for row in (r for r in measured if r['id'] not in taken):
+        gone = sorted({labels[cid] for n in components.NAME.findall(row['expr']) if (cid := owner(n)) and cid not in moved and (cid in replaced or cid not in present)})
+        expr = components.NAME.sub(lambda m: moved[cid] + m[0][len(cid):] if (cid := owner(m[0])) in moved else m[0], row['expr'])
+        if not gone and set(components.NAME.findall(expr)) - set(FUNCS) <= names: kept.append({**row, 'expr': expr})
+        else: dropped.append({'id': row['id'], 'label': row.get('label') or row['id'], 'reason': f"{', '.join(gone)} n'existe plus" if gone else "ses éléments n'existent plus"})
+    if kept: write_cotes(project, read_cotes(project) + kept)
+    return kept, dropped
+
+
 @rpc('plan.apply')
 def apply(ctx, plan):
     project = ctx.require_project(); source = photo_source(project); fitted = plan.get('fit') if source else None; db = project.db
-    stale, measured = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in walls.KEPT or c['options'].get('source') == 'plan'], read_cotes(project)
+    stale, measured, before = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in walls.KEPT or c['options'].get('source') == 'plan'], read_cotes(project), identities(project)
     if stale: components.remove(project, *stale)
     if source:
         photos.ensure_params(project, source); _, state, cache = photos.photo_state(project, source, compute=False)
@@ -666,6 +687,5 @@ def apply(ctx, plan):
         cloud = photos.load_model(cache)['P'] @ np.array(fitted['pose']['L']).T + fitted['pose']['c'] if fitted else None
         stairs += add_measured_stairs(project, steps) if len(steps) >= 4 else add_stairs(project, stair.get('flights') or drawn_flights(ctx, plan, stair), forward, cloud,
                                                                                          fitted and fitted.get('height'), anchors(project, ids))
-    drawing_scale(project); names, taken = set(project.params()), {row['id'] for row in read_cotes(project)}
-    if kept := [row for row in measured if row['id'] not in taken and set(components.NAME.findall(row['expr'])) - set(FUNCS) <= names]: write_cotes(project, read_cotes(project) + kept)
-    return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks), 'kept': [row['id'] for row in kept]}
+    drawing_scale(project); kept, dropped = reattached(project, measured, before)
+    return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks), 'kept': [row['id'] for row in kept], 'dropped': dropped}

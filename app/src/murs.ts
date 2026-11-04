@@ -5,7 +5,7 @@ import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previ
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
-type Applied = { walls: string[]; openings: string[]; stairs: string[]; clicks: number; pairs: string[][] | null };
+type Applied = { walls: string[]; openings: string[]; stairs: string[]; clicks: number; pairs: string[][] | null; kept?: string[]; dropped?: { id: string; label: string; reason: string }[] };
 export type Helpers = {
   guide: () => { plan?: Plan | null; sub?: number }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
@@ -43,6 +43,11 @@ const estimate = (p: Plan, i: number) => photoLines(p, i).reduce(([x, z], [, [ax
   const dx = bx - ax, dz = bz - az, t = ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz);
   return [ax + t * dx, az + t * dz];
 }, metres(p, p.fit!.k, p.walls[i].a));
+const corners = (p: Plan, ring: DrawnWall[]) => (p.points ?? []).flatMap((c) => {
+  const n = p.walls.length, before = p.walls[(c.corner - 1 + n) % n]?.name, after = p.walls[c.corner]?.name;
+  const k = ring.findIndex((w, i) => w.name === after && ring[(i - 1 + ring.length) % ring.length].name === before);
+  return k < 0 ? [] : [{ ...c, corner: k }];
+});
 const entry = (corner: number): Corner => plan().points?.find((c) => c.corner === corner) ?? { corner, clicks: [] };
 
 async function savePlan(next: Plan, change: Record<string, unknown> = {}) {
@@ -155,7 +160,7 @@ async function edit(kind: string) {
   const start = walls.findIndex((w) => w.name === p.walls[0].name);
   const ring = start > 0 ? [...walls.slice(start), ...walls.slice(0, start)] : walls;
   selected = kind === "supprimer" ? "" : selected;
-  await savePlan({ ...p, walls: ring, openings: reproject(p, p.walls, ring), fit: null, points: [] });
+  await savePlan({ ...p, walls: ring, openings: reproject(p, p.walls, ring), fit: null, points: corners(p, ring) });
 }
 
 async function rename(name: string) {
@@ -178,8 +183,8 @@ async function read(legend?: Plan["legend"]) {
 
 async function fit(turn: number | null = null) {
   const result = await call<Fit>("plan.fit", { plan: { ...plan(), fit: null }, turn });
-  questions = null;
-  await h.save({ plan: { ...plan(), fit: result, points: [] } }, true);
+  [questions, checks] = [null, new Map()];
+  await h.save({ plan: { ...plan(), fit: result } }, true);
 }
 
 async function goSub(n: number) {
@@ -361,7 +366,7 @@ function readStep() {
     const box = el("div", "alert");
     const near = [...p.walls].sort((a, b) => Math.hypot(...at(a, 0.5).map((v, k) => v - extra.a[k])) - Math.hypot(...at(b, 0.5).map((v, k) => v - extra.a[k])))[0];
     box.append(el("span", "", `${extra.inside ? "Un trait à l'intérieur" : "Un trait qui dépasse"}, près du mur ${near.name} : ${extra.name ? `gardé comme mur ${extra.name}` : "je l'ai ignoré"}.`),
-      button(extra.name ? "L'ignorer" : "C'est un mur, le garder", "", "Garder ou ignorer ce trait", () => run(() => savePlan({ ...p, extra: p.extra.map((e, k) => k === i ? { ...e, name: e.name ? undefined : free(p) } : e), fit: null, points: [] }))));
+      button(extra.name ? "L'ignorer" : "C'est un mur, le garder", "", "Garder ou ignorer ce trait", () => run(() => savePlan({ ...p, extra: p.extra.map((e, k) => k === i ? { ...e, name: e.name ? undefined : free(p) } : e), fit: null }))));
     return box;
   });
   const tools = h.row(...[["Fusionner", "fusionner", "Fusionner avec le mur suivant"], ["Couper", "couper", "Couper en deux"], ["Supprimer", "supprimer", "Supprimer ce mur (Suppr)"]]
@@ -497,7 +502,8 @@ function validStep() {
     h.card("Calage", f ? `${plural(Object.keys(f.pairs).length, "mur")} sur les photos (${Object.keys(f.pairs).join(", ")}), écart ${number(Math.max(0, ...Object.values(f.gaps)), 0)} cm au plus.` : "Sans photos : forme du dessin."),
     h.card("Points précisés", points ? `${plural(points, "coin")} cliqué${points > 1 ? "s" : ""} sur 2 photos.` : "Aucun."),
     h.card("Portes et fenêtres", kinds.length ? kinds.map(([n, one, many]) => plural(n, one, many)).join(", ") + (stairs ? ", un escalier" : "") : stairs ? "Un escalier." : "Aucune."),
-    ...applied ? [h.card("C'est fait", `${plural(applied.walls.length, "mur")}, ${plural(applied.openings.length, "ouverture")}${applied.stairs.length ? ", un escalier" : ""} créés. Le plan est dans la vue 3D.`)] : []];
+    ...applied ? [h.card("C'est fait", `${plural(applied.walls.length, "mur")}, ${plural(applied.openings.length, "ouverture")}${applied.stairs.length ? ", un escalier" : ""} créés${applied.kept?.length ? `, ${plural(applied.kept.length, "mesure au mètre gardée", "mesures au mètre gardées")}` : ""}. Le plan est dans la vue 3D.`)] : [],
+    ...applied?.dropped?.length ? [el("div", "alert", `⚠ ${applied.dropped.map((d) => `Mesure « ${d.label} » retirée : ${d.reason}`).join(". ")}. Refais-la à l'étape 5 si besoin.`)] : []];
   return [h.intro(applied ? "Plan validé" : "Récapitulatif", applied ? "Tu peux encore revenir sur une sous-étape et valider à nouveau : la validation remplace, jamais de double." : "Rien n'a encore changé dans le plan. La validation remplace les murs, portes et fenêtres de l'étape 4."),
     ...cards, el("div", "note", "Ctrl+Z annule la validation."),
     h.footer(button("Retour", "", "4.4", () => run(() => goSub(4))), ...applied ? [button("Valider à nouveau", "", "Remplacer le plan validé", () => run(() => h.act("Validation du plan", validate))), h.primary("Étape suivante", h.next)]
