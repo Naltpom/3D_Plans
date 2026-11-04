@@ -155,3 +155,12 @@ def test_each_thread_has_its_own_connection(tmp_path):
     worker.start(); worker.join()
     assert seen[0][0] is not project.db and seen[0][1] == 1
     project.db.close()
+
+
+def test_next_best_on_quantities():
+    r = solve(INIT, make_obs(np.random.default_rng(5), tape=TAPE[:4] + ['w3 - w1'], su={'w5 / s': 0.2}))
+    cands = [('d21', 'w2 - w1', ST), ('d43', 'w4 - w3', ST), ('d54', 'w5 - w4', ST)]
+    by_name = {k: g for g, k, _, _ in next_best(r, cands, ['w4', 'w5'])}
+    by_expr = {k: g for g, k, _, _ in next_best(r, cands, ['w4 + 0', '1 * w5'])}
+    assert by_expr == pytest.approx(by_name, rel=1e-6)
+    assert next_best(r, cands, ['w5 - w4'])[0][1] == 'd54'

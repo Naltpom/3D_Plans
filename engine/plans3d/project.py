@@ -135,7 +135,7 @@ def undetermined(res, g):
 
 
 def scale_guard(res, P):
-    n = len(res.x); e = lambda i: np.eye(1, n, i)[0]; res.gauge = np.zeros((n, 0)), np.ones(n)
+    n = len(res.x); e = lambda i: np.eye(1, n, i)[0]; res.gauge, res.raw = (np.zeros((n, 0)), np.ones(n)), res.sigma.copy()
     scales = [i for i, name in enumerate(res.names) if P[name][1] == 'échelle' and np.isfinite(res.sigma[i])]
     if not scales: return []
     rows = [k for k, o in enumerate(res.obs) if o.status != 'supposé']; known = [res.obs[k] for k in rows]; J, d = scaled(res.J[rows])

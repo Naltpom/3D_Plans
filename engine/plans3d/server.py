@@ -2,7 +2,7 @@ import importlib, json, math, os, sys, threading, traceback
 import numpy as np
 from .rpc import LONG_METHODS, Ctx, RpcError, call
 
-PLUGINS = ['plans3d.components', 'plans3d.photos', 'plans3d.cadastre', 'plans3d.terrain', 'plans3d.furniture', 'plans3d.layout', 'plans3d.ai', 'plans3d.lumiere', 'plans3d.walls', 'plans3d.plan', 'plans3d.lecture', 'plans3d.groupes']
+PLUGINS = ['plans3d.components', 'plans3d.photos', 'plans3d.cadastre', 'plans3d.terrain', 'plans3d.furniture', 'plans3d.layout', 'plans3d.ai', 'plans3d.lumiere', 'plans3d.walls', 'plans3d.plan', 'plans3d.lecture', 'plans3d.groupes', 'plans3d.mesures']
 INVALID_REQUEST = 'requête invalide : {"id", "method", "params"} attendu'
 
 

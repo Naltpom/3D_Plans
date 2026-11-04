@@ -172,12 +172,14 @@ def variance_factors(res, key):
 
 
 def next_best(res, candidates, targets=None, k=5):
-    t = [res._idx[n] for n in (targets or res.names) if np.isfinite(res.sigma[res._idx[n]])]
+    targets = list(targets or res.names); free = np.isinf(res.sigma)
+    t = [res._idx[n] for n in targets if n in res._idx and not free[res._idx[n]]]
+    T = np.array([g for g in (res.grad(e)[1] for e in targets if e not in res._idx) if not np.abs(g) @ free]).reshape(-1, len(res.x))
     G = jacobian(batch([e for _, e, _ in candidates], res._idx)[0], res.x, np.ones(len(candidates)))
-    s2, st = np.array([s for _, _, s in candidates], float) ** 2, res.sigma[t]; v, gain = np.zeros((2, len(candidates)))
+    s2, st = np.array([s for _, _, s in candidates], float) ** 2, np.concatenate([res.sigma[t], np.sqrt(np.clip(np.einsum('ij,jk,ik->i', T, res.C, T), 0, None))]); v, gain = np.zeros((2, len(candidates)))
     for i in range(0, len(candidates), 2048):
         g = G[i:i + 2048]; M = g @ res.C; v[i:i + 2048] = vi = np.asarray(g.multiply(M).sum(1)).ravel()
-        M = np.square(M[:, t]); M /= np.where(vi > 0, vi + s2[i:i + 2048], np.inf)[:, None]
+        M = np.square(np.hstack([M[:, t], M @ T.T])); M /= np.where(vi > 0, vi + s2[i:i + 2048], np.inf)[:, None]
         gain[i:i + 2048] = st.sum() - np.sqrt(np.clip(np.subtract(st ** 2, M, out=M), 0, None, out=M), out=M).sum(1)
-    ok = np.flatnonzero((v > 0) & (abs(G) @ np.isinf(res.sigma) == 0)); best = ok[np.lexsort((v[ok], np.round(gain[ok], 12)))[::-1][:k]]
+    ok = np.flatnonzero((v > 0) & (abs(G) @ free == 0)); best = ok[np.lexsort((v[ok], np.round(gain[ok], 12)))[::-1][:k]]
     return [(float(gain[j]), *candidates[j][:2], float(np.sqrt(v[j]))) for j in best]

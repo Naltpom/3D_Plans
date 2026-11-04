@@ -7,9 +7,10 @@ import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
 import type { Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
+import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
-type Guide = { type: string; step: number; done: number[]; scale?: number; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean };
+type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean };
 type Info = { name: string; path: string; guide?: Guide };
 type Source = { id: string; path: string; kind: string; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type End = "a" | "b";
@@ -33,7 +34,7 @@ const TIPS: Record<string, string> = {
 };
 const FLOWS: Record<string, [string, string, string][]> = {
   piece: [["projet", "Le projet", "Ce que tu reconstruis"], ["sources", "Les sources", "Photos, cotes, plans"], ["positions", "Positions des photos", "Calcul automatique"],
-    ["murs", "Les murs", "Valider ce qui est trouvé"], ["echelle", "L'échelle", "Une mesure au mètre"], ["verifier", "Vérifier", "Contradictions, mesure utile"], ["meubler", "Meubler", "Optionnel, une fois le plan prêt"]],
+    ["murs", "Les murs", "Valider ce qui est trouvé"], ["echelle", "L'échelle", "Des mesures au mètre"], ["verifier", "Vérifier", "Contradictions, mesure utile"], ["meubler", "Meubler", "Optionnel, une fois le plan prêt"]],
   maison: [["projet", "Le projet", "Ce que tu reconstruis"], ["cadastre", "Le cadastre", "Parcelle et murs extérieurs"], ["relief", "Le relief", "Optionnel : maison sur le terrain"],
     ["toit", "Le toit", "Proposé sur l'emprise"], ["facades", "Les façades", "Photos recalées"], ["verifier", "Vérifier", "Débordements, mesure utile"], ["meubler", "Meubler", "Optionnel"]],
   vehicule: [["projet", "Le projet", "Ce que tu reconstruis"], ["gabarit", "Le gabarit", "Fiche constructeur"], ["positions", "Les photos", "Positions des photos"],
@@ -140,7 +141,7 @@ function summary(step: number) {
     sources: photos ? plural(photos.photos ?? 0, "photo") : sources.length ? plural(sources.length, "source") : sketch ? "croquis" : guide.manual ? "tracé à la main" : "",
     positions: photos?.registered != null ? `${photos.registered} positionnées` : photos ? "" : "sans photos",
     murs: built.length ? `${plural(built.length, "mur")}${count ? ` dont ${count} des photos` : ""}` : "",
-    echelle: guide.scale ? `${number(guide.scale)} cm mesurés` : count ? "échelle supposée" : "déjà en mètres",
+    echelle: guide.measures ? plural(guide.measures, "mesure") : count ? "échelle supposée" : "déjà en mètres",
     verifier: "plan vérifié", cadastre: built.length ? `${plural(built.length, "mur")} extérieurs` : "",
     relief: parts.some((c) => c.type === "terrain") ? "relief importé" : "terrain plat", toit: parts.some((c) => c.type === "toit") ? "toit proposé" : "",
     facades: photos?.registered != null ? `${photos.registered} photos` : "sans photos", gabarit: built.length ? plural(built.length, "paroi") : "",
@@ -483,7 +484,7 @@ async function act(text: string, task: () => Promise<unknown>) {
 async function validateWalls() {
   await call("photos.create_walls", { source: photoInfo().source, walls: [...checked] });
   guide.done = [...guide.done.filter((n) => n < 4), 4];
-  delete guide.scale;
+  delete guide.measures;
   await save();
   await update();
   await loadPlan();
@@ -513,39 +514,13 @@ async function clickAngle(wall: Wall, end: End) {
     text: `Clique l'angle au ${side(wall, end)} du ${lower(wall.label)} (vue de dessus), à n'importe quelle hauteur. Le trait jaune montre où il devrait être.`, photos });
 }
 
-const planned = () => guide.plan && photoInfo().count ? [...built].sort((a, b) => Math.hypot(b.b[0] - b.a[0], b.b[1] - b.a[1]) - Math.hypot(a.b[0] - a.a[0], a.b[1] - a.a[1]))[0] : undefined;
-
 function scaleStep() {
-  const target = planned(), wall = target ? { ...target, component: target.id } as unknown as Wall : walls().find((w) => w.component && w.component === proposal?.measure), angle = missing()[0];
-  if (!target && !created().length && built.length) return [intro("Pas besoin d'échelle", "Tes murs viennent du tracé ou du cadastre : ils sont déjà en mètres. Une cote au mètre les précisera à l'étape suivante."), footer(back(), onward())];
-  if (!wall && !created().length) return [intro("Valide d'abord les murs", "L'échelle se mesure sur un mur validé à l'étape 4."), footer(back())];
-  if (!wall) return [intro("Il manque un angle", `Pour fixer l'échelle, il faut un mur dont les deux angles sont trouvés. Clique l'angle manquant du ${lower(angle[0].label)} sur 2 photos.`),
-    footer(back(), button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(skipScale)), primary("Cliquer cet angle", () => clickAngle(...angle)))];
-  const name = lower(wall.label);
-  const input = Object.assign(el("input", "measure"), { inputMode: "decimal", value: guide.scale ? String(guide.scale) : "", placeholder: "531", autocomplete: "off" });
-  const label = el("label", "", `Longueur du ${name}, en cm`);
-  label.append(input);
-  const submit = primary("Valider la mesure", () => validateScale(wall, input.value));
-  input.onkeydown = (event) => { if (event.key === "Enter") submit.click(); };
-  return [intro("Donne une seule mesure", `Les photos donnent les formes, pas la taille. Mesure au mètre le ${name} surligné en jaune, d'un angle à l'autre, à hauteur de taille.`),
-    label, card("Résultat attendu après validation", "Toutes les cotes du plan à ± 1 à 2 cm."), el("hr"),
-    card("Ensuite : vérifier", "L'appli te dira s'il y a une contradiction, et quelle mesure de plus rendrait le plan plus précis."),
-    footer(button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(skipScale)), submit)];
-}
-
-async function validateScale(wall: Wall, text: string) {
-  const value = decimal(text);
-  if (!(value > 0)) throw new Error("Indique la longueur en centimètres, par exemple 531.");
-  const measured = await call<{ expr: string; value: number }>("components.measure_expr", { a: `${wall.component}:a`, b: `${wall.component}:b` });
-  const ratio = value / 100 / measured.value;
-  if (ratio < 0.5 || ratio > 2) throw new Error(`Le modèle donne environ ${cm(measured.value)} : vérifie que la mesure est en centimètres.`);
-  await call("cotes.add", { id: "echelle", expr: measured.expr, value, sigma: 1, unit: "cm", label: `Longueur du ${lower(wall.label)}` });
-  guide.scale = value;
-  await complete(guide.step);
+  if (!built.length) return [intro("Valide d'abord les murs", "Les mesures se prennent sur les murs, portes, fenêtres et escalier validés à l'étape 4."), footer(back())];
+  return measuresStep(scaleHelpers);
 }
 
 async function skipScale() {
-  delete guide.scale;
+  delete guide.measures;
   await complete(guide.step);
 }
 
@@ -681,7 +656,7 @@ function bodyStep() {
 
 async function finishPlan() {
   guide.done = [...guide.done.filter((n) => n < 4), 4];
-  delete guide.scale;
+  delete guide.measures;
   await save();
   await loadPlan();
   await loadProposal(true);
@@ -693,19 +668,24 @@ const helpers: Helpers = {
   classic: async () => { await save({ classic: true }); render(); paint(); },
 };
 
+const scaleHelpers: ScaleHelpers = {
+  guide: () => guide, save: (change) => save(change as Partial<Guide>), active: () => mode === "guide" && Boolean(info) && !creating && key() === "echelle",
+  intro, card, row, footer, primary, back, render, next: () => complete(guide.step), skip: skipScale,
+};
+
 const VIEWS: Record<string, () => Node[]> = { projet: projectStep, sources: sourcesStep, positions: positionsStep, murs: () => drawn() ? fourStep(helpers) : wallsStep(), echelle: scaleStep, verifier: checkStep,
   meubler: furnishStep, cadastre: cadastreStep, relief: reliefStep, toit: roofStep, facades: facadeStep, gabarit: bodyStep };
 
 function paint() {
   const step = mode === "guide" ? key() : "";
   if (step !== "murs" || !drawn()) previewPose(null);
-  const measured = walls().filter((w) => w.component && w.component === proposal?.measure), house = land?.created.length ? [] : land?.house?.points ?? [];
+  const house = land?.created.length ? [] : land?.house?.points ?? [];
   const outline = house.map((a, i) => ({ a, b: house[(i + 1) % house.length], height: 2.5, tone: "sure", on: true, text: i ? "" : "Cadastre" }));
   const read = (reading?.walls ?? []).flatMap((wall, w) => wall.points.slice(0, wall.closed ? undefined : -1).map((a, i) => ({
     a, b: wall.points[(i + 1) % wall.points.length], height: 2.5, tone: "doubt", on: kept.has(w), text: i ? "" : `Croquis ${w + 1}` })));
   showWalls((step === "murs" || step === "facades") && !drawing() ? [...shown().map((w) => ({ ...w, tone: w.id === hover ? "measure" : w.sure ? "sure" : "doubt", on: checked.has(w.id) || w.id === hover, text: checked.has(w.id) || w.id === hover ? w.label : "" })), ...outline, ...read]
-    : step === "echelle" ? measured.map((w) => ({ ...w, tone: "measure", on: true, text: "à mesurer" })) : []);
-  if (step) highlight(step === "echelle" ? planned()?.id ?? proposal?.measure ?? null : walls().find((w) => w.id === hover)?.component ?? null, 0xf5c451);
+    : []);
+  if (step && step !== "echelle") highlight(walls().find((w) => w.id === hover)?.component ?? null, 0xf5c451);
 }
 
 function render() {
@@ -744,6 +724,7 @@ async function go(step: number) {
   if (mode !== "guide") return;
   if (key(step) !== "projet" && key(step) !== "sources") setView(["positions", "toit", "relief", "verifier", "meubler"].includes(key(step)) ? "3d" : "dessus");
   if (key(step) === "verifier") await check();
+  if (key(step) === "echelle") await scaleEnter(scaleHelpers);
   if (forward && key(step) === "positions") void run(autoPositions);
 }
 

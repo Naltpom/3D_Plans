@@ -405,6 +405,21 @@ body.page #step .actions { margin-top: 0; }
 .plan .photo { stroke: #9ccf7a; stroke-width: 3; vector-effect: non-scaling-stroke; }
 .plan .photo.loose { stroke: #6b7380; stroke-dasharray: 5 5; }
 .plan .corner { fill: var(--point); }
+.plan.scale :is(.wall, .opening, .stairs) { cursor: pointer; }
+.plan.scale .stairs { fill: #8b95a31a; }
+.plan .stairs.selected { stroke: var(--point); stroke-width: 3; }
+.plan .cote { fill: none; stroke: var(--point); stroke-width: 2; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan .cote.done { stroke: var(--accent); stroke-dasharray: none; }
+.plan .cote.bad { stroke: var(--warn); stroke-dasharray: none; }
+.plan .cote.focus { stroke-width: 4; }
+.plan .cote-label { fill: var(--point); font-family: var(--mono); font-weight: 600; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: var(--view); stroke-width: 0.25em; pointer-events: none; }
+.plan .cote-label.done { fill: var(--accent-text); }
+.plan .cote-label.bad { fill: var(--warn-text); }
+#step .start { align-self: flex-start; }
+#step .tagged .grow { flex: 1 1 200px; min-width: 0; }
+#step .tagged small { color: var(--muted); }
+#step .tagged small.warn { color: var(--warn-text); }
+#step .tagged .chip { display: inline-block; margin-top: 4px; }
 #step .subs { display: flex; flex-wrap: wrap; gap: 6px; }
 #step .subs button { min-height: 0; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; color: var(--muted); }
 #step .subs .on { border-color: var(--accent); color: var(--accent-text); }

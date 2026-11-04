@@ -4,6 +4,7 @@ from . import cadastre, components
 from .rpc import cotes_add, project_meta, rpc
 
 CLICK_SIGMA_M, CADASTRE_SIGMA_M, OPENING_SIGMA_M, TYPED_SIGMA_CM, NEAR_WALL_M, MARGIN_M = 0.05, 0.2, 0.1, 1.0, 0.6, 0.05
+PLAN_SCALE, PLAN_SCALE_SIGMA, DRAWN_SIGMA_M = 'plan_s', 0.5, 0.3
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png')
 
 
@@ -15,9 +16,22 @@ def free_ids(project, base, count):
     return ids
 
 
-def prior(project, owner, name, value, sigma, label):
+def prior(project, owner, name, value, sigma, label, expr=None):
     project.db.execute('insert or replace into obs values (?,?,?,?,?,?,?)',
-                       (f'comp:{owner}:{name}', f'comp:{owner}', name, float(value), sigma, components.PRIOR_STATUS, label))
+                       (f'comp:{owner}:{name}', f'comp:{owner}', expr or name, float(value), sigma, components.PRIOR_STATUS, label))
+
+
+def drawing_scale(project):
+    drawn, P, db = [c for c in components.load(project).values() if c['options'].get('source') == 'plan'], project.params(), project.db
+    walls = [c for c in drawn if c['type'] == 'mur']; names = {n for c in walls for n in c['params'] if P[n][1] in ('x', 'z')}
+    rows = [(f'{e} / {PLAN_SCALE}', i) for i, e in db.execute('select id, expr from obs where status=?', (components.PRIOR_STATUS,)) if e in names]
+    seen = {n for (e,) in db.execute('select expr from obs') for n in components.NAME.findall(e)}
+    loose = [(c['id'], n) for c in drawn if c['type'] != 'mur' for n in c['params'] if n not in seen and P[n][1] in ('x', 'z', 'dim')]
+    if not walls or not rows and not loose: return False
+    if PLAN_SCALE not in P: project.add_param(PLAN_SCALE, 1.0, 'dessin', 'échelle du dessin')
+    if rows: db.execute('delete from obs where expr=?', (PLAN_SCALE,)); prior(project, walls[0]['id'], PLAN_SCALE, 1.0, PLAN_SCALE_SIGMA, 'échelle du dessin (a priori)')
+    for owner, n in loose: prior(project, owner, n, P[n][0], DRAWN_SIGMA_M, f'{P[n][2]} (dessin)', f'{n} / {PLAN_SCALE}' if P[n][1] != 'dim' else None)
+    db.executemany('update obs set expr=? where id=?', rows); db.commit(); return True
 
 
 def current_values(project): return {name: value for name, (value, _) in components.param_values(project).items()}
@@ -61,7 +75,7 @@ def trace(ctx, points, closed=True, lengths=None, refs=None, height=None, inward
     for name, (value, axis, label, _) in created.items(): project.add_param(name, float(value), axis, label)
     for e, opts in zip(edges, options): components.add(project, 'mur', ids[e], opts, labels[e])
     for name, (value, _, label, owner) in created.items(): prior(project, owner, name, value, sigma, f'{label} (tracé)')
-    project.db.commit(); values = current_values(project); loaded = components.load(project); os.makedirs(os.path.join(project.folder, 'sources'), exist_ok=True)
+    project.db.commit(); drawing_scale(project); values = current_values(project); loaded = components.load(project); os.makedirs(os.path.join(project.folder, 'sources'), exist_ok=True)
     for e, length in zip(edges, lengths or []):
         if length: cotes_add(ctx, f'trace_{ids[e]}', components.measure_expr((loaded[ids[e]], 'a'), (loaded[ids[e]], 'b'), values=values), float(length) * 100,
                              float(cote_sigma), label=f"{labels[e]} — longueur {'lue sur le croquis' if cote_status == 'lu' else 'saisie'}", status=cote_status)
