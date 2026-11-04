@@ -37,8 +37,9 @@ const lower = (text: string) => text[0].toLowerCase() + text.slice(1);
 const margin = (s: number | null) => s == null ? "inconnue" : `± ${cm(s)}`;
 
 function proposals() {
-  const gone = new Set([...refused(), ...measured()]);
-  return state!.candidates.filter((c) => !gone.has(c.key) && (!c.twin || gone.has(c.twin))).slice(0, 4);
+  const no = refused(), gone = new Set([...no, ...measured()]), byKey = new Map(state!.candidates.map((c) => [c.key, c]));
+  const near = (a: Item, b: Item) => [b.ends, [...b.ends].reverse()].some((e) => a.ends.every((p, i) => Math.hypot(p[0] - e[i][0], p[1] - e[i][1]) < 0.3));
+  return state!.candidates.filter((c) => !gone.has(c.key) && (!c.twin || gone.has(c.twin) && !(no.has(c.twin) && near(c, byKey.get(c.twin)!)))).slice(0, 4);
 }
 
 async function refresh() {
