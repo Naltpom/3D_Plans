@@ -98,6 +98,18 @@ def test_order_constrained_match():
     assert sorted(j for _, j in lecture.match(drawn[:2], crossed, 1.0, [0.0, 0.0]).values()) == [0, 2]
 
 
+def test_apply_keeps_measures(tmp_path, monkeypatch):
+    from plans3d.rpc import cotes_add, read_cotes
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {}); rpc.call(ctx, 'plan.apply', {'plan': read})
+    wall, door = (components.load(ctx.project)[i] for i in ('murC', 'porte1'))
+    cotes_add(ctx, 'longueur.murC', components.measure_expr((wall, 'a'), (wall, 'b')), 410); cotes_add(ctx, 'largeur.porte1', door['params'][1], 85)
+    done = rpc.call(ctx, 'plan.apply', {'plan': read})
+    assert sorted(done['kept']) == ['largeur.porte1', 'longueur.murC'] and sorted(r['id'] for r in read_cotes(ctx.project)) == sorted(done['kept'])
+    assert rpc.call(ctx, 'plan.apply', {'plan': {**read, 'openings': []}})['kept'] == ['longueur.murC'] and ctx.project.update().converged
+
+
 def test_match_outermost_and_beyond():
     drawn = [lecture.lined(np.array([0.2, 0.0]), np.array([0.2, 3.0]), name='D', out=-1.0), lecture.lined(np.array([0.0, 0.0]), np.array([3.0, 0.0]), name='A', out=-1.0),
              lecture.lined(np.array([2.0, 0.0]), np.array([2.0, 3.0]), name='B', out=1.0)]

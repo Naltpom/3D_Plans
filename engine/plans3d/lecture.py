@@ -2,8 +2,9 @@ import io, json, os, re
 import numpy as np
 from scipy import ndimage
 from . import cadastre, components, photos, walls
-from .plan import current_values, free_ids, place, sketch, trace, wall_ends
-from .rpc import rpc
+from .core import FUNCS
+from .plan import current_values, drawing_scale, free_ids, place, sketch, trace, wall_ends
+from .rpc import read_cotes, rpc, write_cotes
 
 PIXELS, SNAP_DEG, EPS, PRIOR_M, ROOM_M, MATCH_M, SCALES, MATCH_TOL, COLLINEAR_M = 1000, 20.0, 0.006, 0.3, 6.0, 0.12, (0.6, 1.6), 0.6, 0.1
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -618,7 +619,7 @@ def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axi
 @rpc('plan.apply')
 def apply(ctx, plan):
     project = ctx.require_project(); source = photo_source(project); fitted = plan.get('fit') if source else None; db = project.db
-    stale = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in walls.KEPT or c['options'].get('source') == 'plan']
+    stale, measured = [c['id'] for c in components.load(project).values() if c['type'] == 'mur' and c['options'].get('source') not in walls.KEPT or c['options'].get('source') == 'plan'], read_cotes(project)
     if stale: components.remove(project, *stale)
     if source:
         photos.ensure_params(project, source); _, state, cache = photos.photo_state(project, source, compute=False)
@@ -665,4 +666,6 @@ def apply(ctx, plan):
         cloud = photos.load_model(cache)['P'] @ np.array(fitted['pose']['L']).T + fitted['pose']['c'] if fitted else None
         stairs += add_measured_stairs(project, steps) if len(steps) >= 4 else add_stairs(project, stair.get('flights') or drawn_flights(ctx, plan, stair), forward, cloud,
                                                                                          fitted and fitted.get('height'), anchors(project, ids))
-    return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks)}
+    drawing_scale(project); names, taken = set(project.params()), {row['id'] for row in read_cotes(project)}
+    if kept := [row for row in measured if row['id'] not in taken and set(components.NAME.findall(row['expr'])) - set(FUNCS) <= names]: write_cotes(project, read_cotes(project) + kept)
+    return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks), 'kept': [row['id'] for row in kept]}
