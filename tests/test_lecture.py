@@ -111,7 +111,8 @@ def test_apply_keeps_measures(tmp_path, monkeypatch):
     done = rpc.call(ctx, 'plan.apply', {'plan': read})
     assert sorted(done['kept']) == ['largeur.porte1', 'largeur.porte2', 'longueur.murC'] and not done['dropped'] and len(read_cotes(ctx.project)) == 3
     done = rpc.call(ctx, 'plan.apply', {'plan': {**read, 'openings': read['openings'][1:]}}); rows = {r['id']: r['expr'] for r in read_cotes(ctx.project)}
-    assert rows == {'longueur.murC': rows['longueur.murC'], 'largeur.porte2': 'porte1_l'} and done['dropped'] == [{'id': 'largeur.porte1', 'label': 'Largeur de la porte 1', 'reason': "Porte porte1 n'existe plus"}]
+    assert rows == {'longueur.murC': rows['longueur.murC'], 'largeur.porte1': 'porte1_l'} and done['dropped'] == [{'id': 'largeur.porte1', 'label': 'Largeur de la porte 1', 'reason': "Porte porte1 n'existe plus"}]
+    assert next(r for r in read_cotes(ctx.project) if r['id'] == 'largeur.porte1')['label'] == 'Largeur de la porte 1'
     assert ctx.project.update().converged
 
 

@@ -623,15 +623,21 @@ def identities(project):
 
 
 def reattached(project, measured, before):
+    from . import mesures
     (hosted, named, labels), (now_hosted, now_named, present) = before, identities(project); moved = {named[k]: now_named[k] for k in named if k in now_named}
     for _, old, new in sorted((abs(p - q), a, b) for t, h, p, a in hosted for u, g, q, b in now_hosted if (t, h) == (u, g) and abs(p - q) < SAME_M):
         if old not in moved and new not in moved.values(): moved[old] = new
     replaced, names, taken = {a for *_, a in hosted} | set(named.values()), set(project.params()), {row['id'] for row in read_cotes(project)}
-    owner = lambda name: max((cid for cid in labels if name.startswith(f'{cid}_')), key=len, default=None); kept, dropped = [], []
+    fresh = {c['key']: c for c in mesures.candidates(mesures.elements(project, current_values(project)))}
+    owner = lambda name: max((cid for cid in labels if name.startswith(f'{cid}_')), key=len, default=None)
+    lost = lambda cids: sorted({labels[c] for c in cids if c and c not in moved and (c in replaced or c not in present)})
+    kept, dropped = [], []
     for row in (r for r in measured if r['id'] not in taken):
-        gone = sorted({labels[cid] for n in components.NAME.findall(row['expr']) if (cid := owner(n)) and cid not in moved and (cid in replaced or cid not in present)})
+        kind, _, rest = row['id'].partition('.'); parts = [moved.get(p, p) for p in rest.split('.')]; key = f"{kind}.{'.'.join(sorted(parts) if kind == 'entre' else parts)}"
         expr = components.NAME.sub(lambda m: moved[cid] + m[0][len(cid):] if (cid := owner(m[0])) in moved else m[0], row['expr'])
-        if not gone and set(components.NAME.findall(expr)) - set(FUNCS) <= names: kept.append({**row, 'expr': expr})
+        gone = lost(p for p in rest.split('.') if p in labels) if key in fresh else lost(owner(n) for n in components.NAME.findall(row['expr']))
+        if key in fresh and not gone: kept.append({**row, 'id': key, 'expr': fresh[key]['expr'], 'label': fresh[key]['label']})
+        elif not gone and set(components.NAME.findall(expr)) - set(FUNCS) <= names: kept.append({**row, 'expr': expr})
         else: dropped.append({'id': row['id'], 'label': row.get('label') or row['id'], 'reason': f"{', '.join(gone)} n'existe plus" if gone else "ses éléments n'existent plus"})
     if kept: write_cotes(project, read_cotes(project) + kept)
     return kept, dropped
