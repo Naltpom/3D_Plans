@@ -9,7 +9,7 @@ type Options = { selected?: string; opening?: number; corner?: number; photo?: b
 
 const NS = "http://www.w3.org/2000/svg";
 
-function node(tag: string, attributes: Record<string, string | number>, className = "", text = "") {
+export function node(tag: string, attributes: Record<string, string | number>, className = "", text = "") {
   const item = document.createElementNS(NS, tag);
   for (const [name, value] of Object.entries(attributes)) item.setAttribute(name, String(value));
   if (className) item.setAttribute("class", className);

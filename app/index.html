@@ -199,9 +199,13 @@
         <button id="render-export" class="small">Exporter PNG</button>
         <button id="render-exit" class="small primary">Temps réel</button>
       </div>
-      <div id="cloud-colors" class="row" role="group" aria-label="Couleur du nuage" hidden><span>Couleur du nuage</span></div>
-      <div id="cloud-legend" hidden></div>
-      <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
+      <div id="dock">
+        <div id="legend" hidden><span class="large">σ &gt; 5 cm</span><span class="unknown">σ non déterminé</span></div>
+        <div class="keys">
+          <div id="cloud-legend" hidden></div>
+          <div id="cloud-colors" class="row" role="group" aria-label="Couleur du nuage" hidden><span>Couleur du nuage</span></div>
+        </div>
+      </div>
       <div id="warnings" role="status" hidden></div>
     </main>
     <aside id="analysis" hidden>
@@ -330,6 +334,10 @@
       <p id="update-state"></p>
       <progress id="update-progress" max="1" aria-label="Téléchargement de la mise à jour" hidden></progress>
       <div class="row"><span class="spacer"></span><button id="update-later" type="button">Plus tard</button><button id="update-now" class="primary" type="button" autofocus>Mettre à jour maintenant</button></div>
+    </dialog>
+    <dialog id="zoom" aria-labelledby="zoom-title">
+      <header><b id="zoom-title"></b><small></small><span class="spacer"></span><button class="remove" type="button" aria-label="Fermer" title="Fermer (Échap)">×</button></header>
+      <div class="view"></div>
     </dialog>
     <dialog id="about">
       <h2>3D_Plans</h2>

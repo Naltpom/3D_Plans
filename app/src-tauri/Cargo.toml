@@ -1,6 +1,6 @@
 [package]
 name = "plans3d"
-version = "0.8.18"
+version = "0.8.19"
 edition = "2021"
 
 [build-dependencies]

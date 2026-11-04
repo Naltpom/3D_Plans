@@ -152,9 +152,10 @@ function render() {
 }
 
 const liveBox = Object.assign(el("section"), { id: "live", hidden: true, ariaLabel: "Calcul en direct" });
-const liveCount = el("div", "count"), liveTiles = el("div", "tiles");
-liveBox.append(liveCount, liveTiles);
+const liveCount = el("div", "count"), liveTiles = Object.assign(el("div", "tiles"), { hidden: true });
+liveBox.append(liveCount);
 viewport.append(liveBox);
+$("#dock").append(liveTiles);
 canvas.addEventListener("pointerdown", () => { touched = true; });
 canvas.addEventListener("wheel", () => { touched = true; }, { passive: true });
 
@@ -182,7 +183,7 @@ function showLive(event: Record<string, unknown>) {
 }
 
 function renderLive() {
-  liveBox.hidden = !live || busy !== "photos.extract";
+  liveTiles.hidden = liveBox.hidden = !live || busy !== "photos.extract";
   if (!live || liveBox.hidden) return;
   const placing = /poses|lecture|plans/.test(step.message), matching = step.message.includes("appariement");
   const placed = new Set(live.placed), fresh = new Set(live.placed.slice(-3));
@@ -531,6 +532,7 @@ export async function photoTask(method: string, params: Record<string, unknown> 
   if (method === "photos.extract") {
     showCloud([]);
     showCameras([], null);
+    showColors(null, false);
   }
   localStorage.setItem(TASK_KEY, JSON.stringify({ method, project: projectPath, source }));
   throttle(method === "tools.install" ? 0 : 100);

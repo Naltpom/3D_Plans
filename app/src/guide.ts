@@ -4,7 +4,7 @@ import { addSources, openProject, refreshSources, remember, update, type UpdateR
 import { idle, showHome } from "./home";
 import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPose, stopTask } from "./photos";
 import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
-import type { Plan } from "./plan2d";
+import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
@@ -20,7 +20,7 @@ type Candidate = { label: string; expr: string; sigma: number };
 type Reading = { walls: { points: number[][]; closed: boolean; length: number }[]; openings: { type: string; point: number[] }[];
   cotes: { texte: string; value_cm: number; drawn_m: number | null; ok: boolean; message: string; wall: number | null; edge: number | null }[] } | null;
 type Built = { id: string; label: string; source: string; uses: string[]; a: number[]; b: number[]; height: number };
-type Cadastre = { house: { walls: number; perimeter: number; points: number[][] } | null; parcel: { area: number } | null; created: string[] } | null;
+type Cadastre = { house: { walls: number; perimeter: number; points: number[][] } | null; parcel: { area: number; points: number[][] } | null; created: string[] } | null;
 
 const TYPES = [
   ["piece", "Une pièce intérieure", "Murs, portes, fenêtres, escalier, à partir de photos et de quelques cotes.", "Pièce intérieure"],
@@ -207,12 +207,38 @@ async function createProject() {
   await openProject("project.create", { path: target(), name: draft.name.trim() });
 }
 
-function entry(title: string, text: string, status: string, action: HTMLButtonElement) {
+function entry(title: string, text: string, status: string, action: HTMLButtonElement, ...preview: Node[]) {
   const box = card(title, text, action);
   box.classList.toggle("done", Boolean(status));
   if (status) box.firstElementChild!.append(" · ", el("span", "status", status));
+  box.lastElementChild!.before(...preview);
   return box;
 }
+
+function thumb(title: string, caption: string, view: () => Element) {
+  const open = button("", "thumb", `Agrandir : ${lower(title)}`, () => {
+    $("#zoom-title").textContent = title;
+    $("#zoom small").textContent = caption;
+    $("#zoom .view").replaceChildren(view());
+    $<HTMLDialogElement>("#zoom").showModal();
+  });
+  open.append(view(), el("span", "zoom", "Agrandir"));
+  return [open, el("small", "", caption)];
+}
+
+$("#zoom").onclick = (event) => { if (event.target === event.currentTarget || (event.target as Element).closest(".remove")) $<HTMLDialogElement>("#zoom").close(); };
+const sketchImage = () => Object.assign(el("img"), { src: host.photoUrl(sketch!.path), alt: "Croquis" });
+const landText = () => [land?.house && `Bâtiment principal : ${plural(land.house.walls, "mur")} extérieurs, ${number(land.house.perimeter)} m de périmètre`,
+  land?.parcel && `parcelle de ${number(land.parcel.area, 0)} m²`].filter(Boolean).join(" ; ");
+
+function outline() {
+  const rings = [land?.parcel?.points ?? [], land?.house?.points ?? []], all = rings.flat();
+  const [x0, z0, x1, z1] = [0, 1, 0, 1].map((k, i) => (i < 2 ? Math.min : Math.max)(...all.map((p) => p[k]))), pad = Math.max(x1 - x0, z1 - z0, 1) * 0.06;
+  const svg = node("svg", { viewBox: `${x0 - pad} ${z0 - pad} ${x1 - x0 + 2 * pad} ${z1 - z0 + 2 * pad}`, role: "img", "aria-label": "Parcelle et bâtiment principal" }, "outline");
+  rings.forEach((ring, i) => ring.length && svg.append(node("polygon", { points: ring.map((p) => p.join(",")).join(" ") }, i ? "house" : "parcel")));
+  return svg;
+}
+const mapped = () => Boolean(land?.house || land?.parcel) ? thumb("Plan cadastral", landText(), outline) : [];
 
 function sourcesStep() {
   const photos = photoSource(), cadastral = sources.some((s) => s.kind.startsWith("cadastre"));
@@ -224,14 +250,15 @@ function sourcesStep() {
         if (path) await addSources([path]);
       }))),
     entry("Plan cadastral", "PDF du cadastre ou fichier GeoJSON : bâtiment principal, parcelle.", cadastral ? "importé" : "",
-      button("Choisir un fichier", "", "PDF ou GeoJSON du cadastre", () => run(async () => addSources((await host.pickFiles("Plan cadastral")) ?? [])))),
+      button(cadastral ? "Choisir un autre fichier" : "Choisir un fichier", "", "PDF ou GeoJSON du cadastre", () => run(async () => addSources((await host.pickFiles("Plan cadastral")) ?? []))),
+      ...cadastral ? mapped() : []),
     entry("Croquis à main levée", "Photo ou scan d'un plan dessiné : il s'affiche en fond pour le décalquer.", sketch ? "ajouté" : "",
-      button("Choisir une image", "", "Image JPEG ou PNG du croquis", () => run(async () => {
+      button(sketch ? "Choisir une autre image" : "Choisir une image", "", "Image JPEG ou PNG du croquis", () => run(async () => {
         const [path] = (await host.pickFiles("Croquis")) ?? [];
         if (path) await call("plan.sketch", { path });
         await loadPlan();
         render();
-      }))),
+      })), ...sketch ? thumb("Croquis à main levée", sketch.file, sketchImage) : []),
     entry("Construction manuelle", "Rien à importer : tu traces les murs en vue de dessus, au clic ou au clavier.", guide.manual ? "choisie" : "",
       button(guide.manual ? "Annuler ce choix" : "Je trace moi-même", "", "Tracer les murs à l'étape 4", () => run(async () => { await save({ manual: !guide.manual }); render(); }))));
   const list = el("ul", "list");
@@ -631,13 +658,12 @@ function pickInto(title: string) {
 }
 
 function cadastreStep() {
-  const has = sources.some((s) => s.kind.startsWith("cadastre")), house = land?.house, parcel = land?.parcel;
-  const text = [house && `Bâtiment principal : ${plural(house.walls, "mur")} extérieurs, ${number(house.perimeter)} m de périmètre`, parcel && `parcelle de ${number(parcel.area, 0)} m²`].filter(Boolean).join(" ; ");
+  const has = sources.some((s) => s.kind.startsWith("cadastre")), text = landText();
   return [intro("Le cadastre", "Le plan cadastral (PDF de cadastre.gouv.fr ou GeoJSON) donne la parcelle et l'emprise de la maison, qui devient les murs extérieurs."),
     card(has ? built.length ? "Murs et parcelle créés" : "Cadastre importé" : "Plan cadastral", has ? `${text || "Aucun bâtiment principal reconnu"}.` : "PDF ou GeoJSON du cadastre.",
       ...has ? [] : [button("Choisir un fichier", "primary", "PDF ou GeoJSON", () => run(pickInto("Plan cadastral")))],
-      ...has && (house || parcel) && !land?.created.length ? [button("Créer les murs et la parcelle", "primary", "Murs extérieurs et parcelle", () => run(() => act("Création depuis le cadastre", fromCadastre)))] : []),
-    footer(back(), onward(built.length > 0))];
+      ...has && text && !land?.created.length ? [button("Créer les murs et la parcelle", "primary", "Murs extérieurs et parcelle", () => run(() => act("Création depuis le cadastre", fromCadastre)))] : []),
+    ...has ? mapped().slice(0, 1) : [], footer(back(), onward(built.length > 0))];
 }
 
 function reliefStep() {
@@ -804,10 +830,12 @@ document.addEventListener("plans3d:new", () => {
   [creating, draft] = [true, { type: "piece", name: "" }];
   render();
 });
-document.addEventListener("plans3d:sources", (event) => {
+document.addEventListener("plans3d:sources", (event) => run(async () => {
   sources = (event as CustomEvent<Source[]>).detail;
-  if (mode === "guide" && ["sources", "positions", "cadastre", "relief", "facades"].includes(key())) render();
-});
+  if (mode !== "guide" || !["sources", "positions", "cadastre", "relief", "facades"].includes(key())) return;
+  if (info && ["sources", "cadastre"].includes(key()) && sources.some((s) => s.kind.startsWith("cadastre")) !== Boolean(land)) land = await call<Cadastre>("plan.cadastre");
+  render();
+}));
 document.addEventListener("plans3d:photos", () => run(async () => {
   if (mode !== "guide" || !info) return;
   const loading = ["murs", "echelle", "facades"].includes(key()) && !proposal && photoInfo().count > 0 && !photoInfo().busy;
