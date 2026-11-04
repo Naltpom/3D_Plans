@@ -2,10 +2,10 @@ import io, json, os, re
 import numpy as np
 from scipy import ndimage
 from . import cadastre, components, photos, walls
-from .plan import free_ids, place, sketch, trace
+from .plan import current_values, free_ids, place, sketch, trace, wall_ends
 from .rpc import rpc
 
-PIXELS, SNAP_DEG, EPS, PRIOR_M, STEP_M, ROOM_M, MATCH_M, SCALES, MATCH_TOL, COLLINEAR_M = 1000, 20.0, 0.006, 0.3, 0.25, 6.0, 0.12, (0.6, 1.6), 0.6, 0.1
+PIXELS, SNAP_DEG, EPS, PRIOR_M, ROOM_M, MATCH_M, SCALES, MATCH_TOL, COLLINEAR_M = 1000, 20.0, 0.006, 0.3, 6.0, 0.12, (0.6, 1.6), 0.6, 0.1
 LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 COLORS = {'noir': '#1a1a1a', 'gris': '#8a8a8a', 'rouge': '#e0302c', 'orange': '#e8953a', 'jaune': '#e3c13b', 'vert': '#3aa65a', 'bleu': '#2f8fe0', 'violet': '#9a5bd0'}
 ROLES = {'noir': 'mur', 'gris': 'escalier', 'rouge': 'porte', 'orange': 'porte', 'jaune': 'fenetre', 'vert': 'fenetre', 'bleu': 'porte_fenetre', 'violet': 'ignorer'}
@@ -19,7 +19,9 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
+FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5
 CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
+AXIS_TOL = np.tan(np.radians(2))
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -125,6 +127,21 @@ def straight(a, b, base):
     return middle - half * d, middle + half * d
 
 
+def flights(ys, xs, grow):
+    grid = np.zeros((np.ptp(ys) + 1, np.ptp(xs) + 1), bool); grid[ys - ys.min(), xs - xs.min()] = True
+    grid = ndimage.binary_fill_holes(ndimage.binary_closing(np.pad(grid, grow), SQUARE, iterations=grow))[grow:-grow, grow:-grow]
+    tall = grid.shape[0] >= grid.shape[1]; labels, count = ndimage.label(grid.mean(0 if tall else 1) >= FULL_SHARE)
+    if not count: return [[xs.min(), ys.min(), xs.max(), ys.max()]]
+    kept = np.flatnonzero(labels == np.argmax(np.bincount(labels)[1:]) + 1); a, b = kept.min(), kept.max() + 1; rest = grid.copy()
+    found = [[a, 0, b, grid.shape[0]] if tall else [0, a, grid.shape[1], b]]
+    if tall: rest[:, a:b] = False
+    else: rest[a:b] = False
+    pieces = components_of(ndimage.binary_opening(rest, SQUARE, iterations=grow))
+    if pieces and len((piece := max(pieces, key=lambda q: len(q[0])))[0]) >= 0.15 * (b - a) * grid.shape[0 if tall else 1]:
+        found.append([piece[1].min(), piece[0].min(), piece[1].max() + 1, piece[0].max() + 1])
+    return [[float(c0 + xs.min()), float(r0 + ys.min()), float(c1 + xs.min()), float(r1 + ys.min())] for c0, r0, c1, r1 in found]
+
+
 def letter(i): return LETTERS[i % 26] + (str(i // 26 + 1) if i >= 26 else '')
 
 
@@ -199,7 +216,8 @@ def read(path, legend=None, ai=True):
                 openings.append({'type': kind, 'wall': letter(found[1]), 't0': round(float(found[2]), 4), 't1': round(float(found[3]), 4)})
     stairs = []
     for ys, xs in components_of(role('escalier'), max(2, int(0.015 * size))):
-        if min(np.ptp(xs), np.ptp(ys)) >= 0.03 * size: stairs.append({'box': [float(xs.min() / k), float(ys.min() / k), float(xs.max() / k), float(ys.max() / k)]})
+        if min(np.ptp(xs), np.ptp(ys)) >= 0.03 * size:
+            stairs.append({'box': [float(xs.min() / k), float(ys.min() / k), float(xs.max() / k), float(ys.max() / k)], 'flights': (np.array(flights(ys, xs, max(2, int(0.015 * size)))) / k).round(1).tolist()})
     return {'image': size_px, 'angle': base, 'walls': [{'name': letter(i), 'a': (p / k).round(1).tolist(), 'b': (q / k).round(1).tolist()} for i, (p, q) in enumerate(ring)],
             'extra': extra, 'openings': openings, 'stairs': stairs, 'legend': legend, 'ai': bool(asked)}
 
@@ -232,22 +250,16 @@ def default_k(plan):
     return ROOM_M / max(np.ptp(ends, 0).max(), 1.0)
 
 
-def vertical_planes(state):
-    s, found = state['s_est'], []
+def vertical_planes(state, rays=None):
+    s, found, height = state['s_est'], [], walls.levels(state)[2]
     for group in walls.plane_groups(state['planes'], s):
         k = 'xyz'.index(group[0]['axis']); run, offset = 2 - k, group[0]['offset']
         low, high = np.min([p['bbox'][0] for p in group], 0) * s, np.max([p['bbox'][1] for p in group], 0) * s
         if high[1] - low[1] < 0.4 or high[run] - low[run] < 0.3: continue
         a, b = np.zeros(2), np.zeros(2); a[k // 2], b[k // 2], a[run // 2], b[run // 2] = offset * s, offset * s, low[run], high[run]
-        found.append({'id': group[0]['id'], 'a': a, 'b': b, 'n': int(sum(p['n'] for p in group)), 'planes': [p['id'] for p in group if abs(p['offset'] - offset) * s <= walls.ASSOC_M]})
+        found.append({'id': group[0]['id'], 'a': a, 'b': b, 'n': int(sum(p['n'] for p in group)), 'planes': [p['id'] for p in group if abs(p['offset'] - offset) * s <= walls.ASSOC_M],
+                      'meuble': walls.see_through(rays, k, offset * s, low[run], high[run], height) >= walls.SEE_SHARE})
     return found
-
-
-def levels(state):
-    height, flat = (lambda p: p['offset'] * state['s_est']), [p for p in state['planes'] if p['axis'] == 'y']
-    floor = max((p for p in flat if abs(height(p)) < walls.FLOOR_M), key=lambda p: p['n'], default=None)
-    ceiling = max((p for p in flat if height(p) > walls.CEILING_M), key=lambda p: p['n'], default=None)
-    return floor and floor['id'], ceiling and ceiling['id'], ceiling and float(height(ceiling))
 
 
 def lined(a, b, **extra):
@@ -276,13 +288,19 @@ def match(drawn, photo, f, shift):
             for b in range(1, len(planes) + 1):
                 s = score(groups[a - 1], planes[b - 1]); options = [(best[a - 1, b], 'skip'), (best[a, b - 1], 'left')] + [(best[a - 1, b - 1] + s, 'take')] * (s > 0)
                 best[a, b], move[a, b] = max(options, key=lambda o: o[0])
-        a, b = len(groups), len(planes)
+        a, b, chosen = len(groups), len(planes), []
         while a and b:
-            step = move[a, b]
-            if step == 'take':
-                for i in groups[a - 1]: pairs[i] = (abs(drawn[i]['pos'] - f * photo[planes[b - 1]]['pos'] - shift[ax]), planes[b - 1])
-            a, b = a - (step != 'left'), b - (step != 'skip')
-    return pairs
+            if move[a, b] == 'take': chosen.insert(0, [a - 1, b - 1])
+            a, b = a - (move[a, b] != 'left'), b - (move[a, b] != 'skip')
+        for n, (g, _) in enumerate(chosen):
+            low, high, out = chosen[n - 1][1] if n else -1, chosen[n + 1][1] if n + 1 < len(chosen) else len(planes), drawn[groups[g][0]].get('out', 0.0)
+            chosen[n][1] = max((r for r in range(low + 1, high) if score(groups[g], planes[r]) > 0), key=lambda r: (out * photo[planes[r]]['pos'], r == chosen[n][1]))
+        for g, r in chosen:
+            for i in groups[g]: pairs[i] = (abs(drawn[i]['pos'] - f * photo[planes[r]]['pos'] - shift[ax]), planes[r])
+    placed = {i: (drawn[i], f * photo[j]['pos'] + shift[drawn[i]['ax']]) for i, (_, j) in pairs.items()}
+    beyond = lambda p: any(w['ax'] != p['ax'] and w['lo'] - 0.3 < f * p['pos'] + shift[p['ax']] < w['hi'] + 0.3
+                           and min((f * p[end] + shift[w['ax']] - y) * w.get('out', 0.0) for end in ('lo', 'hi')) > 0.05 for w, y in placed.values())
+    return {i: pair for i, pair in pairs.items() if not beyond(photo[pair[1]])}
 
 def search(drawn, planes, turns, cameras, traced):
     found = []
@@ -324,14 +342,16 @@ def refine(drawn, photo, f, shift):
 def fit(ctx, plan, turn=None):
     project = ctx.require_project(); source = photo_source(project)
     if not source: raise ValueError('calage : aucune photo positionnée')
-    _, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state); L0, c0 = np.array(pose['L']), np.array(pose['c'])
-    planes = vertical_planes(state); ring = plan['walls']; drawn_px = np.array([w['a'] for w in ring], float)
-    if len(planes) < 2: raise ValueError('calage : moins de 2 surfaces verticales sur les photos (densifie le nuage)')
+    meta, state, cache = photos.photo_state(project, source, compute=False); pose = photos.raw_pose(state); L0, c0 = np.array(pose['L']), np.array(pose['c']); model = photos.load_model(cache)
+    planes = vertical_planes(state, walls.sight(state, model, walls.point_tracks(cache, meta.get('model', '0')))); ring = plan['walls']; drawn_px = np.array([w['a'] for w in ring], float)
+    if sum(not p['meuble'] for p in planes) < 2: raise ValueError('calage : moins de 2 surfaces verticales sur les photos (densifie le nuage)')
     ends = np.array([p for q in planes for p in (q['a'], q['b'])]); k0 = float(np.sqrt(np.prod(np.ptp(ends, 0).clip(0.5)) / np.prod(np.ptp(drawn_px, 0).clip(1.0))))
     forward, _ = frame(plan, k0); traced = [{'id': w['name'], 'a': forward(w['a']), 'b': forward(w['b'])} for w in ring]
-    drawn = [x for w in traced if (x := lined(w['a'], w['b'], name=w['id'])) is not None]
-    cameras = (photos.camera_centers(photos.load_model(cache)) @ L0.T + c0)[:, [0, 2]]
-    best = search(drawn, planes, [int(turn)] if turn is not None else range(4), cameras, traced)
+    normal = lambda w: np.eye(2)[int(abs(w['b'][0] - w['a'][0]) > abs(w['b'][1] - w['a'][1]))]
+    outward = lambda w: 1.0 if walls.inside_share(((w['a'] + w['b']) / 2 + 0.05 * normal(w))[None], traced) < 0.5 else -1.0
+    drawn = [x for w in traced if (x := lined(w['a'], w['b'], name=w['id'], out=outward(w))) is not None]
+    cameras = (photos.camera_centers(model) @ L0.T + c0)[:, [0, 2]]
+    best = search(drawn, [p for p in planes if not p['meuble']], [int(turn)] if turn is not None else range(4), cameras, traced)
     if not best: raise ValueError('calage impossible : aucun mur du dessin ne correspond aux surfaces des photos')
     _, quarter, f, shift, photo = best; f, shift, paired = refine(drawn, photo, f, shift)
     angle, k = quarter * np.pi / 2, k0 / f; T = walls.turn_matrix(angle); moved = np.array(shift) / f; forward, back = frame(plan, k)
@@ -340,9 +360,16 @@ def fit(ctx, plan, turn=None):
         name, plane = drawn[i]['name'], photo[j]['plane']
         pairs.setdefault(name, []).append(plane['id']); planes_of.setdefault(name, []).extend(plane['planes']); gaps[name] = round(gap / f * 100, 1)
     owner = {plane: name for name, ids in pairs.items() for plane in ids}; placed = lambda p: walls.rotate(np.array(p, float), angle) + moved
+
+    def front(q):
+        p = lined(walls.rotate(q['a'], angle), walls.rotate(q['b'], angle))
+        if not q['meuble'] or p is None: return None
+        y, lo, hi = f * p['pos'] + shift[p['ax']], f * p['lo'] + shift[1 - p['ax']], f * p['hi'] + shift[1 - p['ax']]
+        return min(((abs(w['pos'] - y), w['name']) for w in drawn if w['ax'] == p['ax'] and abs(w['pos'] - y) < walls.FRONT_MAX_M * f and (y - w['pos']) * w['out'] < 0
+                    and min(hi, w['hi']) > max(lo, w['lo'])), default=(0, None))[1]
     return {'k': k, 'turn': quarter, 'angle': angle, 'shift': moved.tolist(), 'pose': {'L': (T @ L0).tolist(), 'c': (T @ c0 + np.array([moved[0], 0.0, moved[1]])).tolist()},
-            'pairs': pairs, 'planes': planes_of, 'gaps': gaps, 'height': levels(state)[2],
-            'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
+            'pairs': pairs, 'planes': planes_of, 'gaps': gaps, 'height': walls.levels(state)[2],
+            'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'meuble': q['meuble'], 'front': front(q), 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
 
 ANCHORS = {'bas': 'a_sol', 'haut': 'a_haut', 'arete': 'a'}
 
@@ -469,8 +496,8 @@ def check_openings(ctx, plan, progress=None):
     progress(1.0, 'Ouvertures vérifiées')
     return found
 
-def stair_region(plan, stair, forward, margin=0.3):
-    u0, v0, u1, v1 = stair['box']; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))])
+def stair_region(box, forward, margin=0.3):
+    u0, v0, u1, v1 = box; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))])
     return corners.min(0) - margin, corners.max(0) + margin
 
 
@@ -518,6 +545,15 @@ def add_measured_stairs(project, steps):
         created.append(riser)
     return created
 
+def squared(points):
+    points = np.array(points, float)
+    for e in range(len(points)):
+        f = (e + 1) % len(points); d = np.abs(points[f] - points[e])
+        for axis in (0, 1):
+            if d[axis] < AXIS_TOL * d[1 - axis]: points[e][axis] = points[f][axis] = (points[e][axis] + points[f][axis]) / 2
+    return points
+
+
 def touching(plan, point, size):
     p, best = np.array(point, float), None
     for w in plan['walls']:
@@ -526,11 +562,57 @@ def touching(plan, point, size):
     return best
 
 
-def add_stairs(project, stair, forward):
-    u0, v0, u1, v1 = stair['box']; corners = np.array([forward(p) for p in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))]); low, size = corners.min(0), np.ptp(corners, 0)
-    run = 'x' if size[0] >= size[1] else 'z'; side = 'z' if run == 'x' else 'x'; count = max(2, int(round(size.max() / STEP_M)))
-    return components.add(project, 'escalier', free_ids(project, 'escalier', 1)[0], {'axe': run, run: float(low['xz'.index(run)]), side: float(low['xz'.index(side)]),
-                                                                                    'g': float(size.max() / count), 'l': float(size.min()), 'n': count, 'source': 'plan'}, 'Escalier')['id']
+def drawn_flights(ctx, plan, stair):
+    found = sketch(ctx); again = read(found['path'], plan.get('legend'), ai=False)['stairs'] if found and os.path.exists(found['path']) else []
+    return min(again, key=lambda s: np.abs(np.subtract(s['box'], stair['box'])).sum(), default={'flights': [stair['box']]})['flights']
+
+
+def measured_slope(points, low, high, run, top):
+    inner = np.all((points[:, [0, 2]] > low + STAIR_EDGE_M) & (points[:, [0, 2]] < high - STAIR_EDGE_M), 1) & (points[:, 1] > 0.1) & (points[:, 1] < top - 0.1)
+    q = points[inner][:, [2 * run, 1]]; best, rng = (0, None), np.random.default_rng(0)
+    if len(q) < SLOPE_POINTS: return None
+    for i, j in rng.integers(0, len(q), (2000, 2)):
+        d = q[j] - q[i]
+        if abs(d[0]) < 0.2 or not SLOPES[0] < abs(d[1] / d[0]) < SLOPES[1]: continue
+        slope = d[1] / d[0]; count = int((np.abs(q[:, 1] - q[i, 1] - slope * (q[:, 0] - q[i, 0])) < SLOPE_TOL_M).sum())
+        if count > best[0]: best = (count, (float(slope), float(q[i, 0] - q[i, 1] / slope)))
+    return best[1] if best[0] >= max(SLOPE_POINTS, 0.25 * len(q)) else None
+
+
+def anchors(project, ids):
+    values, loaded, found = current_values(project), components.load(project), []
+    for comp in (loaded[i] for i in ids):
+        a, b = wall_ends(comp, values)
+        found += [(axis, a[axis], sorted((a[1 - axis], b[1 - axis])), str(comp['expressions'][f"start_{'xz'[axis]}"])) for axis in (0, 1) if abs(a[axis] - b[axis]) < 1e-6]
+
+    def tied(axis, value, low, high):
+        gap, at, expr = min(((abs(p - value), p, e) for ax, p, (lo, hi), e in found if ax == axis and min(hi, high) > max(lo, low)), default=(np.inf, 0.0, ''))
+        return f"({expr}) {'+' if value >= at else '-'} {abs(value - at):.4f}" if gap < TIE_M else float(value)
+    return tied
+
+
+def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axis, value, low, high: float(value)):
+    rects = [(c.min(0), c.max(0)) for c in (np.array([forward(p) for p in ((u0, v0), (u1, v1))]) for u0, v0, u1, v1 in boxes)]
+    (low, high), rest = rects[0], rects[1:2]; run = int(np.argmax(high - low)); side = 1 - run; total = (height or 2.5) + SLAB_M
+    count = max(2, round(total / RISE_M)); rise = total / count; middle = (low + high) / 2
+    slope = measured_slope(cloud, low, high, run, height or 2.5) if cloud is not None else None
+    sens = float(np.sign(slope[0])) if slope else float(np.sign(np.mean(rest[0], 0)[run] - middle[run]) or 1.0) if rest else 1.0
+    start = float(np.clip(slope[1], low[run] - 0.3, high[run] + 0.3)) if slope else float((low if sens > 0 else high)[run])
+    length = abs((high if sens > 0 else low)[run] - start); other = float(np.ptp(rest[0], 0)[side]) if rest else 0.0
+    going = rise / abs(slope[0]) if slope else (length + other) / count; first = min(max(2, round(length / going)), count - 2) if rest else count
+    axis, created = (lambda i: 'xz'[i]), []
+
+    def flight(r, sens, at, edge, width, n, going, y0):
+        made = components.add(project, 'escalier', free_ids(project, 'escalier', 1)[0], {'axe': axis(r), axis(r): at, axis(1 - r): edge, 'g': float(going), 'l': float(width),
+                              'n': int(n), 'r': float(rise), 'sens': sens, 'y0': float(y0), 'source': 'plan'}, 'Escalier (suite)' if created else 'Escalier')['id']
+        project.db.executemany('update obs set value=? where id=?', [(float(going), f'comp:{made}:{made}_g'), (float(rise), f'comp:{made}:{made}_r')]); project.db.commit()
+        return made
+    at = tied(run, start, low[side], high[side]); moved = lambda d: f"({at}) {'+' if d >= 0 else '-'} {abs(d):.4f}" if isinstance(at, str) else float(start + d)
+    created.append(flight(run, sens, at, tied(side, low[side], low[run], high[run]), high[side] - low[side], first + bool(rest), going, 0.0))
+    if rest:
+        (a, b), turn = rest[0], float(np.sign(np.mean(rest[0], 0)[side] - middle[side]) or 1.0); begin = (high if turn > 0 else low)[side]
+        created.append(flight(side, turn, tied(side, begin, a[run], b[run]), moved(a[run] - start), b[run] - a[run], count - first, abs((b if turn > 0 else a)[side] - begin) / max(1, count - first), first * rise))
+    return created
 
 
 @rpc('plan.apply')
@@ -545,7 +627,7 @@ def apply(ctx, plan):
         if os.path.exists(model := os.path.join(project.folder, 'model.json')): os.remove(model)
         photos.invalidate(project, source)
     forward, _ = frame(plan, fitted['k'] if fitted else plan.get('k') or default_k(plan)); ring = plan['walls']
-    ids = trace(ctx, [forward(w['a']).tolist() for w in ring], True, sigma=PRIOR_M, source='plan', names=[w['name'] for w in ring], height=fitted and fitted.get('height'))['created']
+    ids = trace(ctx, squared([forward(w['a']) for w in ring]).tolist(), True, sigma=PRIOR_M, source='plan', names=[w['name'] for w in ring], height=fitted and fitted.get('height'))['created']
     named, size, contacts = dict(zip([w['name'] for w in ring], ids)), float(np.ptp(np.array([w['a'] for w in ring], float), 0).max()), []
     for extra in (e for e in plan.get('extra', []) if e.get('name')):
         ends = {end: touching(plan, extra[end], size) for end in 'ab'}
@@ -563,7 +645,7 @@ def apply(ctx, plan):
     if fitted:
         walls.set_pose(ctx, project, source, fitted['angle'], 1.0, np.array(fitted['shift'])); loaded = components.load(project); named = dict(zip([w['name'] for w in ring], ids))
         line = lambda comp: photos.LINE + ';'.join(str(comp['expressions'][f'{end}_{axis}']) for end in ('start', 'end') for axis in 'xz')
-        floor, ceiling, _ = levels(state); pairs = sorted(n for n in fitted.get('planes', {}) if n in named)
+        floor, ceiling, _ = walls.levels(state); pairs = sorted(n for n in fitted.get('planes', {}) if n in named)
         rows = [(source, plane, line(loaded[named[n]]), None) for n in pairs for plane in fitted['planes'][n]] + [(source, floor, '0', None)] * bool(floor) + [(source, ceiling, f'{ids[0]}_h', None)] * bool(ceiling)
         db.executemany('insert or replace into photos_assoc values (?,?,?,?)', rows)
         clicks = [(source, c['image'], float(c['u']), float(c['v']), f"{ids[p['corner']]}:{ANCHORS[c.get('kind', 'arete')]}") for p in plan.get('points', []) if not p.get('skipped') and len(p.get('clicks', [])) == 2 for c in p['clicks']]
@@ -579,6 +661,8 @@ def apply(ctx, plan):
         if group: masters.setdefault(group, made)
     stairs = []
     for stair in (s for s in plan.get('stairs', []) if s.get('kept', True)):
-        steps = measured_steps(cache, fitted['pose'], *stair_region(plan, stair, forward, 0.1), fitted.get('height') or 2.5) if fitted else []
-        stairs += add_measured_stairs(project, steps) if len(steps) >= 4 else [add_stairs(project, stair, forward)]
+        steps = measured_steps(cache, fitted['pose'], *stair_region(stair['box'], forward, 0.1), fitted.get('height') or 2.5) if fitted else []
+        cloud = photos.load_model(cache)['P'] @ np.array(fitted['pose']['L']).T + fitted['pose']['c'] if fitted else None
+        stairs += add_measured_stairs(project, steps) if len(steps) >= 4 else add_stairs(project, stair.get('flights') or drawn_flights(ctx, plan, stair), forward, cloud,
+                                                                                         fitted and fitted.get('height'), anchors(project, ids))
     return {'walls': ids, 'pairs': pairs, 'openings': placed, 'stairs': stairs, 'clicks': len(clicks)}

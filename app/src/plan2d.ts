@@ -1,7 +1,7 @@
 export type DrawnWall = { name: string; a: number[]; b: number[] };
 export type Opening = { type: string; wall: string; t0: number; t1: number; seen?: boolean | null; same?: boolean };
 export type Fit = { k: number; turn: number | null; pose: { L: number[][]; c: number[] }; pairs: Record<string, string[]>; gaps: Record<string, number>; height: number | null;
-  photo: { id: string; sure: boolean; wall: string | null; a: number[]; b: number[] }[] };
+  photo: { id: string; sure: boolean; meuble?: boolean; front?: string | null; wall: string | null; a: number[]; b: number[] }[] };
 export type Corner = { corner: number; clicks: { image: string; u: number; v: number; kind?: string }[]; skipped?: boolean };
 export type Plan = { image: number[]; angle: number; walls: DrawnWall[]; extra: { a: number[]; b: number[]; inside: boolean; name?: string }[]; openings: Opening[];
   stairs: { box: number[]; kept?: boolean }[]; legend: { color: string; hex: string; count: number; role: string }[]; ai?: boolean; fit?: Fit | null; points?: Corner[]; refused?: Record<string, string[]> };
@@ -36,7 +36,7 @@ export function drawPlan(plan: Plan, options: Options = {}) {
     const [u0, v0, u1, v1] = stair.box;
     svg.append(node("rect", { x: u0, y: v0, width: u1 - u0, height: v1 - v0 }, "stairs"));
   }
-  if (options.photo) for (const w of plan.fit?.photo ?? []) svg.append(node("line", { x1: w.a[0], y1: w.a[1], x2: w.b[0], y2: w.b[1] }, `photo ${w.wall ? "" : "loose"}`));
+  if (options.photo) for (const w of plan.fit?.photo ?? []) svg.append(node("line", { x1: w.a[0], y1: w.a[1], x2: w.b[0], y2: w.b[1] }, `photo ${w.wall ? "" : "loose"} ${w.meuble ? "meuble" : ""}`));
   for (const wall of plan.walls) {
     const line = node("line", { x1: wall.a[0], y1: wall.a[1], x2: wall.b[0], y2: wall.b[1] }, `wall ${wall.name === options.selected ? "selected" : ""} ${options.photo && !paired.has(wall.name) ? "dim" : ""}`);
     if (options.onWall) line.addEventListener("click", () => options.onWall!(wall.name));

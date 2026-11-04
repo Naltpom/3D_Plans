@@ -164,7 +164,7 @@ async function rename(name: string) {
   if (p.walls.some((w) => w.name === next) || p.extra.some((e) => e.name === next)) throw new Error(`Le nom ${next} est déjà pris.`);
   const swap = (n?: string) => n === selected ? next : n;
   const fit = p.fit && { ...p.fit, pairs: Object.fromEntries(Object.entries(p.fit.pairs).map(([k, v]) => [swap(k)!, v])), gaps: Object.fromEntries(Object.entries(p.fit.gaps).map(([k, v]) => [swap(k)!, v])),
-    photo: p.fit.photo.map((w) => ({ ...w, wall: w.wall && swap(w.wall)! })) };
+    photo: p.fit.photo.map((w) => ({ ...w, wall: w.wall && swap(w.wall)!, front: w.front && swap(w.front)! })) };
   renaming = false;
   selected = next;
   await savePlan({ ...p, walls: p.walls.map((w) => ({ ...w, name: swap(w.name)! })), openings: p.openings.map((o) => ({ ...o, wall: swap(o.wall)! })), fit });
@@ -379,18 +379,19 @@ function readStep() {
 
 function fitStep() {
   const p = plan(), f = p.fit, choose = (name: string) => { selected = selected === name ? "" : name; h.render(); };
-  show(false, section("Superposition · bleu : ton dessin, vert : murs vus sur les photos, pointillés : surfaces photo non appariées", drawPlan(p, { photo: true, selected, onWall: choose })));
+  show(false, section("Superposition · bleu : ton dessin, vert : murs vus sur les photos, pointillés : surfaces photo non appariées, orange : meubles écartés", drawPlan(p, { photo: true, selected, onWall: choose })));
   if (!h.source()) return [h.intro("Pas de photos", "La forme du dessin est gardée telle quelle. Une mesure au mètre (étape 5) fixera la taille."), h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Portes et fenêtres", () => goSub(4)))];
   if (!f) return [h.intro("Caler sur les photos", "Le dessin donne l'ordre des murs, les photos leur position exacte."),
     h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Caler sur les photos", () => h.act("Calage sur les photos", () => fit())))];
   const names = Object.keys(f.pairs), worst = Math.max(0, ...Object.values(f.gaps));
   const ends = p.walls.map((w) => metres(p, f.k, w.a)), extent = [0, 1].map((i) => Math.max(...ends.map((e) => e[i])) - Math.min(...ends.map((e) => e[i])));
   const list = el("div", "walls");
-  list.append(...p.walls.map((w) => tagged(w.name, f.pairs[w.name] ? "vu sur les photos" : "pas vu sur les photos : forme du dessin (± 30 cm)",
+  const ahead = (name: string) => f.photo.some((q) => q.meuble && q.front === name) ? "meuble devant écarté" : "";
+  list.append(...p.walls.map((w) => tagged(w.name, f.pairs[w.name] ? ["vu sur les photos", ahead(w.name)].filter(Boolean).join(" · ") : `pas vu sur les photos : ${ahead(w.name) ? `${ahead(w.name)}, ` : ""}forme du dessin (± 30 cm)`,
     f.pairs[w.name] ? `écart ${number(f.gaps[w.name], 0)} cm` : `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))));
   const turn = (q: number) => () => run(() => h.act("Calage sur les photos", () => fit(((f.turn ?? 0) + q) % 4)));
   return [h.intro(`Calé sur ${plural(names.length, "mur")} vu${names.length > 1 ? "s" : ""} en photo`,
-    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Écart le plus grand entre ton dessin et les photos : ${number(worst, 0)} cm. Les murs non vus gardent les proportions du dessin.`),
+    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Écart le plus grand entre ton dessin et les photos : ${number(worst, 0)} cm.${f.photo.some((q) => q.meuble) ? " Les surfaces où l'on voit la pièce au-dessus sont des meubles : je ne cale aucun mur dessus." : ""} Les murs non vus gardent les proportions du dessin.`),
   list, h.card("Le sens ne colle pas ?", "Si la pièce est presque symétrique, le calage peut se tromper de sens.", button("Tourner de 90°", "", "Autre sens", turn(1)), button("Tourner de 180°", "", "Autre sens", turn(2))),
   h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Points à préciser", () => goSub(3)))];
 }

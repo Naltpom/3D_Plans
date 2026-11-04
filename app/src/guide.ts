@@ -14,7 +14,7 @@ type Guide = { type: string; step: number; done: number[]; measures?: number; re
 type Info = { name: string; path: string; guide?: Guide };
 type Source = { id: string; path: string; kind: string; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type End = "a" | "b";
-type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; component: string | null; angles: Record<End, string | null> };
+type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; meuble?: boolean; component: string | null; angles: Record<End, string | null> };
 type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number };
 type Candidate = { label: string; expr: string; sigma: number };
 type Reading = { walls: { points: number[][]; closed: boolean; length: number }[]; openings: { type: string; point: number[] }[];
@@ -303,7 +303,7 @@ function photoWalls() {
   const same = done.length === checked.size && done.every((w) => checked.has(w.id));
   const validate = button("Valider les murs", same && done.length ? "" : "primary", "Créer les murs cochés", () => run(() => act("Création des murs", validateWalls)));
   validate.disabled = axes.size < 2;
-  const doubt = walls().find((w) => !w.sure && !w.component);
+  const doubt = walls().find((w) => !w.sure && !w.component && !w.meuble);
   const densify = button(`Densifier (≈ ${proposal.densify_min} min)`, "", "Optionnel : nuage dense, plus de murs trouvés", () => run(densifyCloud));
   const angles = missing();
   return [

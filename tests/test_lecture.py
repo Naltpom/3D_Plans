@@ -41,7 +41,7 @@ def test_apply_replaces_and_undo(tmp_path, monkeypatch):
         done = rpc.call(ctx, 'plan.apply', {'plan': read}); rpc.call(ctx, 'update', {})
         loaded = components.load(ctx.project)
         assert sorted(c['label'] for c in loaded.values() if c['type'] == 'mur') == [f'Mur {n}' for n in 'ABCDEFG'] and len(done['openings']) == 2 and done['stairs']
-        assert len(loaded) == 10
+        assert len(loaded) == 10 and all(c['options'].get('axe') for c in loaded.values() if c['type'] == 'mur' and c['label'] != 'Mur G')
     width = np.ptp([p for w in plan.walls(ctx) for p in (w['a'], w['b'])], 0)
     assert width == pytest.approx([6.0, 5.0 / 6.0 * 6.0], rel=0.05)
     assert rpc.call(ctx, 'history.undo', {})['done'] and len(components.load(ctx.project)) == 10
@@ -96,6 +96,56 @@ def test_order_constrained_match():
     assert {drawn[i]['name']: j for i, (_, j) in pairs.items()} == {'A': 0, 'B': 1, 'C': 2}
     crossed = [lecture.lined(np.array([x, 0.0]), np.array([x, 2.0])) for x in (0.0, 0.5, 0.6)]
     assert sorted(j for _, j in lecture.match(drawn[:2], crossed, 1.0, [0.0, 0.0]).values()) == [0, 2]
+
+
+def test_match_outermost_and_beyond():
+    drawn = [lecture.lined(np.array([0.2, 0.0]), np.array([0.2, 3.0]), name='D', out=-1.0), lecture.lined(np.array([0.0, 0.0]), np.array([3.0, 0.0]), name='A', out=-1.0),
+             lecture.lined(np.array([2.0, 0.0]), np.array([2.0, 3.0]), name='B', out=1.0)]
+    photo = [lecture.lined(np.array([x, 0.0]), np.array([x, 3.0])) for x in (0.0, 0.3, 2.0)] + [lecture.lined(np.array([0.0, 0.0]), np.array([3.0, 0.0])),
+                                                                                                lecture.lined(np.array([1.5, -0.9]), np.array([1.5, -0.4]))]
+    assert {drawn[i]['name']: j for i, (_, j) in lecture.match(drawn, photo, 1.0, [0.0, 0.0]).items()} == {'D': 0, 'A': 3, 'B': 2}
+    inner = [{**drawn[1], 'lo': 0.0, 'hi': 1.0}, lecture.lined(np.array([1.4, 0.0]), np.array([1.4, 1.0]), name='K', out=-1.0)]
+    assert {inner[i]['name'] for i in lecture.match(inner, photo, 1.0, [0.0, 0.0])} == {'A'}
+
+
+def test_fit_skips_furniture(tmp_path, monkeypatch):
+    import json, os, test_walls
+    from plans3d import Project, photos
+    w, h, d = test_walls.ROOM; face = test_walls.face
+    room = lambda rng: test_walls.to_photo(np.vstack([face(rng, 2500, [0, 0, 0], [w, 0, d]), face(rng, 2500, [0, h, 0], [w, h, d]), face(rng, 2500, [0, 0, 0], [0, h, d]),
+                                                      face(rng, 2500, [w, 0, 0], [w, h, d]), face(rng, 2500, [0, 0, 0], [w, h, 0]), face(rng, 2500, [0, 0, d], [w, h, d]),
+                                                      face(rng, 2500, [0.6, 0, 0.4], [0.6, 1.9, 4.6])]))
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {}); monkeypatch.setattr(test_walls, 'room', room)
+    folder = str(tmp_path / 'p'); project = Project(folder); ctx = Ctx(project=project)
+    photos.add(ctx, [os.path.join(folder, 'a.jpg')]); cache = photos.source_cache(project, 'photos')[1]; os.makedirs(cache); built = test_walls.model(np.random.default_rng(3))
+    test_walls.write_tracks(cache, built)
+    np.savez(os.path.join(cache, 'model.npz'), **built)
+    with open(os.path.join(cache, 'meta.json'), 'w') as f: json.dump({'root': folder, 'registered': 6, 'model': '0'}, f)
+    photos.extract(ctx)
+    image = Image.new('RGB', (700, 800), 'white'); ImageDraw.Draw(image).rectangle([160, 100, 500, 600], outline=(0, 0, 0), width=5); image.save(tmp_path / 'plan.png')
+    rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {}); fit = rpc.call(ctx, 'plan.fit', {'plan': read})
+    furniture = {q['id'] for q in fit['photo'] if q['meuble']}
+    assert len(furniture) == 1 and sorted(fit['pairs']) == list('ABCD') and not furniture & {i for ids in fit['pairs'].values() for i in ids}
+
+
+def test_stair_flights_and_slope(tmp_path, monkeypatch):
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    image = Image.new('RGB', (800, 700), 'white'); pen = ImageDraw.Draw(image); pen.rectangle([100, 100, 700, 600], outline=(0, 0, 0), width=5)
+    pen.rectangle([600, 120, 690, 420], outline=(128, 128, 128), width=2); pen.rectangle([520, 340, 600, 420], outline=(128, 128, 128), width=2)
+    for k in range(1, 9): pen.line([(600, 120 + 30 * k), (690, 120 + 30 * k)], fill=(128, 128, 128), width=2)
+    image.save(tmp_path / 'plan.png'); read = lecture.read(str(tmp_path / 'plan.png'), ai=False)
+    (main, turn), = [s['flights'] for s in read['stairs']]
+    assert main == pytest.approx([600, 120, 690, 420], abs=6) and turn == pytest.approx([520, 340, 600, 420], abs=6)
+    rng = np.random.default_rng(1); z = rng.uniform(1.0, 3.4, 400)
+    steps = np.stack([rng.uniform(0.25, 0.75, 400), 0.8 * (z - 1.0) + rng.normal(0, 0.01, 400), z], 1); clutter = rng.uniform([0, 0, 0], [1, 2.4, 4], (150, 3))
+    slope, start = lecture.measured_slope(np.vstack([steps, clutter]), np.array([0.1, 0.9]), np.array([0.9, 3.6]), 1, 2.5)
+    assert slope == pytest.approx(0.8, abs=0.05) and start == pytest.approx(1.0, abs=0.05)
+    assert lecture.measured_slope(np.vstack([steps, clutter]) * [1, 1, -1], np.array([0.1, -3.6]), np.array([0.9, -0.9]), 1, 2.5)[0] < 0
+    ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'}); rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')})
+    made = rpc.call(ctx, 'plan.apply', {'plan': {**read, 'stairs': [{'box': read['stairs'][0]['box']}]}})['stairs']; loaded = components.load(ctx.project)
+    first, second = (loaded[i] for i in made)
+    assert first['options']['axe'] == 'z' and second['options']['axe'] == 'x' and second['options']['y0'] > 1.5 and second['options']['sens'] == -1.0
+    assert 'murB' in str(first['expressions']['x']) and ctx.project.update().converged
 
 
 def test_identical_openings_share_size(tmp_path, monkeypatch):

@@ -404,6 +404,7 @@ body.page #step .actions { margin-top: 0; }
 .plan .extra.kept { stroke: var(--accent); stroke-dasharray: none; }
 .plan .photo { stroke: #9ccf7a; stroke-width: 3; vector-effect: non-scaling-stroke; }
 .plan .photo.loose { stroke: #6b7380; stroke-dasharray: 5 5; }
+.plan .photo.meuble { stroke: #e8953a; stroke-dasharray: 2 4; }
 .plan .corner { fill: var(--point); }
 .plan.scale :is(.wall, .opening, .stairs) { cursor: pointer; }
 .plan.scale .stairs { fill: #8b95a31a; }
