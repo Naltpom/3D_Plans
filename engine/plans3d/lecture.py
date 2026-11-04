@@ -20,7 +20,7 @@ OPENING_ASK = ('Is there {kind} in this photo, roughly in the middle? Answer onl
 KIND_ASK = {'porte': 'a door', 'fenetre': 'a window', 'porte_fenetre': 'a french window (a glazed door reaching the floor)'}
 KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fenetre', 'french door': 'porte_fenetre', 'glass door': 'porte_fenetre'}
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
-FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M, SAME_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5, 0.6
+FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M, TOUCH_M, SAME_M, GOING_SIGMA_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5, 0.05, 0.6, 0.01
 CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 AXIS_TOL = np.tan(np.radians(2))
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
@@ -586,13 +586,19 @@ def anchors(project, ids):
         a, b = wall_ends(comp, values)
         found += [(axis, a[axis], sorted((a[1 - axis], b[1 - axis])), str(comp['expressions'][f"start_{'xz'[axis]}"])) for axis in (0, 1) if abs(a[axis] - b[axis]) < 1e-6]
 
-    def tied(axis, value, low, high):
+    def tied(axis, value, low, high, touching=False):
         gap, at, expr = min(((abs(p - value), p, e) for ax, p, (lo, hi), e in found if ax == axis and min(hi, high) > max(lo, low)), default=(np.inf, 0.0, ''))
-        return f"({expr}) {'+' if value >= at else '-'} {abs(value - at):.4f}" if gap < TIE_M else float(value)
+        if gap < TOUCH_M: return lambda sid: f"({expr}) {'+' if value >= at else '-'} {abs(value - at):.4f}"
+        if touching or gap >= TIE_M: return None if touching else lambda sid: float(value)
+
+        def free(sid):
+            name = f"{sid}_d{'xz'[axis]}"; project.add_param(name, float(value - at), 'xz'[axis], f"Escalier {sid} — écart au mur ({'xz'[axis]})")
+            return f"({expr}) + {name}"
+        return free
     return tied
 
 
-def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axis, value, low, high: float(value)):
+def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axis, value, low, high, touching=False: None if touching else lambda sid: float(value)):
     rects = [(c.min(0), c.max(0)) for c in (np.array([forward(p) for p in ((u0, v0), (u1, v1))]) for u0, v0, u1, v1 in boxes)]
     (low, high), rest = rects[0], rects[1:2]; run = int(np.argmax(high - low)); side = 1 - run; total = (height or 2.5) + SLAB_M
     count = max(2, round(total / RISE_M)); rise = total / count; middle = (low + high) / 2
@@ -602,17 +608,21 @@ def add_stairs(project, boxes, forward, cloud=None, height=None, tied=lambda axi
     length = abs((high if sens > 0 else low)[run] - start); other = float(np.ptp(rest[0], 0)[side]) if rest else 0.0
     going = rise / abs(slope[0]) if slope else (length + other) / count; first = min(max(2, round(length / going)), count - 2) if rest else count
     axis, created = (lambda i: 'xz'[i]), []
+    shift = lambda base, d: f"({base}) {'+' if d >= 0 else '-'} {abs(d):.4f}" if isinstance(base, str) else float(base + d)
 
     def flight(r, sens, at, edge, width, n, going, y0):
-        made = components.add(project, 'escalier', free_ids(project, 'escalier', 1)[0], {'axe': axis(r), axis(r): at, axis(1 - r): edge, 'g': float(going), 'l': float(width),
-                              'n': int(n), 'r': float(rise), 'sens': sens, 'y0': float(y0), 'source': 'plan'}, 'Escalier (suite)' if created else 'Escalier')['id']
-        project.db.executemany('update obs set value=? where id=?', [(float(going), f'comp:{made}:{made}_g'), (float(rise), f'comp:{made}:{made}_r')]); project.db.commit()
-        return made
-    at = tied(run, start, low[side], high[side]); moved = lambda d: f"({at}) {'+' if d >= 0 else '-'} {abs(d):.4f}" if isinstance(at, str) else float(start + d)
-    created.append(flight(run, sens, at, tied(side, low[side], low[run], high[run]), high[side] - low[side], first + bool(rest), going, 0.0))
+        made = free_ids(project, 'escalier', 1)[0]; at, edge = at(made), edge(made)
+        components.add(project, 'escalier', made, {'axe': axis(r), axis(r): at, axis(1 - r): edge, 'g': float(going), 'l': float(width), 'n': int(n), 'r': float(rise), 'sens': sens,
+                                                   'y0': float(y0), 'source': 'plan'}, 'Escalier (suite)' if created else 'Escalier')
+        project.db.executemany('update obs set value=?, sigma=coalesce(?, sigma) where id=?', [(float(going), slope and GOING_SIGMA_M, f'comp:{made}:{made}_g'), (float(rise), None, f'comp:{made}:{made}_r')]); project.db.commit()
+        created.append(made); return at, edge
+    wall = tied(side, high[side], low[run], high[run], True)
+    at, edge = flight(run, sens, tied(run, start, low[side], high[side]), (lambda sid: f"({wall(sid)}) - {sid}_l") if wall else tied(side, low[side], low[run], high[run]),
+                      high[side] - low[side], first + bool(rest), going, 0.0)
     if rest:
-        (a, b), turn = rest[0], float(np.sign(np.mean(rest[0], 0)[side] - middle[side]) or 1.0); begin = (high if turn > 0 else low)[side]
-        created.append(flight(side, turn, tied(side, begin, a[run], b[run]), moved(a[run] - start), b[run] - a[run], count - first, abs((b if turn > 0 else a)[side] - begin) / max(1, count - first), first * rise))
+        (a, b), turn = rest[0], float(np.sign(np.mean(rest[0], 0)[side] - middle[side]) or 1.0)
+        begin = edge if turn < 0 else f"({edge}) + {created[0]}_l" if isinstance(edge, str) else float(high[side])
+        flight(side, turn, lambda sid: begin, lambda sid: shift(at, a[run] - start), b[run] - a[run], count - first, abs((b if turn > 0 else a)[side] - (high if turn > 0 else low)[side]) / max(1, count - first), first * rise)
     return created
 
 

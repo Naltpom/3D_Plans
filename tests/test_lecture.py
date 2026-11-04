@@ -165,6 +165,24 @@ def test_stair_flights_and_slope(tmp_path, monkeypatch):
     assert 'murB' in str(first['expressions']['x']) and ctx.project.update().converged
 
 
+def test_stair_measure_moves_stair(tmp_path, monkeypatch):
+    from plans3d import mesures
+    from plans3d.rpc import cotes_add
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    image = Image.new('RGB', (800, 700), 'white'); pen = ImageDraw.Draw(image); pen.rectangle([100, 100, 700, 600], outline=(0, 0, 0), width=5)
+    pen.rectangle([450, 150, 540, 450], outline=(128, 128, 128), width=2)
+    for k in range(1, 9): pen.line([(450, 150 + 33 * k), (540, 150 + 33 * k)], fill=(128, 128, 128), width=2)
+    image.save(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'}); rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')})
+    read = rpc.call(ctx, 'plan.read_drawing', {}); stair, = rpc.call(ctx, 'plan.apply', {'plan': read})['stairs']; project = ctx.project
+    assert f'{stair}_dz' in components.load(project)[stair]['params'] and 'murA' in str(components.load(project)[stair]['expressions']['z'])
+    values = plan.current_values(project); items = {c['key']: c for c in mesures.candidates(mesures.elements(project, values))}
+    for key, extra in (('entre.murA.murC', 0.0), (f'marche_p.{stair}', 0.0), (f'entre.{stair}.murC', 0.5)):
+        cotes_add(ctx, key, items[key]['expr'], (components.evaluate(components.Expr.of(items[key]['expr']), values) + extra) * 100)
+    before = components.evaluate(components.load(project)[stair]['expressions']['z'], values); result = project.update()
+    after = components.evaluate(components.load(project)[stair]['expressions']['z'], plan.current_values(project))
+    assert result.converged and not result.contradictions and abs(after - before) > 0.35
+
+
 def test_identical_openings_share_size(tmp_path, monkeypatch):
     monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
     drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
