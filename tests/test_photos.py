@@ -1,4 +1,4 @@
-import json, os, struct, sys
+import json, os, sys
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -239,21 +239,9 @@ def test_source_status_in_sources_list(tmp_path, monkeypatch):
     assert {k: status()[k] for k in ('registered', 'state')} == {'registered': 2, 'state': 'calculé'} and 'error' not in status()
 
 
-def write_snapshot(folder, model, names):
-    os.makedirs(folder)
-    with open(os.path.join(folder, 'images.bin'), 'wb') as f:
-        f.write(struct.pack('<Q', len(names)))
-        for i, name in enumerate(names): f.write(struct.pack('<I7dI', i + 1, *model['q'][i], *model['t'][i], 1) + name.encode() + b'\0' + struct.pack('<Q', 2) + bytes(48))
-    with open(os.path.join(folder, 'points3D.bin'), 'wb') as f:
-        f.write(struct.pack('<Q', len(model['P'])))
-        for i, p in enumerate(model['P']): f.write(struct.pack('<Q3d3BdQ', i, *p, 200, 100, 50, 0.5, 2) + bytes(16))
-
-
-def test_live_snapshot(tmp_path):
-    model = synthetic_model(np.random.default_rng(0)); names = [f'{i:05d}.jpg' for i in range(len(model['q']))]; write_snapshot(str(tmp_path / 's'), model, names)
-    read = photos.read_snapshot(str(tmp_path / 's'), limit=2000)
-    assert read[0] == names and len(read[3]) <= 2000 and np.allclose(read[1], model['q']) and set(read[4].ravel()) == {200, 100, 50}
-    view = photos.live_view(*read, {name: i for i, name in enumerate(names)}, list(model['orientation']))
+def test_live_view(tmp_path):
+    model = synthetic_model(np.random.default_rng(0)); names = [f'{i:05d}.jpg' for i in range(len(model['q']))]
+    view = photos.live_view(names, model['q'], model['t'], model['P'][:2000], np.full((2000, 3), 200, np.uint8), {name: i for i, name in enumerate(names)}, list(model['orientation']))
     centers = np.array([c['center'] for c in view['cameras']]); points = np.array(view['points']).reshape(-1, 3)
     assert [c['index'] for c in view['cameras']] == list(range(len(names))) and len(view['colors']) == points.size
     assert np.ptp(centers[:, 1]) < 0.05 and np.median(centers[:, 1]) == pytest.approx(photos.CAMERA_HEIGHT_M)
@@ -272,14 +260,3 @@ def test_stop_and_thumbnail(tmp_path, monkeypatch):
     def stopped(arguments, *rest, **options): raise photos.Stopped('calcul arrêté')
     monkeypatch.setattr(photos, 'run_colmap', stopped)
     assert photos.extract(ctx) == {'stopped': True} and photos.source_status(project, 'photos', photos.source_cache(project, 'photos')[0])['state'] == 'à calculer'
-
-
-def test_mapper_watch_counts_registered_frames(tmp_path):
-    import sqlite3
-    database = str(tmp_path / 'db.db'); connection = sqlite3.connect(database); connection.execute('create table images(image_id integer, name text)')
-    connection.executemany('insert into images values (?,?)', [(i + 1, f'{i:05d}.jpg') for i in range(6)]); connection.commit(); connection.close()
-    (tmp_path / 'snap').mkdir(); events = []
-    watch = photos.mapper_watch(database, str(tmp_path / 'snap'), {f'{i:05d}.jpg': i for i in range(6)}, [1] * 6, lambda **event: events.append(event.get('placed')))
-    for line in ['Registering initial image pair #3 and #1', 'Registering image #2 (num_reg_frames=2)', 'Registering image #5 (num_reg_frames=3)',
-                 'Registering image #6 (num_reg_frames=3)', 'Registering initial image pair #4 and #5']: watch(line)
-    assert events == [[2, 0], [2, 0, 1], [2, 0, 1, 4], [2, 0, 1, 5]]

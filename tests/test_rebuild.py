@@ -68,3 +68,17 @@ def test_stopped_restart_keeps_old(old, monkeypatch):
     assert photos.extract(ctx, fresh=True) == {'stopped': True}
     assert not os.path.exists(cache + photos.FRESH) and np.allclose(photos.load_model(cache)['P'], model['P']) and os.path.exists(os.path.join(cache, 'images'))
     assert project.db.execute('select count(*) from photos_assoc').fetchone()[0] == 1
+
+
+def test_global_mapper_live_view(tmp_path, monkeypatch):
+    ctx, project, model, _ = setup(tmp_path); linked = [f'{i:05d}.jpg' for i in range(len(model['names']))]; events, steps = [], []
+    paths = [os.path.join(str(tmp_path), str(name)) for name in model['names']]
+
+    def colmap(arguments, log, progress, *rest, watch=None, **options):
+        if arguments[0] == 'global_mapper':
+            output = arguments[arguments.index('--output_path') + 1]; open(os.path.join(output, 'project.ini'), 'w').close(); write_text(os.path.join(output, '0'), model, linked)
+            for stage in photos.STAGES: watch(f'I global_mapper.cc] === Running {stage} ===\n')
+    monkeypatch.setattr(photos, 'run_colmap', colmap)
+    meta = photos.reconstruct(paths, str(tmp_path / 'cache'), lambda fraction, message: steps.append((round(fraction, 2), message)), events.append)
+    assert meta['registered'] == len(linked) and meta['model'] == '0' and [s for s in steps if s[1] == 'poses'] == sorted(set(s for s in steps if s[1] == 'poses'))
+    assert events[-2]['placed'] == list(range(len(linked))) and len(events[-1]['cameras']) == len(linked) and events[-1]['points']

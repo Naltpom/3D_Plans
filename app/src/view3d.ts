@@ -337,7 +337,10 @@ function stroll(now: number) {
   controls.target.add(step);
 }
 window.addEventListener("keydown", (event) => { if (event.key === "Shift") held.add("shift"); });
+let pace = 0;
+export const throttle = (ms: number) => { pace = ms; };
 renderer.setAnimationLoop((now) => {
+  if (now - last < pace) return;
   stroll(now);
   hooks.frame();
 });

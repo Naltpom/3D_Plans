@@ -261,7 +261,7 @@ function progress(method: string, fraction: number, message: string, started: nu
   return [list, bar, el("small", "", `${known ? `${Math.round(fraction * 100)} % · ` : ""}${Math.floor(seconds / 60)} min ${String(Math.floor(seconds % 60)).padStart(2, "0")} s${known ? ` · encore ≈ ${left} min` : ""}`)];
 }
 
-const minutes = (source: Source) => Math.max(2, Math.round((source.photos ?? 0) * 2.5 / 60));
+const minutes = (source: Source) => Math.max(1, Math.round((source.photos ?? 0) * 0.7 / 60));
 
 function cta(title: string, text: string, className: string, action: () => unknown) {
   const b = button("", `cta ${className}`, title, () => run(action));

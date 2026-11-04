@@ -1,5 +1,6 @@
-import base64, hashlib, io, json, os, re, shutil, sqlite3, struct, subprocess, time
+import base64, hashlib, io, json, os, re, shutil, sqlite3, subprocess, time
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
@@ -13,11 +14,10 @@ PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, 
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 RUNNING, STOPPED, PROCESSES = set(), set(), {}
-LIVE_POINTS, LIVE_PERIOD_S = 50000, 2.0
+LIVE_POINTS, FEATURES, IMAGE_SIZE, PAIR_INLIERS = 50000, 8192, 2400, 15
 ALIGN_M, FRESH = 0.05, '.new'
-POINT_RECORD = struct.Struct('<Q3d3BdQ')
 PROCESSED = re.compile(r'Name:\s+(\S+)')
-REGISTERED = re.compile(r'Registering (?:initial image pair #(\d+) and #(\d+)|image #(\d+) \(num_reg_frames=(\d+)\))')
+STAGES = ('rotation averaging', 'track establishment', 'global positioning', 'iterative bundle adjustment', 'iterative retriangulation')
 LINE = 'ligne:'
 PROGRESS_PATTERN = re.compile(r'\[(\d+)/(\d+)\]|view (\d+) / (\d+)|num_reg_frames=(\d+)')
 SCHEMA = '''create table if not exists photos_assoc(source text, plane_id text, expr text, sigma real, primary key(source, plane_id));
@@ -90,19 +90,6 @@ def thumbnail(path, size=96):
         return ''
 
 
-def read_snapshot(folder, limit=LIVE_POINTS):
-    data = open(os.path.join(folder, 'images.bin'), 'rb').read(); count, = struct.unpack_from('<Q', data); at = 8; names, poses = [], []
-    for _ in range(count):
-        poses.append(struct.unpack_from('<I7dI', data, at)[1:8]); end = data.index(b'\0', at + 64); names.append(data[at + 64:end].decode())
-        at = end + 9 + 24 * struct.unpack_from('<Q', data, end + 1)[0]
-    data = open(os.path.join(folder, 'points3D.bin'), 'rb').read(); count, = struct.unpack_from('<Q', data); at = 8; step = -(-count // limit); kept = []
-    for _ in range(count):
-        point_id, x, y, z, r, g, b, _, track = POINT_RECORD.unpack_from(data, at); at += POINT_RECORD.size + 8 * track
-        if point_id % step == 0: kept.append((x, y, z, r, g, b))
-    poses, kept = np.array(poses, float).reshape(-1, 7), np.array(kept, float).reshape(-1, 6)
-    return names, poses[:, :4], poses[:, 4:], kept[:, :3], kept[:, 3:].astype(np.uint8)
-
-
 def live_view(names, q, t, points, colors, position, orientation):
     model = {'q': q, 't': t, 'orientation': np.array([orientation[position[name]] for name in names])}; centers = camera_centers(model)
     up = unit(image_ups(model).sum(0)); x = unit(np.cross(up, [1, 0, 0] if abs(up[0]) < .9 else [0, 1, 0])); frame = np.array([x, up, np.cross(x, up)])
@@ -113,26 +100,6 @@ def live_view(names, q, t, points, colors, position, orientation):
     return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist(),
             'cameras': [{'index': position[name], 'center': center.round(3).tolist(), 'R': rotation.round(4).tolist()}
                         for name, center, rotation in zip(names, (centers @ frame.T + shift) * scale, rotations)]}
-
-
-def mapper_watch(database, folder, position, orientation, live):
-    connection = sqlite3.connect(database); ids = {image_id: position[name] for image_id, name in connection.execute('select image_id, name from images') if name in position}
-    connection.close(); state = {'next': 0.0, 'seen': '', 'placed': [], 'best': [], 'shown': 0}
-
-    def watch(line):
-        if found := REGISTERED.search(line):
-            state['placed'] = state['placed'][:int(found[4])] + [ids[int(found[3])]] if found[3] else [ids[int(found[1])], ids[int(found[2])]]
-            if len(state['placed']) >= len(state['best']): state['best'] = state['placed']; live(placed=state['best'])
-        if time.monotonic() < state['next']: return
-        state['next'] = time.monotonic() + LIVE_PERIOD_S
-        ready = [name for name in sorted(os.listdir(folder)) if os.path.exists(path := os.path.join(folder, name, 'points3D.bin')) and time.time() - os.path.getmtime(path) > 0.5]
-        if not ready or ready[-1] == state['seen']: return
-        for name in ready[:-1]: shutil.rmtree(os.path.join(folder, name), ignore_errors=True)
-        state['seen'] = ready[-1]
-        try: snapshot = read_snapshot(os.path.join(folder, ready[-1]))
-        except (OSError, ValueError, struct.error): return
-        if len(snapshot[0]) >= state['shown'] - 2: state['shown'] = max(state['shown'], len(snapshot[0])); live(**live_view(*snapshot, position, orientation))
-    return watch
 
 
 def neighbour_pairs(count, window=10):
@@ -151,7 +118,7 @@ def reduced_database(database, reduced, keep=1024):
     target.commit(); target.close()
 
 
-def verified_pairs(database, names, min_inliers=6):
+def verified_pairs(database, names, min_inliers=PAIR_INLIERS):
     connection = sqlite3.connect(database); index = {image_id: names.index(name) for image_id, name in connection.execute('select image_id, name from images')}
     pairs = {tuple(sorted((index[pair // 2147483647], index[pair % 2147483647])))
              for pair, in connection.execute('select pair_id from two_view_geometries where rows >= ?', (min_inliers,))}
@@ -195,8 +162,10 @@ def reconstruct(paths, cache, progress=no_progress, emit=None):
     root = os.path.commonpath([os.path.dirname(path) for path in paths]); originals = [os.path.relpath(path, root).replace('\\', '/') for path in paths]
     image_dir, names = link_images(paths, in_cache('images')); database = in_cache('database.db'); position = {name: i for i, name in enumerate(names)}
     live = lambda **event: (emit or no_progress)({'event': 'photos.live', 'total': count, **event}); live()
+    pool = ThreadPoolExecutor(2)
+
     def extracted(line):
-        if (found := PROCESSED.search(line)) and found[1] in position: live(index=position[found[1]], thumb=thumbnail(os.path.join(image_dir, found[1])))
+        if (found := PROCESSED.search(line)) and found[1] in position: pool.submit(lambda name=found[1]: live(index=position[name], thumb=thumbnail(os.path.join(image_dir, name))))
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
     shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse'), exist_ok=True); write_lines(in_cache('images.txt'), names)
@@ -205,33 +174,35 @@ def reconstruct(paths, cache, progress=no_progress, emit=None):
         (width, height), = sizes; focal = (exif[paths[0]]['focal35'] or 26.0) * np.hypot(width, height) / 43.267
         camera = ['--ImageReader.single_camera', '1', '--ImageReader.camera_params', f'{focal:.1f},{focal:.1f},{width / 2},{height / 2},0,0,0,0']
     run_colmap(['feature_extractor', '--database_path', database, '--image_path', image_dir, '--image_list_path', in_cache('images.txt'),
-                '--ImageReader.camera_model', 'OPENCV', *camera, '--FeatureExtraction.use_gpu', '1', '--SiftExtraction.max_num_features', '16384'],
+                '--ImageReader.camera_model', 'OPENCV', *camera, '--FeatureExtraction.use_gpu', '1', '--SiftExtraction.max_num_features', str(FEATURES), '--FeatureExtraction.max_image_size', str(IMAGE_SIZE)],
                in_cache('features.log'), progress, 0, .1, 'points clés', count, watch=extracted)
-    lap('features_s')
+    pool.shutdown(wait=False); lap('features_s')
     if count * (count - 1) // 2 <= 1000:
         matcher, pair_count = ['exhaustive_matcher'], count * (count - 1) // 2
     else:
         reduced_database(database, in_cache('pre.db'))
-        run_colmap(['exhaustive_matcher', '--database_path', in_cache('pre.db'), '--FeatureMatching.use_gpu', '1', '--TwoViewGeometry.min_num_inliers', '6'],
+        run_colmap(['exhaustive_matcher', '--database_path', in_cache('pre.db'), '--FeatureMatching.use_gpu', '1', '--TwoViewGeometry.min_num_inliers', str(PAIR_INLIERS)],
                    in_cache('prematching.log'), progress, .1, .13, 'pré-appariement')
         pairs = sorted(verified_pairs(in_cache('pre.db'), names) | neighbour_pairs(count)); os.remove(in_cache('pre.db')); pair_count = len(pairs)
         write_lines(in_cache('pairs.txt'), [f'{names[i]} {names[j]}' for i, j in pairs]); lap('prematching_s')
         matcher = ['matches_importer', '--match_list_path', in_cache('pairs.txt'), '--match_type', 'pairs']
     live(pairs=pair_count); run_colmap([*matcher, '--database_path', database, '--FeatureMatching.use_gpu', '1'], in_cache('matching.log'), progress, .13, .3, 'appariement')
-    lap('matching_s'); snapshots = in_cache('snapshots'); shutil.rmtree(snapshots, ignore_errors=True); os.makedirs(snapshots)
-    try:
-        run_colmap(['mapper', '--database_path', database, '--image_path', image_dir, '--output_path', in_cache('sparse'), '--Mapper.snapshot_path', snapshots,
-                    '--Mapper.snapshot_frames_freq', str(max(2, count // 30))], in_cache('mapper.log'), progress, .3, .95, 'poses', count,
-                   watch=mapper_watch(database, snapshots, position, [exif[path]['orientation'] for path in paths], live))
-    finally:
-        shutil.rmtree(snapshots, ignore_errors=True)
+    lap('matching_s')
+
+    def stages(line):
+        for i, stage in enumerate(STAGES):
+            if f'=== Running {stage}' in line: progress(.3 + .65 * (i + 1) / (len(STAGES) + 1), 'poses'); live(stage=i)
+    run_colmap(['global_mapper', '--database_path', database, '--image_path', image_dir, '--output_path', in_cache('sparse')], in_cache('mapper.log'), progress, .3, .95, 'poses', watch=stages)
     lap('mapper_s'); models = []
-    for name in os.listdir(in_cache('sparse')):
+    for name in [name for name in os.listdir(in_cache('sparse')) if os.path.isdir(in_cache('sparse', name))]:
+        run_colmap(['point_filtering', '--input_path', in_cache('sparse', name), '--output_path', in_cache('sparse', name)], in_cache('filter.log'), progress, .95, .95, 'lecture')
         run_colmap(['model_converter', '--input_path', in_cache('sparse', name), '--output_path', in_cache('sparse', name), '--output_type', 'TXT'],
                    in_cache('convert.log'), progress, .95, .95, 'lecture')
         models.append((*read_text_model(in_cache('sparse', name)), name))
     if not models: raise ValueError('COLMAP : aucune photo positionnée')
     model, reprojection_px, best = max(models, key=lambda item: len(item[0]['names'])); index = {name: i for i, name in enumerate(names)}
+    kept = np.random.default_rng(0).permutation(len(model['P']))[:LIVE_POINTS]; orientation = [exif[path]['orientation'] for path in paths]
+    live(placed=[position[name] for name in model['names']]); live(**live_view(model['names'], model['q'], model['t'], model['P'][kept], model['C'][kept], position, orientation))
     model['orientation'] = np.array([exif[paths[index[name]]]['orientation'] for name in model['names']])
     model['names'] = np.array([originals[index[name]] for name in model['names']]); np.savez(in_cache('model.npz'), **model)
     meta = {'root': root, 'image_dir': image_dir, 'photos': count, 'registered': len(model['names']), 'models': len(models), 'model': best, 'points': len(model['P']),
@@ -487,6 +458,17 @@ def realign(old, fresh, progress):
     return error
 
 
+def swap(cache, fresh):
+    old, moved = f'{cache}.old{time.time_ns()}', []; os.makedirs(old)
+    try:
+        for name in os.listdir(cache): os.replace(os.path.join(cache, name), os.path.join(old, name)); moved.append(name)
+    except OSError:
+        for name in moved: os.replace(os.path.join(old, name), os.path.join(cache, name))
+        raise
+    for name in os.listdir(fresh): os.replace(os.path.join(fresh, name), os.path.join(cache, name))
+    shutil.rmtree(old, ignore_errors=True); shutil.rmtree(fresh, ignore_errors=True)
+
+
 def rebuild(project, source, progress=no_progress, emit=None):
     manifest, cache = source_cache(project, source); fresh, key = cache + FRESH, (os.path.abspath(project.folder), source)
     if not os.path.exists(os.path.join(cache, 'meta.json')): return {}
@@ -499,12 +481,12 @@ def rebuild(project, source, progress=no_progress, emit=None):
         try: error = realign(cache, fresh, progress)
         except Stopped: raise
         except (OSError, ValueError, KeyError): error = None
+        swap(cache, fresh)
     except BaseException:
         if os.path.isdir(linked) and not os.path.exists(images): os.replace(linked, images)
         shutil.rmtree(fresh, ignore_errors=True); raise
     finally:
         RUNNING.discard(key)
-    old = f'{cache}.old{time.time_ns()}'; os.replace(cache, old); os.replace(fresh, cache); shutil.rmtree(old, ignore_errors=True)
     meta = {**load_json(os.path.join(cache, 'meta.json')), 'image_dir': os.path.join(cache, 'images')}; json.dump(meta, open(os.path.join(cache, 'meta.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
     if error is None:
         project.db.execute('delete from photos_assoc where source=?', (source,)); project.db.execute('delete from photos_axes where source=?', (source,)); project.db.commit()

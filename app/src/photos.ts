@@ -1,7 +1,7 @@
 import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
 import { refreshSources } from "./projects";
-import { refit, showCameras, showCloud, type Shape } from "./view3d";
+import { refit, showCameras, showCloud, throttle, type Shape } from "./view3d";
 import { cloudMode, showColors } from "./seances";
 
 type UV = [number, number];
@@ -23,6 +23,7 @@ const BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7
 const STEPS = 8;
 const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification" };
 const TASK_KEY = "plans3d.photoTask";
+const STAGES = ["orientation des photos", "pistes de points", "position des photos", "ajustement", "retriangulation"];
 
 const svg = (tag: string, attributes: Record<string, string | number> = {}) => {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -85,7 +86,7 @@ let stripKey = "";
 let sequence = 0;
 let timer = 0;
 let guided: Guided | null = null;
-let live: { total: number; done: Set<number>; placed: number[]; pairs: number; points: number } | null = null;
+let live: { total: number; done: Set<number>; placed: number[]; pairs: number; points: number; stage: number } | null = null;
 let touched = false;
 
 const cameras = () => located?.cameras ?? [];
@@ -160,7 +161,7 @@ canvas.addEventListener("wheel", () => { touched = true; }, { passive: true });
 function showLive(event: Record<string, unknown>) {
   const total = Number(event.total);
   if (!live || live.total !== total) {
-    live = { total, done: new Set(), placed: [], pairs: 0, points: 0 };
+    live = { total, done: new Set(), placed: [], pairs: 0, points: 0, stage: -1 };
     liveTiles.replaceChildren(...Array.from({ length: total }, () => el("span")));
   }
   if (typeof event.index === "number") {
@@ -168,6 +169,7 @@ function showLive(event: Record<string, unknown>) {
     if (event.thumb) liveTiles.children[event.index]?.replaceChildren(Object.assign(el("img"), { src: String(event.thumb), alt: "" }));
   }
   if (event.pairs) live.pairs = Number(event.pairs);
+  if (typeof event.stage === "number") live.stage = event.stage;
   if (Array.isArray(event.placed)) live.placed = event.placed as number[];
   if (Array.isArray(event.points)) {
     const shown = event.cameras as { index: number; center: [number, number, number]; R: number[][] }[];
@@ -184,7 +186,8 @@ function renderLive() {
   if (!live || liveBox.hidden) return;
   const placing = /poses|lecture|plans/.test(step.message), matching = step.message.includes("appariement");
   const placed = new Set(live.placed), fresh = new Set(live.placed.slice(-3));
-  const [count, label] = placing ? [`${live.placed.length} / ${live.total}`, "photos placées"] : matching && live.pairs ? [number(live.pairs, 0), "paires de photos à comparer"]
+  const [count, label] = placing && !live.placed.length && live.stage >= 0 ? [`${live.stage + 1} / ${STAGES.length}`, `placement global : ${STAGES[live.stage]}`]
+    : placing ? [`${live.placed.length} / ${live.total}`, "photos placées"] : matching && live.pairs ? [number(live.pairs, 0), "paires de photos à comparer"]
     : matching ? [String(live.total), "photos à mettre en relation"] : [`${live.done.size} / ${live.total}`, "photos analysées"];
   liveCount.replaceChildren(el("b", "", count), el("span", "", label), ...placing && live.points ? [el("small", "", `${number(live.points, 0)} points`)] : []);
   [...liveTiles.children].forEach((tile, i) => { tile.className = fresh.has(i) ? "fresh" : placed.has(i) ? "placed" : live!.done.has(i) ? "done" : ""; });
@@ -530,6 +533,7 @@ export async function photoTask(method: string, params: Record<string, unknown> 
     showCameras([], null);
   }
   localStorage.setItem(TASK_KEY, JSON.stringify({ method, project: projectPath, source }));
+  throttle(method === "tools.install" ? 0 : 100);
   render();
   showStep();
   const ticking = window.setInterval(showStep, 1000);
@@ -542,6 +546,7 @@ export async function photoTask(method: string, params: Record<string, unknown> 
     throw error;
   } finally {
     clearInterval(ticking);
+    throttle(0);
     localStorage.removeItem(TASK_KEY);
     busy = "";
     for (const bar of bars) bar.hidden = true;
