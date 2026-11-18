@@ -464,7 +464,7 @@ def length_row(ring, i): (Ma, ca), (Mb, cb) = ring['ends'][i]; return ring['u'][
 
 
 def wall_points(cloud, a, b, n, out, top, meubles, explained):
-    flat, h, top = cloud[:, [0, 2]], cloud[:, 1], top or 2.4; length = np.hypot(*(b - a)); u = (b - a) / max(length, 1e-9); t, s = (flat - a) @ u, (flat - a) @ n; margin = min(0.1, 0.25 * length)
+    flat, h, top = cloud[:, [0, 2]], cloud[:, 1], top or 2.4; length = np.hypot(*(b - a)); u = (b - a) / max(length, 1e-9); t, s = (flat - a) @ u, (flat - a) @ n; margin = 0.02 if length < 1.0 else min(0.1, 0.25 * length)
     keep = (t > margin) & (t < length - margin) & (np.abs(s) < BAND_M) & (h > 0.1) & (h < top - 0.1)
     for p, q in meubles + explained:
         d = q - p; w = np.clip((flat - p) @ d / max(d @ d, 1e-9), 0, 1); keep &= np.hypot(*(flat - p - w[:, None] * d).T) > 0.06

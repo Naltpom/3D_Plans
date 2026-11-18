@@ -237,6 +237,11 @@ def test_wall_by_wall_solve_and_symmetry():
     assert size['D'] == pytest.approx(size['F'], abs=0.01) and abs(abs(d[0]) - abs(d[1])) < 0.01
 
 
+def test_short_wall_found_on_corner_edge():
+    cloud = np.column_stack([np.full(60, 0.04), np.linspace(0.2, 2.0, 60), np.full(60, 0.24)])
+    assert lecture.wall_points(cloud, np.zeros(2), np.array([0.6, 0.0]), np.array([0.0, 1.0]), -1.0, 2.4, [], []) == (pytest.approx(0.24), 60)
+
+
 def test_reread_keeps_names_and_clicks(tmp_path):
     quarter_turn(tmp_path / 'plan.png'); new = lecture.read(str(tmp_path / 'plan.png'), ai=False)
     old = {**new, 'walls': [{**w, 'name': n} for w, n in zip(new['walls'][:6], 'PQRSTU')] + [{'name': 'V', 'a': new['walls'][6]['a'], 'b': new['walls'][7]['b']}], 'extra': [],
