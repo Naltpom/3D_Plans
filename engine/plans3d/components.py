@@ -199,21 +199,34 @@ def stairs_layout(comp):
     return run_axis, OTHER_AXIS[run_axis], int(options['n']), float(options.get('sens', 1)), float(options.get('cote', 1))
 
 
+def winders(count):
+    angles = np.radians(np.linspace(0, 90, count + 1)); edge = lambda t: (1.0, float(np.tan(t))) if t <= np.pi / 4 + 1e-9 else (float(1 / np.tan(t)), 1.0)
+    return [[(0.0, 0.0), edge(a), *[(1.0, 1.0)] * int(a < np.pi / 4 < b), edge(b)] for a, b in zip(angles, angles[1:])]
+
+
 def stairs_anchors(comp):
     expr = comp['expressions']; run_axis, side_axis, count, run_sign, side_sign = stairs_layout(comp)
     def riser(k): return {run_axis: expr[run_axis] + run_sign * (k - 1) * expr['g']}
-    anchors = {'depart': riser(1), 'arrivee': riser(count), 'cote': {side_axis: expr[side_axis]},
+    anchors = {'depart': riser(1), 'arrivee': riser(count - int(comp['options'].get('tournant', 0))), 'cote': {side_axis: expr[side_axis]},
                'cote_ext': {side_axis: expr[side_axis] + side_sign * expr['l']}, 'bas': {'y': expr['y0']}, 'haut': {'y': expr['y0'] + count * expr['r']}}
     for k in range(1, count + 1): anchors.update({f'contremarche_{k}': riser(k), f'marche_{k}': {'y': expr['y0'] + k * expr['r']}})
     return anchors
 
 
 def stairs_geometry(comp, evaluate_expr, walls):
-    val = evaluated(comp, evaluate_expr); run_axis, side_axis, count, run_sign, side_sign = stairs_layout(comp); steps = []
+    val = evaluated(comp, evaluate_expr); run_axis, side_axis, count, run_sign, side_sign = stairs_layout(comp); steps, turns = [], int(comp['options'].get('tournant', 0))
     for k in range(1, count):
         center = {run_axis: val[run_axis] + run_sign * (k - 0.5) * val['g'], side_axis: val[side_axis] + side_sign * val['l'] / 2, 'y': val['y0'] + k * val['r'] / 2}
         size = {run_axis: val['g'], side_axis: val['l'], 'y': k * val['r']}
-        steps.append(box_shape([center[a] for a in 'xyz'], [size[a] for a in 'xyz'], part=k))
+        if k < count - turns: steps.append(box_shape([center[a] for a in 'xyz'], [size[a] for a in 'xyz'], part=k))
+    if not turns: return steps
+    tour = float(comp['options'].get('tour', 1)); low, high = val[side_axis], val[side_axis] + side_sign * val['l']; pivot_side = max(low, high) if tour > 0 else min(low, high)
+    start = val[run_axis] + run_sign * (count - 1 - turns) * val['g']; l = val['l']
+    for k, polygon in enumerate(winders(turns), count - turns):
+        ring = [{run_axis: start + run_sign * v * l, side_axis: pivot_side - tour * u * l} for u, v in polygon]; n = len(ring); top = val['y0'] + k * val['r']
+        vertices = [[p['x'], y, p['z']] for y in (val['y0'], top) for p in ring]
+        faces = [f for i in range(n) for f in ([i, (i + 1) % n, n + i], [(i + 1) % n, n + (i + 1) % n, n + i])] + [[o, o + i, o + i + 1] for o in (0, n) for i in range(1, n - 1)]
+        steps.append({'kind': 'mesh', 'vertices': vertices, 'faces': faces, 'part': k})
     return steps
 
 
@@ -293,7 +306,8 @@ TYPES = {
     'sol': ComponentType('Sol', build_level, polygon_anchors, polygon_geometry, '#b0a18a', LEVEL_OPTIONS),
     'plafond': ComponentType('Plafond', build_level, polygon_anchors, polygon_geometry, '#f2f2f2', LEVEL_OPTIONS),
     'escalier': ComponentType('Escalier droit', build_stairs, stairs_anchors, stairs_geometry, '#a0522d',
-                              {'axe': "montée selon 'x' ou 'z'", 'sens': 'sens de montée (1 ou -1)', 'cote': 'côté de la largeur (1 ou -1)', 'n': 'nombre de hauteurs'}),
+                              {'axe': "montée selon 'x' ou 'z'", 'sens': 'sens de montée (1 ou -1)', 'cote': 'côté de la largeur (1 ou -1)', 'n': 'nombre de hauteurs',
+                               'tournant': 'marches tournantes en haut (quart tournant)', 'tour': "côté du virage selon l'autre axe (1 ou -1)"}),
     'boite': ComponentType('Boîte', build_box, box_anchors, box_geometry, None, {'nature': f'texte libre ({", ".join(BOX_NATURES)}, …)'}),
     'parcelle': ComponentType('Zone extérieure', build_parcel, polygon_anchors, polygon_geometry, '#6aa84f', {'sommets': 'sommets [[x, z], …]'}),
     'toit': ComponentType('Toit', build_roof, roof_anchors, roof_geometry, '#b5523b', {}),

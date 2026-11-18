@@ -10,7 +10,7 @@ type Param = { name: string; init: number; label: string; axis?: string };
 type Model = { params: Record<string, { value: number; sigma: number | null }> };
 
 const OPTIONS: Record<string, string[]> = {
-  mur: ["sens"], porte: ["mur", "sens"], fenetre: ["mur"], porte_fenetre: ["mur", "sens"], escalier: ["axe", "sens", "cote", "n"], boite: ["nature"],
+  mur: ["sens"], porte: ["mur", "sens"], fenetre: ["mur"], porte_fenetre: ["mur", "sens"], escalier: ["axe", "sens", "cote", "n", "tournant", "tour"], boite: ["nature"],
 };
 const CHOICES: Record<string, string[]> = { axe: ["x", "z"], sens: ["1", "-1"], cote: ["1", "-1"] };
 const OPENING: [string, string][] = [["", "deux côtés (non précisé)"], ["interieur_gauche", "vers l'intérieur, charnières côté a"], ["interieur_droite", "vers l'intérieur, charnières côté b"],

@@ -400,7 +400,9 @@ body.page #step .actions { margin-top: 0; }
 #version { font-family: var(--mono); }
 #pick-tools { position: absolute; top: 56px; left: 50%; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; transform: translateX(-50%); border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; }
 #plan2d { position: absolute; inset: 0; z-index: 2; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); background: var(--view); }
-#plan2d > section { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
+#plan2d > section { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--border); }
+#plan2d .backdrop { position: absolute; right: 14px; bottom: 12px; display: flex; flex-direction: row; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+#plan2d .backdrop input { width: auto; min-height: 0; margin: 0; accent-color: var(--accent); }
 #plan2d > section:last-child { border-right: 0; }
 #plan2d .caption { padding: 12px 16px; font-size: 12px; color: var(--muted); }
 #plan2d .caption b { color: var(--text); font-weight: 500; }
@@ -419,7 +421,12 @@ body.page #step .actions { margin-top: 0; }
 .plan .opening.selected { stroke: var(--point); }
 .plan .stairs { fill: none; stroke: #8b95a3; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .plan .extra { stroke: var(--warn); stroke-width: 3; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
-.plan .extra.kept { stroke: var(--accent); stroke-dasharray: none; }
+.plan .extra.kept { stroke: var(--accent); stroke-dasharray: none; stroke-width: 4; cursor: pointer; }
+.plan .extra.kept.dim { stroke: #4a5260; }
+.plan .extra.kept.selected { stroke: var(--point); stroke-width: 6; }
+.plan .cloud { fill: #9aa6b6; fill-opacity: 0.7; pointer-events: none; }
+.plan .stairs.tread { stroke-width: 1.5; }
+.plan .rule { stroke: var(--warn); stroke-opacity: 0.55; stroke-width: 10; stroke-linecap: round; vector-effect: non-scaling-stroke; pointer-events: none; }
 .plan .photo { stroke: #9ccf7a; stroke-width: 3; vector-effect: non-scaling-stroke; }
 .plan .photo.loose { stroke: #6b7380; stroke-dasharray: 5 5; }
 .plan .photo.meuble { stroke: #e8953a; stroke-dasharray: 2 4; }

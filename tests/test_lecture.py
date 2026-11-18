@@ -21,12 +21,12 @@ def drawing(path):
 def test_read_drawing(tmp_path):
     drawing(tmp_path / 'plan.png'); read = lecture.read(str(tmp_path / 'plan.png'), ai=False)
     names = [w['name'] for w in read['walls']]
-    assert names == list('ABCDEF') and read['walls'][0]['a'][1] < 110 and read['walls'][0]['b'][0] > 590
+    assert names == list('ABCDEFG') and read['walls'][0]['a'][1] < 110 and read['walls'][0]['b'][0] > 590
     for w in read['walls']:
         d = np.subtract(w['b'], w['a']) @ np.array([[np.cos(read['angle']), -np.sin(read['angle'])], [np.sin(read['angle']), np.cos(read['angle'])]])
         assert min(abs(d)) < 1e-3 * max(abs(d))
     assert {(o['type'], o['wall']) for o in read['openings']} == {('porte', 'A'), ('porte_fenetre', 'D')}
-    assert len(read['stairs']) == 1 and {e['inside'] for e in read['extra']} == {True, False}
+    assert len(read['stairs']) == 1 and {(e['inside'], e.get('name')) for e in read['extra']} == {(True, 'H'), (False, None)}
     assert {item['color']: item['role'] for item in read['legend']} == {'noir': 'mur', 'gris': 'escalier', 'rouge': 'porte', 'bleu': 'porte_fenetre'}
     ignored = lecture.read(str(tmp_path / 'plan.png'), [{**item, 'role': 'ignorer' if item['color'] == 'rouge' else item['role']} for item in read['legend']], ai=False)
     assert {o['type'] for o in ignored['openings']} == {'porte_fenetre'}
@@ -36,17 +36,16 @@ def test_apply_replaces_and_undo(tmp_path, monkeypatch):
     monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
     drawing(tmp_path / 'plan.png'); ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
     rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')}); read = rpc.call(ctx, 'plan.read_drawing', {})
-    read['extra'] = [{**e, 'name': 'G'} if e['inside'] else e for e in read['extra']]
     for _ in range(2):
         done = rpc.call(ctx, 'plan.apply', {'plan': read}); rpc.call(ctx, 'update', {})
         loaded = components.load(ctx.project)
-        assert sorted(c['label'] for c in loaded.values() if c['type'] == 'mur') == [f'Mur {n}' for n in 'ABCDEFG'] and len(done['openings']) == 2 and done['stairs']
-        assert len(loaded) == 10 and all(c['options'].get('axe') for c in loaded.values() if c['type'] == 'mur' and c['label'] != 'Mur G')
+        assert sorted(c['label'] for c in loaded.values() if c['type'] == 'mur') == [f'Mur {n}' for n in 'ABCDEFGH'] and len(done['openings']) == 2 and done['stairs']
+        assert len(loaded) == 11 and all(c['options'].get('axe') for c in loaded.values() if c['type'] == 'mur')
     width = np.ptp([p for w in plan.walls(ctx) for p in (w['a'], w['b'])], 0)
     assert width == pytest.approx([6.0, 5.0 / 6.0 * 6.0], rel=0.05)
-    assert rpc.call(ctx, 'history.undo', {})['done'] and len(components.load(ctx.project)) == 10
+    assert rpc.call(ctx, 'history.undo', {})['done'] and len(components.load(ctx.project)) == 11
     assert rpc.call(ctx, 'history.undo', {})['done'] and not components.load(ctx.project)
-    assert rpc.call(ctx, 'history.redo', {})['done'] and len(components.load(ctx.project)) == 10
+    assert rpc.call(ctx, 'history.redo', {})['done'] and len(components.load(ctx.project)) == 11
     rpc.call(ctx, 'components.remove', {'id': 'murD'})
     assert 'porte_fenetre1' not in components.load(ctx.project) and ctx.project.update().converged
     rpc.call(ctx, 'project.guide', {'guide': {'step': 4}, 'undo': True}); assert rpc.call(ctx, 'history.undo', {})['done']
@@ -151,8 +150,8 @@ def test_stair_flights_and_slope(tmp_path, monkeypatch):
     pen.rectangle([600, 120, 690, 420], outline=(128, 128, 128), width=2); pen.rectangle([520, 340, 600, 420], outline=(128, 128, 128), width=2)
     for k in range(1, 9): pen.line([(600, 120 + 30 * k), (690, 120 + 30 * k)], fill=(128, 128, 128), width=2)
     image.save(tmp_path / 'plan.png'); read = lecture.read(str(tmp_path / 'plan.png'), ai=False)
-    (main, turn), = [s['flights'] for s in read['stairs']]
-    assert main == pytest.approx([600, 120, 690, 420], abs=6) and turn == pytest.approx([520, 340, 600, 420], abs=6)
+    (main, rest), = [s['flights'] for s in read['stairs']]
+    assert main == pytest.approx([600, 120, 690, 330], abs=6) and rest == pytest.approx([520, 340, 600, 420], abs=6) and read['stairs'][0]['turn']['square'] == pytest.approx([600, 330, 690, 420], abs=6)
     rng = np.random.default_rng(1); z = rng.uniform(1.0, 3.4, 400)
     steps = np.stack([rng.uniform(0.25, 0.75, 400), 0.8 * (z - 1.0) + rng.normal(0, 0.01, 400), z], 1); clutter = rng.uniform([0, 0, 0], [1, 2.4, 4], (150, 3))
     slope, start = lecture.measured_slope(np.vstack([steps, clutter]), np.array([0.1, 0.9]), np.array([0.9, 3.6]), 1, 2.5)
@@ -193,3 +192,56 @@ def test_identical_openings_share_size(tmp_path, monkeypatch):
     assert str(loaded[placed[1]]['expressions']['l']) == f'{placed[0]}_l' and str(loaded[placed[1]]['expressions']['h']) == f'{placed[0]}_h'
     result = ctx.project.update(); widths = sorted((t1 - t0) * 500 / 100 * 6 / 6.02 for t0, t1 in ((door['t0'], door['t1']), (0.62, 0.8)))
     assert result.converged and widths[0] < result.value(f'{placed[0]}_l')[0] < widths[1] + 0.2
+
+
+def quarter_turn(path):
+    image = Image.new('RGB', (760, 700), 'white'); pen = ImageDraw.Draw(image); grey = (128, 128, 128)
+    room = [(100, 100), (600, 100), (600, 600), (200, 600), (200, 570), (130, 500), (100, 500)]
+    pen.line(room + [room[0]], fill=(0, 0, 0), width=5); pen.line([(100, 300), (300, 300)], fill=(0, 0, 0), width=5)
+    pen.rectangle([520, 150, 597, 450], outline=grey, width=2); pen.rectangle([440, 370, 520, 450], outline=grey, width=2)
+    for y in np.linspace(177.5, 370, 8): pen.line([(520, y), (597, y)], fill=grey, width=2)
+    for end in ((597, 403), (597, 450), (553, 450)): pen.line([(520, 370), end], fill=grey, width=2)
+    for x in (467, 493): pen.line([(x, 370), (x, 450)], fill=grey, width=2)
+    image.save(path)
+
+
+def test_quarter_turn_stair_partition_and_symmetry(tmp_path, monkeypatch):
+    monkeypatch.setattr(lecture, 'vision_roles', lambda png: {})
+    quarter_turn(tmp_path / 'plan.png'); read = lecture.read(str(tmp_path / 'plan.png'), ai=False)
+    assert [w['name'] for w in read['walls']] == list('ABCDEFGH') and read['walls'][6]['b'][1] == pytest.approx(300, abs=4)
+    partition, = [e for e in read['extra'] if e.get('name')]
+    assert partition['name'] == 'I' and partition['a'] == pytest.approx(read['walls'][7]['a'], abs=1) and partition['b'][0] == pytest.approx(300, abs=8)
+    assert read['rules'] == [{'kind': 'symetrie', 'walls': ['D', 'E', 'F'], 'ok': None}]
+    stair, = read['stairs']
+    assert stair['treads'] == [8, 3] and stair['turn']['winders'] == 4 and stair['turn']['square'] == pytest.approx([520, 370, 597, 450], abs=8)
+    ctx = Ctx(); rpc.call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'}); rpc.call(ctx, 'plan.sketch', {'path': str(tmp_path / 'plan.png')})
+    made = rpc.call(ctx, 'plan.apply', {'plan': read})['stairs']; loaded = components.load(ctx.project); first, second = (loaded[i] for i in made)
+    assert first['options']['tournant'] == 4 and first['options']['n'] == 13 and second['options']['n'] == 4 and first['options']['axe'] != second['options']['axe']
+    assert {'Mur I'} <= {c['label'] for c in loaded.values() if c['type'] == 'mur'} and ctx.project.update().converged
+    shapes = components.stairs_geometry(first, lambda e: components.evaluate(e, plan.current_values(ctx.project)), [])
+    assert [s.get('kind') for s in shapes] == ['box'] * 8 + ['mesh'] * 4
+
+
+def test_wall_by_wall_solve_and_symmetry():
+    walls = [((100, 100), (600, 100)), ((600, 100), (600, 600)), ((600, 600), (200, 600)), ((200, 600), (200, 560)), ((200, 560), (130, 500)), ((130, 500), (100, 500)), ((100, 500), (100, 100))]
+    drawn = {'angle': 0.0, 'walls': [{'name': n, 'a': list(a), 'b': list(b)} for n, (a, b) in zip('ABCDEFG', walls)], 'extra': []}
+    forward = lecture.frame(drawn, 0.01)[0]; ring = lecture.ring_model(drawn, forward)
+    seen = {'C': (np.array([4.0, 5.2]), np.array([1.0, 5.2])), 'G': (np.array([-0.3, 4.0]), np.array([-0.3, 0.0])), 'A': (np.array([0.0, 0.0]), np.array([5.0, 0.0])),
+            'B': (np.array([5.0, 0.0]), np.array([5.0, 5.0]))}
+    offsets, evidence = lecture.adjust(ring, seen, np.zeros((0, 3)), 2.5, [], [])
+    ends = dict(zip(ring['names'], lecture.ring_ends(ring, offsets)))
+    assert ends['C'][0][1] == pytest.approx(5.2, abs=0.01) and ends['G'][0][0] == pytest.approx(-0.3, abs=0.01) and max(gap for _, gap in evidence.values()) < 0.01
+    rules = [{'kind': 'symetrie', 'walls': ['D', 'E', 'F'], 'ok': True}]; ring = lecture.ring_model(drawn, forward, rules)
+    ends = dict(zip(ring['names'], lecture.ring_ends(ring, lecture.adjust(ring, seen, np.zeros((0, 3)), 2.5, [], rules)[0])))
+    size = {n: np.hypot(*(b - a)) for n, (a, b) in ends.items()}; d = ends['E'][1] - ends['E'][0]
+    assert size['D'] == pytest.approx(size['F'], abs=0.01) and abs(abs(d[0]) - abs(d[1])) < 0.01
+
+
+def test_reread_keeps_names_and_clicks(tmp_path):
+    quarter_turn(tmp_path / 'plan.png'); new = lecture.read(str(tmp_path / 'plan.png'), ai=False)
+    old = {**new, 'walls': [{**w, 'name': n} for w, n in zip(new['walls'][:6], 'PQRSTU')] + [{'name': 'V', 'a': new['walls'][6]['a'], 'b': new['walls'][7]['b']}], 'extra': [],
+           'points': [{'corner': 6, 'clicks': [{'image': 'a.jpg', 'u': 1.0, 'v': 2.0}] * 2}, {'corner': 2, 'clicks': []}], 'refused': {'6': ['b.jpg']}}
+    kept = lecture.renamed(new, old)
+    assert [w['name'] for w in kept['walls']][:6] == list('PQRSTU') and {kept['walls'][6]['name'], kept['walls'][7]['name']} & {'V'}
+    assert [c['corner'] for c in kept['points']] == [6, 2] and kept['refused'] == {'6': ['b.jpg']} and kept['rules'][0]['walls'] == ['S', 'T', 'U']
+    assert len({w['name'] for w in kept['walls']} | {e['name'] for e in kept['extra'] if e.get('name')}) == 9

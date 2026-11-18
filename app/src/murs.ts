@@ -1,13 +1,13 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
-import { drawPlan, metres, type Corner, type DrawnWall, type Fit, type Opening, type Plan } from "./plan2d";
+import { drawPlan, metres, shapeOf, type Corner, type DrawnWall, type Fit, type Opening, type Plan, type Rule } from "./plan2d";
 import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previewPose, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
 
 type Applied = { walls: string[]; openings: string[]; stairs: string[]; clicks: number; pairs: string[][] | null; kept?: string[]; dropped?: { id: string; label: string; reason: string }[] };
 export type Helpers = {
-  guide: () => { plan?: Plan | null; sub?: number }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
+  guide: () => { plan?: Plan | null; sub?: number; done?: number[] }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
   footer: (...actions: HTMLButtonElement[]) => HTMLElement; primary: (text: string, action: () => unknown) => HTMLButtonElement; back: () => HTMLButtonElement; render: () => void; paint: () => void;
   sketch: () => { path: string } | null; source: () => string | null; walls: () => { a: number[]; b: number[]; height: number; label: string }[]; finish: () => Promise<void>; classic: () => Promise<void>; next: () => Promise<void>;
@@ -28,18 +28,24 @@ let current = 0;
 let checks = new Map<string, { ok: boolean; gap_cm: number | null; offset_cm: number | null; message: string; note?: string }>();
 let applied: Applied | null = null;
 let preparing = false;
+let cloud: { key: string; points: number[][] } | null = null;
+let background = true;
 let gallery: { corner: number; items: { name: string; visible: boolean; inside: boolean; hidden: number | null; sees: Record<string, boolean> }[]; only: Set<string> } | null = null;
 
 const plan = () => h.guide().plan!;
 const sub = () => h.guide().sub ?? 1;
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n > 1 ? many : word}`;
 const scale = (p: Plan) => p.fit?.k ?? 6 / Math.max(1, ...[0, 1].map((i) => Math.max(...p.walls.map((w) => w.a[i])) - Math.min(...p.walls.map((w) => w.a[i]))));
-const size = (p: Plan, w: DrawnWall) => Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]) * scale(p);
+const placed = (p: Plan, w: DrawnWall) => { const { walls, extra } = shapeOf(p); return ([...walls, ...extra].find((x) => x.name === w.name) ?? w) as DrawnWall; };
+const size = (p: Plan, w: DrawnWall) => { const f = placed(p, w); return Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) * scale(p); };
+const seenOn = (p: Plan) => new Set([...Object.keys(p.fit?.pairs ?? {}), ...Object.keys(p.fit?.seen ?? {})]);
+const kept = (p: Plan) => p.extra.filter((e) => e.name) as DrawnWall[];
+const cloudKey = (p: Plan) => p.fit ? JSON.stringify([p.fit.pose, p.fit.k]) : "";
 const at = (w: DrawnWall, t: number) => w.a.map((v, i) => v + t * (w.b[i] - v));
 const project = (w: DrawnWall, p: number[]) => ((p[0] - w.a[0]) * (w.b[0] - w.a[0]) + (p[1] - w.a[1]) * (w.b[1] - w.a[1])) / Math.max(1e-9, (w.b[0] - w.a[0]) ** 2 + (w.b[1] - w.a[1]) ** 2);
 const neighbours = (p: Plan, i: number) => [p.walls[(i - 1 + p.walls.length) % p.walls.length].name, p.walls[i].name];
 const photoLines = (p: Plan, i: number) => p.fit!.photo.filter((w) => w.wall && neighbours(p, i).includes(w.wall) && (p.fit!.gaps[w.wall] ?? 0) <= 15).map((w) => [w.wall!, metres(p, p.fit!.k, w.a), metres(p, p.fit!.k, w.b)] as const);
-const estimate = (p: Plan, i: number) => photoLines(p, i).reduce(([x, z], [, [ax, az], [bx, bz]]) => {
+const estimate = (p: Plan, i: number) => p.fit?.walls ? metres(p, p.fit.k, shapeOf(p).walls[i].a) : photoLines(p, i).reduce(([x, z], [, [ax, az], [bx, bz]]) => {
   const dx = bx - ax, dz = bz - az, t = ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz);
   return [ax + t * dx, az + t * dz];
 }, metres(p, p.fit!.k, p.walls[i].a));
@@ -160,7 +166,7 @@ async function edit(kind: string) {
   const start = walls.findIndex((w) => w.name === p.walls[0].name);
   const ring = start > 0 ? [...walls.slice(start), ...walls.slice(0, start)] : walls;
   selected = kind === "supprimer" ? "" : selected;
-  await savePlan({ ...p, walls: ring, openings: reproject(p, p.walls, ring), fit: null, points: corners(p, ring) });
+  await refit({ ...p, walls: ring, openings: reproject(p, p.walls, ring), points: corners(p, ring) });
 }
 
 async function rename(name: string) {
@@ -168,23 +174,46 @@ async function rename(name: string) {
   if (!next || next === selected) { renaming = false; return h.render(); }
   if (p.walls.some((w) => w.name === next) || p.extra.some((e) => e.name === next)) throw new Error(`Le nom ${next} est déjà pris.`);
   const swap = (n?: string) => n === selected ? next : n;
-  const fit = p.fit && { ...p.fit, pairs: Object.fromEntries(Object.entries(p.fit.pairs).map(([k, v]) => [swap(k)!, v])), gaps: Object.fromEntries(Object.entries(p.fit.gaps).map(([k, v]) => [swap(k)!, v])),
-    photo: p.fit.photo.map((w) => ({ ...w, wall: w.wall && swap(w.wall)!, front: w.front && swap(w.front)! })) };
   renaming = false;
   selected = next;
-  await savePlan({ ...p, walls: p.walls.map((w) => ({ ...w, name: swap(w.name)! })), openings: p.openings.map((o) => ({ ...o, wall: swap(o.wall)! })), fit });
+  await refit({ ...p, walls: p.walls.map((w) => ({ ...w, name: swap(w.name)! })), extra: p.extra.map((e) => ({ ...e, name: swap(e.name) })), openings: p.openings.map((o) => ({ ...o, wall: swap(o.wall)! })),
+    rules: p.rules?.map((r) => ({ ...r, walls: r.walls.map((w) => swap(w)!) })) });
 }
 
 async function read(legend?: Plan["legend"]) {
-  const result = await call<Plan>("plan.read_drawing", legend ? { legend } : {});
+  const old = h.guide().plan, previous = old && ((old.points ?? []).some((c) => c.clicks.length) || h.guide().done?.includes(4)) ? old : null;
+  const result = await call<Plan>("plan.read_drawing", { ...legend ? { legend } : {}, ...previous ? { previous } : {} });
   [selected, chosen, questions, applied] = ["", -1, null, null];
-  await h.save({ plan: { ...result, fit: null, points: [] }, sub: 1 }, true);
+  await h.save({ plan: { ...result, fit: null, points: result.points ?? [] }, sub: 1 }, true);
+  if (h.source()) await fit();
 }
 
 async function fit(turn: number | null = null) {
   const result = await call<Fit>("plan.fit", { plan: { ...plan(), fit: null }, turn });
   [questions, checks] = [null, new Map()];
   await h.save({ plan: { ...plan(), fit: result } }, true);
+}
+
+async function refit(next: Plan) {
+  await savePlan({ ...next, fit: null });
+  if (h.source()) await h.act("Calage sur les photos", () => fit());
+}
+
+function points(p: Plan) {
+  if (!p.fit || !background) return null;
+  if (cloud?.key !== cloudKey(p)) {
+    const key = cloudKey(p);
+    cloud = { key, points: [] };
+    run(async () => { const found = await call<number[][]>("plan.cloud", { plan: p }); if (cloud?.key === key) { cloud = { key, points: found }; h.render(); } });
+  }
+  return cloud.points;
+}
+
+function backdrop(p: Plan) {
+  const box = Object.assign(el("label", "backdrop"), { title: "Points des photos vus de dessus, entre 0,9 m et le plafond" }), input = Object.assign(el("input"), { type: "checkbox", checked: background });
+  input.onchange = () => { background = input.checked; h.render(); };
+  box.append(input, "Points des photos en fond");
+  return p.fit ? [box] : [];
 }
 
 async function goSub(n: number) {
@@ -208,10 +237,10 @@ async function prepare() {
 }
 
 async function ask() {
-  const source = h.source(), p = plan(), f = p.fit, n = p.walls.length, paired = new Set(Object.keys(f?.pairs ?? {})), list: typeof questions = [];
+  const source = h.source(), p = plan(), f = p.fit, n = p.walls.length, paired = seenOn(p), list: typeof questions = [];
   for (let i = 0; f && i < n; i++) {
-    const [before, after] = neighbours(p, i);
-    if (paired.has(before) && paired.has(after)) continue;
+    const [before, after] = neighbours(p, i), [u, w] = [p.walls[(i - 1 + n) % n], p.walls[i]].map((x) => [x.b[0] - x.a[0], x.b[1] - x.a[1]]);
+    if (paired.has(before) && paired.has(after) || Math.abs(u[0] * w[1] - u[1] * w[0]) < 0.05 * Math.hypot(...u) * Math.hypot(...w)) continue;
     const [x, z] = estimate(p, i);
     const photos = source ? await call<string[]>("plan.corner_photos", { point: [x, z], pose: f.pose, limit: 8, refused: p.refused?.[i] ?? [] }) : [];
     if (source) list.push({ corner: i, photos });
@@ -305,7 +334,7 @@ const signature = (corner: number) => JSON.stringify(entry(corner).clicks);
 async function verify(corner: number) {
   const p = plan(), clicks = entry(corner).clicks, key = signature(corner);
   if (clicks.length !== 2 || checks.has(key)) return;
-  const [x, z] = metres(p, p.fit!.k, p.walls[corner].a);
+  const [x, z] = metres(p, p.fit!.k, shapeOf(p).walls[corner].a);
   checks.set(key, await call("plan.check_corner", { clicks, pose: p.fit!.pose, point: [x, z], lines: photoLines(p, corner), height: p.fit!.height }));
   h.render();
 }
@@ -323,7 +352,7 @@ async function skip(mark: boolean) {
 
 async function openGallery(corner: number) {
   const p = plan(), f = p.fit!, [x, z] = estimate(p, corner), names = neighbours(p, corner);
-  const walls = Object.fromEntries(p.walls.filter((w) => names.includes(w.name)).map((w) => [w.name, [metres(p, f.k, w.a), metres(p, f.k, w.b)]]));
+  const walls = Object.fromEntries(shapeOf(p).walls.filter((w) => names.includes(w.name)).map((w) => [w.name, [metres(p, f.k, w.a), metres(p, f.k, w.b)]]));
   gallery = { corner, items: await call("plan.photo_gallery", { point: [x, z], pose: f.pose, walls }), only: new Set() };
 }
 
@@ -343,12 +372,28 @@ function readFirst() {
     h.footer(h.back(), button("Sans le dessin", "", "Murs des photos ou tracé à la main", () => run(h.classic)), h.primary("Lire le dessin", () => h.act("Lecture du dessin", () => read())))];
 }
 
+function stairText(p: Plan) {
+  return p.stairs.filter((s) => s.kept !== false).map((s) => s.turn && s.treads ? `Escalier quart tournant : ${plural(s.treads[0], "marche")} droites, ${s.turn.winders} tournantes, puis ${plural(s.treads[1], "marche")}`
+    : s.treads ? `Escalier droit : ${plural(s.treads[0], "marche")}` : "Escalier du dessin");
+}
+
+function ruleCard(p: Plan, rule: Rule, i: number) {
+  const [e, f, g] = rule.walls, decide = (ok: boolean | null) => () => run(() => refit({ ...p, rules: p.rules!.map((r, k) => k === i ? { ...r, ok } : r) }));
+  if (rule.ok !== null) return tagged("=", rule.ok ? `${e} et ${g} de même longueur, ${f} à 45° (pan coupé symétrique)` : `${e} et ${g} libres (pas symétrique)`, "", false, decide(null));
+  const seen = seenOn(p), known = [e, f, g].filter((n) => seen.has(n)).map((n) => `${n} ${number(size(p, p.walls.find((w) => w.name === n)!) * 100, 0)} cm`);
+  return h.card("Forme reconnue : pan coupé symétrique ?", `${e} et ${g} de même longueur, ${f} à 45° : une cheminée en angle, par exemple.${known.length ? ` Vus sur les photos : ${known.join(", ")}.` : ""}`,
+    button("Oui, symétrique", "", `${e} = ${g}, ${f} à 45°`, decide(true)), button("Non", "", "Laisser ces murs libres", decide(false)));
+}
+
 function readStep() {
   const p = plan(), choose = (name: string) => { selected = selected === name ? "" : name; renaming = false; h.render(); };
-  show(false, section(legendText(p), image()), section("Ce que j'ai compris · traits redressés, angles à 90° quand c'est proche", drawPlan(p, { selected, onWall: choose })));
+  const caption = el("span", "", p.fit ? "Ce que j'ai compris · posé sur les points des photos, murs à leur place mesurée" : "Ce que j'ai compris · traits redressés, angles à 90° quand c'est proche");
+  show(false, section(legendText(p), image()), section(caption, drawPlan(p, { selected, onWall: choose, fitted: true, cloud: points(p) })));
+  overlay.lastElementChild!.append(...backdrop(p));
   const kinds = Object.entries(KINDS).map(([id, [one, many]]) => [p.openings.filter((o) => o.type === id).length, one.toLowerCase(), many] as const).filter(([n]) => n);
-  const stairs = p.stairs.filter((s) => s.kept !== false).length;
-  const text = [plural(p.walls.length, "mur"), ...kinds.map(([n, one, many]) => plural(n, one, many)), ...stairs ? [stairs > 1 ? `${stairs} escaliers` : "un escalier"] : []];
+  const stairs = p.stairs.filter((s) => s.kept !== false), partitions = kept(p).length;
+  const text = [plural(p.walls.length, "mur") + (partitions ? ` et ${partitions > 1 ? `${partitions} cloisons` : "une cloison"}` : ""), ...kinds.map(([n, one, many]) => plural(n, one, many)),
+    ...stairs.length ? [stairs.length > 1 ? `${stairs.length} escaliers` : stairs[0].turn ? "un escalier quart tournant" : "un escalier"] : []];
   const longest = [...p.walls].sort((a, b) => size(p, b) - size(p, a))[0]?.name;
   const legend = el("div", "walls");
   legend.append(...p.legend.map((item) => {
@@ -361,42 +406,50 @@ function readStep() {
     return line;
   }));
   const list = el("div", "walls");
-  list.append(...p.walls.map((w) => tagged(w.name, describe(p, w), w.name === longest ? "le plus long" : "", w.name === selected, () => choose(w.name))));
+  list.append(...p.walls.map((w) => tagged(w.name, describe(p, w), w.name === longest ? "le plus long" : `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))),
+    ...kept(p).map((w) => tagged(w.name, "Cloison · bout libre", `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))), ...stairText(p).map((t) => tagged("≡", t)));
   const alerts = p.extra.map((extra, i) => {
     const box = el("div", "alert");
     const near = [...p.walls].sort((a, b) => Math.hypot(...at(a, 0.5).map((v, k) => v - extra.a[k])) - Math.hypot(...at(b, 0.5).map((v, k) => v - extra.a[k])))[0];
-    box.append(el("span", "", `${extra.inside ? "Un trait à l'intérieur" : "Un trait qui dépasse"}, près du mur ${near.name} : ${extra.name ? `gardé comme mur ${extra.name}` : "je l'ai ignoré"}.`),
-      button(extra.name ? "L'ignorer" : "C'est un mur, le garder", "", "Garder ou ignorer ce trait", () => run(() => savePlan({ ...p, extra: p.extra.map((e, k) => k === i ? { ...e, name: e.name ? undefined : free(p) } : e), fit: null }))));
+    box.append(el("span", "", `${extra.inside ? "Un trait à l'intérieur" : "Un trait qui dépasse"}, près du mur ${near.name} : ${extra.name ? `gardé comme cloison ${extra.name}` : "je l'ai ignoré"}.`),
+      button(extra.name ? "L'ignorer" : "C'est un mur, le garder", "", "Garder ou ignorer ce trait", () => run(() => refit({ ...p, extra: p.extra.map((e, k) => k === i ? { ...e, name: e.name ? undefined : free(p) } : e) }))));
     return box;
   });
   const tools = h.row(...[["Fusionner", "fusionner", "Fusionner avec le mur suivant"], ["Couper", "couper", "Couper en deux"], ["Supprimer", "supprimer", "Supprimer ce mur (Suppr)"]]
-    .map(([label, kind, title]) => Object.assign(button(label, "", title, () => run(() => edit(kind))), { disabled: !selected })),
+    .map(([label, kind, title]) => Object.assign(button(label, "", title, () => run(() => edit(kind))), { disabled: !p.walls.some((w) => w.name === selected) })),
   Object.assign(button("Renommer", "", "Changer le nom de ce mur", () => { renaming = true; h.render(); }), { disabled: !selected }));
   const naming = renaming ? [h.row(Object.assign(el("input"), { value: selected, ariaLabel: "Nouveau nom", maxLength: 4, onkeydown: (event: KeyboardEvent) => {
     if (event.key === "Enter") run(() => rename((event.target as HTMLInputElement).value));
   } }), button("OK", "", "Renommer", () => run(() => rename((document.querySelector<HTMLInputElement>("#step .row input")!).value))))] : [];
-  const onward = h.source() ? h.primary("Oui, caler sur les photos", () => h.act("Calage sur les photos", async () => { await fit(); await goSub(2); }))
+  const onward = h.source() ? h.primary(p.fit ? "Oui, voir le calage" : "Oui, caler sur les photos", () => h.act("Calage sur les photos", async () => { if (!p.fit) await fit(); await goSub(2); }))
     : h.primary("Oui, continuer", () => goSub(4));
-  return [h.intro("Est-ce bien ta pièce ?", `J'ai lu ${text.join(", ").replace(/, ([^,]*)$/, " et $1")}. Les longueurs ne comptent pas encore : seules la forme et l'ordre des murs servent.`),
-    list, ...alerts, tools, ...naming, el("b", "", "Légende des couleurs"), legend,
+  return [h.intro("Est-ce bien ta pièce ?", `J'ai lu ${text.join(", ").replace(/, ([^,]*)$/, " et $1")}. Le dessin donne la forme et l'ordre des murs${h.source() ? " ; leur place vient des photos" : ""}.`),
+    list, ...(p.rules ?? []).map((r, i) => ruleCard(p, r, i)), ...alerts, tools, ...naming, el("b", "", "Légende des couleurs"), legend,
     h.footer(h.back(), button("Relire le dessin", "", "Relire avec la légende actuelle", () => run(() => h.act("Lecture du dessin", () => read(p.legend)))), onward)];
 }
 
 function fitStep() {
   const p = plan(), f = p.fit, choose = (name: string) => { selected = selected === name ? "" : name; h.render(); };
-  show(false, section("Superposition · bleu : ton dessin, vert : murs vus sur les photos, pointillés : surfaces photo non appariées, orange : meubles écartés", drawPlan(p, { photo: true, selected, onWall: choose })));
+  show(false, section("Calage · bleu : mur posé sur ses points, gris : pas vu, suit ses voisins, vert : surfaces photo, pointillés : non appariées, orange : meubles écartés", drawPlan(p, { photo: true, fitted: true, cloud: points(p), selected, onWall: choose })));
+  overlay.lastElementChild!.append(...backdrop(p));
   if (!h.source()) return [h.intro("Pas de photos", "La forme du dessin est gardée telle quelle. Une mesure au mètre (étape 5) fixera la taille."), h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Portes et fenêtres", () => goSub(4)))];
   if (!f) return [h.intro("Caler sur les photos", "Le dessin donne l'ordre des murs, les photos leur position exacte."),
     h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Caler sur les photos", () => h.act("Calage sur les photos", () => fit())))];
-  const names = Object.keys(f.pairs), worst = Math.max(0, ...Object.values(f.gaps));
-  const ends = p.walls.map((w) => metres(p, f.k, w.a)), extent = [0, 1].map((i) => Math.max(...ends.map((e) => e[i])) - Math.min(...ends.map((e) => e[i])));
+  const seen = seenOn(p), all = [...p.walls, ...kept(p)], moved = f.moved ?? {};
+  const ends = shapeOf(p).walls.map((w) => metres(p, f.k, w.a)), extent = [0, 1].map((i) => Math.max(...ends.map((e) => e[i])) - Math.min(...ends.map((e) => e[i])));
+  const worst = Object.entries(moved).sort((a, b) => b[1] - a[1])[0];
   const list = el("div", "walls");
   const ahead = (name: string) => f.photo.some((q) => q.meuble && q.front === name) ? "meuble devant écarté" : "";
-  list.append(...p.walls.map((w) => tagged(w.name, f.pairs[w.name] ? ["vu sur les photos", ahead(w.name)].filter(Boolean).join(" · ") : `pas vu sur les photos : ${ahead(w.name) ? `${ahead(w.name)}, ` : ""}forme du dessin (± 30 cm)`,
-    f.pairs[w.name] ? `écart ${number(f.gaps[w.name], 0)} cm` : `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))));
+  const slanted = (w: DrawnWall) => Math.min(Math.abs(w.b[0] - w.a[0]), Math.abs(w.b[1] - w.a[1])) > 0.1 * Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+  const how = (w: DrawnWall) => f.seen?.[w.name] === "points" ? `vu sur les points${slanted(w) ? " (mur en biais)" : ""}` : seen.has(w.name) ? "vu sur les photos" : f.walls ? "pas vu : suit ses voisins" : "pas vu sur les photos : forme du dessin (± 30 cm)";
+  list.append(...all.map((w) => tagged(w.name, [how(w), ahead(w.name)].filter(Boolean).join(" · "),
+    [seen.has(w.name) && f.gaps[w.name] !== undefined ? `écart ${number(f.gaps[w.name], 0)} cm` : "", moved[w.name] !== undefined ? `bougé ${number(moved[w.name], 0)} cm` : seen.has(w.name) ? "" : `${number(size(p, w), 2)} m`].filter(Boolean).join(" · "),
+    w.name === selected, () => choose(w.name))),
+  ...p.stairs.flatMap((s, i) => f.stairs?.[i] ? [tagged("≡", `Escalier : largeur ${number(f.stairs[i]! * 100, 0)} cm d'après la rampe vue en photo`, s.flights ? `dessin ${number(Math.min(s.flights[0][2] - s.flights[0][0], s.flights[0][3] - s.flights[0][1]) * f.k * 100, 0)} cm` : "")] : []));
   const turn = (q: number) => () => run(() => h.act("Calage sur les photos", () => fit(((f.turn ?? 0) + q) % 4)));
-  return [h.intro(`Calé sur ${plural(names.length, "mur")} vu${names.length > 1 ? "s" : ""} en photo`,
-    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Écart le plus grand entre ton dessin et les photos : ${number(worst, 0)} cm.${f.photo.some((q) => q.meuble) ? " Les meubles (la pièce se voit au-dessus, ou ils ont bougé entre deux séances) sont écartés : je ne cale aucun mur dessus." : ""} Les murs non vus gardent les proportions du dessin.`),
+  const count = all.filter((w) => seen.has(w.name)).length;
+  return [h.intro(f.walls ? `Calé mur par mur : ${count} murs vus sur ${all.length}` : `Calé sur ${plural(count, "mur")} vu${count > 1 ? "s" : ""} en photo`,
+    `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Chaque mur vu est posé sur ses points ; les autres suivent leurs voisins et les proportions du dessin.${worst ? ` Plus grand écart entre ton dessin et la pièce : ${number(worst[1], 0)} cm (mur ${worst[0]}).` : ""}${f.photo.some((q) => q.meuble) ? " Les meubles (la pièce se voit au-dessus, ou ils ont bougé entre deux séances) sont écartés." : ""}`),
   list, h.card("Le sens ne colle pas ?", "Si la pièce est presque symétrique, le calage peut se tromper de sens.", button("Tourner de 90°", "", "Autre sens", turn(1)), button("Tourner de 180°", "", "Autre sens", turn(2))),
   h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Points à préciser", () => goSub(3)))];
 }
@@ -408,7 +461,7 @@ function pointsStep() {
     return [h.intro("Points à préciser", "Recherche des coins à cliquer sur les photos…")];
   }
   const q = questions[current];
-  show(false, section("Plan · coin à préciser", drawPlan(p, { corner: q?.corner })));
+  show(false, section("Plan · coin à préciser", drawPlan(p, { corner: q?.corner, fitted: true })));
   const done = questions.filter((x) => entry(x.corner).clicks.length >= 2).length;
   if (!q) return [h.intro(questions.length ? `${plural(done, "point précisé", "points précisés")} sur ${questions.length}` : "Aucun point à préciser",
     questions.length ? "Rien n'est appliqué au plan avant la validation (4.5)." : "Tous les coins sont donnés par les murs vus sur les photos."),
@@ -452,7 +505,7 @@ function openingsStep() {
   const defaults = sameDefaults(plan());
   if (defaults) run(() => savePlan({ ...plan(), openings: defaults }));
   const p = defaults ? { ...plan(), openings: defaults } : plan(), choose = (i: number) => { chosen = chosen === i ? -1 : i; h.render(); };
-  show(false, section("Portes et fenêtres · clique pour choisir", drawPlan(p, { opening: chosen, onOpening: choose })));
+  show(false, section("Portes et fenêtres · clique pour choisir", drawPlan(p, { opening: chosen, onOpening: choose, fitted: true })));
   const change = (i: number, patch: Partial<Opening>) => run(() => savePlan({ ...p, openings: p.openings.map((o, k) => k === i ? { ...o, ...patch } : o) }));
   const list = el("div", "walls");
   list.append(...p.openings.map((o, i) => {
@@ -476,7 +529,7 @@ function openingsStep() {
     return line;
   }));
   if (!p.openings.length) list.append(el("p", "", "Aucune porte ni fenêtre sur le dessin."));
-  const stairs = p.stairs.map((s, i) => tagged("≡", s.kept === false ? "Escalier ignoré" : "Escalier du dessin", "", false, () => run(() => savePlan({ ...p, stairs: p.stairs.map((x, k) => k === i ? { ...x, kept: x.kept === false } : x) }))));
+  const stairs = p.stairs.map((s, i) => tagged("≡", s.kept === false ? "Escalier ignoré" : stairText({ ...p, stairs: [s] })[0], "", false, () => run(() => savePlan({ ...p, stairs: p.stairs.map((x, k) => k === i ? { ...x, kept: x.kept === false } : x) }))));
   return [h.intro("Portes et fenêtres", "Elles viennent de ton dessin, dont les largeurs sont approximatives. Les ouvertures de même type et de taille proche partagent une seule taille, estimée avec toutes leurs mesures : décoche celles qui diffèrent (la porte d'entrée par exemple)."), list, ...stairs,
     ...p.fit ? [h.row(button("Vérifier sur les photos (IA)", "", "L'IA vision regarde chaque ouverture sur une photo qui la montre", () => run(() => h.act("Vérification des ouvertures par l'IA", check))))] : [],
     h.footer(button("Retour", "", "4.3", () => run(() => goSub(p.fit ? 3 : 1))), h.primary("Récapitulatif", () => goSub(5)))];
@@ -495,11 +548,11 @@ async function check() {
 
 function validStep() {
   const p = plan(), f = p.fit, names = p.walls.map((w) => w.name), points = (p.points ?? []).filter((c) => c.clicks.length === 2).length;
-  show(true, section(applied ? "Plan validé" : "Plan à valider", drawPlan(p, { photo: Boolean(f) })));
+  show(true, section(applied ? "Plan validé" : "Plan à valider", drawPlan(p, { photo: Boolean(f), fitted: true })));
   const kinds = Object.entries(KINDS).map(([id, [one, many]]) => [p.openings.filter((o) => o.type === id).length, one.toLowerCase(), many] as const).filter(([n]) => n);
   const kept = p.extra.filter((e) => e.name).length, stairs = p.stairs.filter((s) => s.kept !== false).length;
   const cards = [h.card(plural(names.length + kept, "mur"), `${names[0]} à ${names.at(-1)}${kept ? `, plus ${p.extra.filter((e) => e.name).map((e) => e.name).join(", ")}` : ""}, dans l'ordre du dessin.`),
-    h.card("Calage", f ? `${plural(Object.keys(f.pairs).length, "mur")} sur les photos (${Object.keys(f.pairs).join(", ")}), écart ${number(Math.max(0, ...Object.values(f.gaps)), 0)} cm au plus.` : "Sans photos : forme du dessin."),
+    h.card("Calage", f ? `${plural(seenOn(p).size, "mur")} posé${seenOn(p).size > 1 ? "s" : ""} sur les photos (${[...seenOn(p)].sort().join(", ")}), écart ${number(Math.max(0, ...Object.values(f.gaps)), 0)} cm au plus.` : "Sans photos : forme du dessin."),
     h.card("Points précisés", points ? `${plural(points, "coin")} cliqué${points > 1 ? "s" : ""} sur 2 photos.` : "Aucun."),
     h.card("Portes et fenêtres", kinds.length ? kinds.map(([n, one, many]) => plural(n, one, many)).join(", ") + (stairs ? ", un escalier" : "") : stairs ? "Un escalier." : "Aucune."),
     ...applied ? [h.card("C'est fait", `${plural(applied.walls.length, "mur")}, ${plural(applied.openings.length, "ouverture")}${applied.stairs.length ? ", un escalier" : ""} créés${applied.kept?.length ? `, ${plural(applied.kept.length, "mesure au mètre gardée", "mesures au mètre gardées")}` : ""}. Le plan est dans la vue 3D.`)] : [],
@@ -528,12 +581,12 @@ export function fourPaint() {
   previewPose(p?.fit && !applied && sub() > 1 ? p.fit.pose : null);
   if (!p || sub() !== 5) return showWalls([]);
   if (applied) return showWalls(h.walls().map((w) => ({ a: w.a, b: w.b, height: w.height, tone: "sure", on: false, text: w.label })));
-  const k = scale(p);
-  showWalls(p.walls.map((w) => ({ a: metres(p, k, w.a), b: metres(p, k, w.b), height: p.fit?.height ?? 2.5, tone: p.fit?.pairs[w.name] ? "sure" : "doubt", on: true, text: `Mur ${w.name}` })));
+  const k = scale(p), { walls, extra } = shapeOf(p), seen = seenOn(p);
+  showWalls([...walls, ...extra.filter((e) => e.name) as DrawnWall[]].map((w) => ({ a: metres(p, k, w.a), b: metres(p, k, w.b), height: p.fit?.height ?? 2.5, tone: seen.has(w.name) ? "sure" : "doubt", on: true, text: `Mur ${w.name}` })));
 }
 
 export function resetFour() {
-  [selected, chosen, renaming, questions, current, applied] = ["", -1, false, null, 0, null];
+  [selected, chosen, renaming, questions, current, applied, cloud] = ["", -1, false, null, 0, null, null];
   checks = new Map();
   closeGuided();
 }
