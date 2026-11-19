@@ -466,20 +466,23 @@ def ring_ends(ring, d): return [(Ma @ d + ca, Mb @ d + cb) for (Ma, ca), (Mb, cb
 def length_row(ring, i): (Ma, ca), (Mb, cb) = ring['ends'][i]; return ring['u'][i] @ (Mb - Ma), float(ring['u'][i] @ (cb - ca))
 
 
-def wall_points(cloud, a, b, n, out, top, meubles, explained):
-    flat, h, top = cloud[:, [0, 2]], cloud[:, 1], top or 2.4; length = np.hypot(*(b - a)); u = (b - a) / max(length, 1e-9); t, s = (flat - a) @ u, (flat - a) @ n; margin = 0.02 if length < 1.0 else min(0.1, 0.25 * length)
+EDGE_LENGTHS, EDGE_M, EDGE_SHARE = (0.4, 1.0), 0.02, 0.7
+
+
+def wall_points(cloud, a, b, n, out, top, meubles, explained, edge=False):
+    flat, h, top = cloud[:, [0, 2]], cloud[:, 1], top or 2.4; length = np.hypot(*(b - a)); u = (b - a) / max(length, 1e-9); t, s = (flat - a) @ u, (flat - a) @ n
+    margin = EDGE_M if edge else min(0.1, 0.25 * length)
     keep = (t > margin) & (t < length - margin) & (np.abs(s) < BAND_M) & (h > 0.1) & (h < top - 0.1)
     for p, q in meubles + explained:
         d = q - p; w = np.clip((flat - p) @ d / max(d @ d, 1e-9), 0, 1); keep &= np.hypot(*(flat - p - w[:, None] * d).T) > 0.06
-    if keep.sum() < PEAK_POINTS: return None
-    s, h = s[keep], h[keep]; middles = np.arange(-BAND_M, BAND_M, BIN_M) + BIN_M / 2
-    counts = np.convolve(np.histogram(s, bins=np.append(middles - BIN_M / 2, BAND_M))[0], [1, 2, 1], 'same'); levels = np.arange(0.2, top - 0.2, 0.2)
-    tall = lambda x: np.isin(np.arange(len(levels)), ((h[np.abs(s - x) < 1.5 * BIN_M] - 0.2) // 0.2).astype(int)).mean() >= TALL_SHARE
-    parallel = lambda x: any(abs(cross(u, (q - p) / max(np.hypot(*(q - p)), 1e-9))) < 0.17 and abs(((p + q) / 2 - a) @ n - x) < 0.25 and max((p - a) @ u, (q - a) @ u) > 0 and min((p - a) @ u, (q - a) @ u) < length for p, q in meubles)
-    peaks = [(counts[i], middles[i]) for i in range(len(counts)) if counts[i] >= PEAK_POINTS and counts[i] == counts[max(0, i - 1):i + 2].max() and tall(middles[i]) and not parallel(middles[i])]
-    if not peaks: return None
-    best = max(peaks)[1]; near = s[np.abs(s - best) < 1.5 * BIN_M]
-    return float(np.median(near)), int(len(near))
+    if keep.sum() >= PEAK_POINTS:
+        s, h = s[keep], h[keep]; middles = np.arange(-BAND_M, BAND_M, BIN_M) + BIN_M / 2
+        counts = np.convolve(np.histogram(s, bins=np.append(middles - BIN_M / 2, BAND_M))[0], [1, 2, 1], 'same'); levels = np.arange(0.2, top - 0.2, 0.2)
+        tall = lambda x: np.isin(np.arange(len(levels)), ((h[np.abs(s - x) < 1.5 * BIN_M] - 0.2) // 0.2).astype(int)).mean() >= (EDGE_SHARE if edge else TALL_SHARE)
+        parallel = lambda x: any(abs(cross(u, (q - p) / max(np.hypot(*(q - p)), 1e-9))) < 0.17 and abs(((p + q) / 2 - a) @ n - x) < 0.25 and max((p - a) @ u, (q - a) @ u) > 0 and min((p - a) @ u, (q - a) @ u) < length for p, q in meubles)
+        peaks = [(counts[i], middles[i]) for i in range(len(counts)) if counts[i] >= PEAK_POINTS and counts[i] == counts[max(0, i - 1):i + 2].max() and tall(middles[i]) and not parallel(middles[i])]
+        if peaks: best = max(peaks)[1]; near = s[np.abs(s - best) < 1.5 * BIN_M]; return float(np.median(near)), int(len(near))
+    return None if edge or not EDGE_LENGTHS[0] <= length < EDGE_LENGTHS[1] else wall_points(cloud, a, b, n, out, top, meubles, explained, True)
 
 
 def adjust(ring, seen, cloud, top, meubles, rules, cotes=()):

@@ -238,8 +238,10 @@ def test_wall_by_wall_solve_and_symmetry():
 
 
 def test_short_wall_found_on_corner_edge():
-    cloud = np.column_stack([np.full(60, 0.04), np.linspace(0.2, 2.0, 60), np.full(60, 0.24)])
-    assert lecture.wall_points(cloud, np.zeros(2), np.array([0.6, 0.0]), np.array([0.0, 1.0]), -1.0, 2.4, [], []) == (pytest.approx(0.24), 60)
+    column = lambda t, s, top, n=60: np.column_stack([np.full(n, t), np.linspace(0.2, top, n), np.full(n, s)])
+    found = lambda *columns: lecture.wall_points(np.vstack(columns), np.zeros(2), np.array([0.6, 0.0]), np.array([0.0, 1.0]), -1.0, 2.4, [], [])
+    assert found(column(0.04, 0.24, 2.0)) == (pytest.approx(0.24), 60) and found(column(0.04, 0.4, 1.1)) is None
+    assert found(column(0.04, 0.24, 2.0, 90), column(0.3, -0.1, 2.0))[0] == pytest.approx(-0.1)
 
 
 def test_reread_keeps_names_and_clicks(tmp_path):
