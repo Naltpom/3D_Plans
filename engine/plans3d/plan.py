@@ -228,6 +228,7 @@ def read_sketch(ctx, progress=None):
     from . import ai
     found, progress = sketch(ctx), progress or (lambda *a: None)
     if not found or not found.get('points'): raise ValueError('croquis : cale-le d’abord (2 points et leur distance)')
+    if found.get('dessin'): from . import dessin; return dessin.reading(ctx.project, found)
     with Image.open(found['path']) as image:
         image = image.convert('RGB'); k = min(1.0, SKETCH_PIXELS / max(image.size))
         small = image.resize((round(image.width * k), round(image.height * k))) if k < 1 else image

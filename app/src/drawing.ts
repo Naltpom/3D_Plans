@@ -4,7 +4,8 @@ import { setPointer, setView, showDraft, showSketch, sketchOpacity } from "./vie
 
 type Point = [number, number];
 type Wall = { label: string; a: number[]; b: number[] };
-export type Sketch = { file: string; path: string; points?: number[][]; length?: number; size?: number[]; opacity?: number } | null;
+export type Sketch = { file: string; path: string; points?: number[][]; length?: number; size?: number[]; opacity?: number; dessin?: boolean; v?: number } | null;
+export const sketchUrl = (sketch: NonNullable<Sketch>) => `${host.photoUrl(sketch.path)}${sketch.v ? `?v=${sketch.v}` : ""}`;
 
 const GRID = 0.05;
 const SQUARE = Math.PI / 30;
@@ -170,7 +171,7 @@ export function placeSketch(sketch: Sketch) {
   const [[u0, v0], [u1, v1]] = sketch.points, [width, height] = sketch.size;
   const k = sketch.length / Math.hypot(u1 - u0, v1 - v0), angle = Math.atan2(v1 - v0, u1 - u0), c = Math.cos(angle), s = Math.sin(angle);
   const u = width / 2 - u0, v = height / 2 - v0;
-  showSketch(host.photoUrl(sketch.path), { x: k * (c * u + s * v), z: k * (c * v - s * u), width: width * k, depth: height * k, angle, opacity: sketch.opacity ?? 0.55 });
+  showSketch(sketchUrl(sketch), { x: k * (c * u + s * v), z: k * (c * v - s * u), width: width * k, depth: height * k, angle, opacity: sketch.opacity ?? 0.55 });
 }
 
 export function calibrate(sketch: NonNullable<Sketch>, onDone: () => Promise<void>) {
@@ -199,7 +200,7 @@ export function calibrate(sketch: NonNullable<Sketch>, onDone: () => Promise<voi
   });
   $("#sketch-cancel").onclick = () => { view.hidden = true; };
   input.value = sketch.length ? String(sketch.length * 100) : "";
-  image.src = host.photoUrl(sketch.path);
+  image.src = sketchUrl(sketch);
   view.hidden = false;
   draw();
 }

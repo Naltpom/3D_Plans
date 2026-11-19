@@ -235,14 +235,19 @@ def read(path, legend=None, ai=True):
             if sizes.max() > 0.02 * filled.size: region = labels == int(np.argmax(sizes)) + 1; break
     if region is None: raise ValueError('lecture du dessin : le contour de la pièce n’est pas fermé')
     eps = max(3.0, EPS * size); points, base = straighten(simplify(outline(region), eps), eps, 3 * thick)
-    if np.sum(points[:, 0] * np.roll(points[:, 1], -1) - np.roll(points[:, 0], -1) * points[:, 1]) < 0: points = points[::-1]
-    middles = (points + np.roll(points, -1, 0)) / 2; start = int(np.lexsort((middles[:, 0], np.round(middles[:, 1] / eps)))[0]); points = np.roll(points, -start, 0)
     from PIL import Image, ImageDraw
     band = Image.new('L', (rgb.shape[1], rgb.shape[0])); ImageDraw.Draw(band).line([tuple(p) for p in points] + [tuple(points[0])], fill=1, width=int(2 * (grow + thick)) + 3)
+    lines = [straight(*segment(ys, xs), base) for ys, xs in components_of(wall_mask & ~np.asarray(band, bool), 1) if len(ys) >= 3]
+    holes = [(kind, *segment(ys, xs)) for kind in OPENINGS for ys, xs in components_of(role(kind)) if len(ys) >= 3]
+    return {'image': size_px, **assemble(points, base, lines, holes, size, k), 'stairs': stairs_of(role('escalier'), wall_mask, size, k), 'legend': legend, 'ai': bool(asked)}
+
+
+def assemble(points, base, lines, holes, size, k=1.0):
+    if np.sum(points[:, 0] * np.roll(points[:, 1], -1) - np.roll(points[:, 0], -1) * points[:, 1]) < 0: points = points[::-1]
+    eps = max(3.0, EPS * size); middles = (points + np.roll(points, -1, 0)) / 2; start = int(np.lexsort((middles[:, 0], np.round(middles[:, 1] / eps)))[0]); points = np.roll(points, -start, 0)
     extra, named = [], []
-    for ys, xs in components_of(wall_mask & ~np.asarray(band, bool), 1):
-        if len(ys) < 3: continue
-        a, b = straight(*segment(ys, xs), base); inside = bool(cadastre.inside((a + b) / 2, points))
+    for a, b in lines:
+        inside = bool(cadastre.inside((a + b) / 2, points))
         if np.hypot(*(b - a)) < 0.03 * size: continue
         ends = [a, b]
         for end in range(2 * inside):
@@ -261,20 +266,21 @@ def read(path, legend=None, ai=True):
     rules = [{'kind': 'symetrie', 'walls': [letter(i - 1 if i else len(ring) - 1), letter(i), letter((i + 1) % len(ring))], 'ok': None} for i, s in enumerate(ring)
              if abs(abs(turn(s)) - 45) < 20 and max(abs(turn(ring[i - 1])), abs(turn(ring[(i + 1) % len(ring)]))) < 5 and 0.5 < length(ring[i - 1]) / length(ring[(i + 1) % len(ring)]) < 2]
     openings = []
-    for kind in OPENINGS:
-        for ys, xs in components_of(role(kind)):
-            if len(ys) < 3: continue
-            a, b = segment(ys, xs); found = nearest_wall(ring, a, b, size)
-            if np.hypot(*(b - a)) >= 0.015 * size and found and found[3] - found[2] > 0.02:
-                openings.append({'type': kind, 'wall': letter(found[1]), 't0': round(float(found[2]), 4), 't1': round(float(found[3]), 4)})
-    stairs = []
-    for ys, xs in components_of(role('escalier'), max(2, int(0.015 * size))):
+    for kind, a, b in holes:
+        found = nearest_wall(ring, a, b, size)
+        if np.hypot(*(b - a)) >= 0.015 * size and found and found[3] - found[2] > 0.02:
+            openings.append({'type': kind, 'wall': letter(found[1]), 't0': round(float(found[2]), 4), 't1': round(float(found[3]), 4)})
+    return {'angle': base, 'walls': [{'name': letter(i), 'a': (p / k).round(1).tolist(), 'b': (q / k).round(1).tolist()} for i, (p, q) in enumerate(ring)], 'extra': extra, 'openings': openings, 'rules': rules}
+
+
+def stairs_of(mask, wall_mask, size, k=1.0):
+    stairs, grow = [], max(2, int(0.015 * size)); scaled = lambda v: (np.array(v, float) / k).round(1).tolist()
+    for ys, xs in components_of(mask, grow):
         if min(np.ptp(xs), np.ptp(ys)) >= 0.03 * size:
-            parts, treads, turn = stair_shape(ys, xs, max(2, int(0.015 * size)), wall_mask); scaled = lambda v: (np.array(v, float) / k).round(1).tolist()
+            parts, treads, turn = stair_shape(ys, xs, grow, wall_mask)
             stairs.append({'box': [float(xs.min() / k), float(ys.min() / k), float(xs.max() / k), float(ys.max() / k)], 'flights': scaled(parts), 'treads': treads,
                            **({'turn': {**turn, 'square': scaled(turn['square']), 'pivot': scaled(turn['pivot'])}} if turn else {})})
-    return {'image': size_px, 'angle': base, 'walls': [{'name': letter(i), 'a': (p / k).round(1).tolist(), 'b': (q / k).round(1).tolist()} for i, (p, q) in enumerate(ring)],
-            'extra': extra, 'openings': openings, 'stairs': stairs, 'rules': rules, 'legend': legend, 'ai': bool(asked)}
+    return stairs
 
 
 def renamed(plan, old):
@@ -303,8 +309,10 @@ def renamed(plan, old):
 def read_drawing(ctx, legend=None, previous=None, progress=None):
     found, progress = sketch(ctx), progress or (lambda *a: None)
     if not found: raise ValueError('aucun dessin : ajoute d’abord l’image du plan')
-    progress(0.1, 'Lecture du dessin'); plan = read(found['path'], legend); progress(1.0, 'Dessin lu')
-    return renamed(plan, previous) if previous else plan
+    from . import dessin
+    progress(0.1, 'Lecture du dessin'); plan = dessin.read(ctx.project, legend) if found.get('dessin') else read(found['path'], legend); progress(1.0, 'Dessin lu')
+    plan = renamed(plan, previous) if previous else plan
+    return {**plan, 'cotes': dessin.place(ctx, plan)} if found.get('dessin') else plan
 
 
 def frame(plan, k):

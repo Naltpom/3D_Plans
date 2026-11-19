@@ -3,7 +3,8 @@ import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, refreshSources, remember, update, type UpdateResult } from "./projects";
 import { idle, showHome } from "./home";
 import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPose, stopTask } from "./photos";
-import { fourPaint, fourStep, hidePlan, resetFour, type Helpers } from "./murs";
+import { fourPaint, fourStep, hidePlan, reread, resetFour, type Helpers } from "./murs";
+import { closeDrawing, drawingOpen, drawingStep, openDrawing, type Helpers as DrawHelpers } from "./dessin";
 import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
@@ -11,7 +12,7 @@ import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } f
 import { phoneCheck } from "./telephone";
 import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
 import { buildStep, resetBuild, type Helpers as BuildHelpers } from "./construire";
-import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
+import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, sketchUrl, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; plan?: Plan | null; sub?: number; classic?: boolean; hidden?: string[]; sources?: string[] };
 type Step = { id: string; title: string; hint: string; useful: boolean };
@@ -232,7 +233,7 @@ function thumb(title: string, caption: string, view: () => Element) {
 }
 
 $("#zoom").onclick = (event) => { if (event.target === event.currentTarget || (event.target as Element).closest(".remove")) $<HTMLDialogElement>("#zoom").close(); };
-const sketchImage = () => Object.assign(el("img"), { src: host.photoUrl(sketch!.path), alt: "Croquis" });
+const sketchImage = () => Object.assign(el("img"), { src: sketchUrl(sketch!), alt: "Croquis" });
 const landText = () => [land?.house && `Bâtiment principal : ${plural(land.house.walls, "mur")} extérieurs, ${number(land.house.perimeter)} m de périmètre`,
   land?.parcel && `parcelle de ${number(land.parcel.area, 0)} m²`].filter(Boolean).join(" ; ");
 
@@ -258,7 +259,7 @@ function offer(id: string, label: string, gives: string[]) {
     const paths = await pick();
     if (paths.length) { await addSources(paths); await choose(id, true); }
   }));
-  const image = button(sketch && on ? "Choisir une autre image" : "Choisir une image", "", "Image JPEG ou PNG", () => run(async () => {
+  const image = button(id !== "croquis" ? sketch && on ? "Choisir une autre image" : "Choisir une image" : sketch?.dessin ? "Importer une photo à la place" : sketch && on ? "Importer une autre photo" : "Importer une photo", "", "Image JPEG ou PNG", () => run(async () => {
     const [path] = (await host.pickFiles(label)) ?? [];
     if (path) { await call("plan.sketch", { path }); await save({ classic: false }); await choose(id, true); }
     await loadPlan();
@@ -267,7 +268,9 @@ function offer(id: string, label: string, gives: string[]) {
   const specs: Record<string, [string, string, HTMLButtonElement[], Node[]]> = {
     photos: [`Un dossier de photos prises en tournant. ${TIPS[guide.type] ?? TIPS.piece}`, photos ? plural(photos.photos ?? 0, "photo") : "",
       [add(photos ? "Ajouter un dossier" : "Choisir un dossier", "Ajouter toutes les photos d'un dossier", async () => { const path = await host.pickFolder("Dossier de photos"); return path ? [path] : []; })], []],
-    croquis: ["Photo ou scan d'un plan dessiné, même sans cote : la forme et les ouvertures.", sketch ? "ajouté" : "", [image], sketch && on ? thumb("Croquis à main levée", sketch.file, sketchImage) : []],
+    croquis: ["Un plan dessiné, même sans cote : la forme et les ouvertures. Photo d'un dessin sur papier, ou dessin fait ici, au pinceau ou avec des formes.", sketch?.dessin ? "dessiné dans l'appli" : sketch ? "ajouté" : "",
+      [image, button(sketch?.dessin ? "Retoucher le dessin" : "Dessiner dans l'appli", "primary", "Feuille de dessin : pinceau, formes, texte", () => run(() => openDrawing(drawHelpers)))],
+      sketch && on ? thumb(sketch.dessin ? "Dessin du plan" : "Croquis à main levée", sketch.dessin ? "dessiné dans l'appli" : sketch.file, sketchImage) : []],
     plan: ["Plan d'architecte ou de notaire, avec les longueurs écrites.", sketch && on ? "ajouté" : "", [image], sketch && on ? thumb("Plan coté", sketch.file, sketchImage) : []],
     cadastre: ["PDF du cadastre ou fichier GeoJSON : contour extérieur du bâtiment, parcelle.", cadastral ? "importé" : "",
       [add(cadastral ? "Choisir un autre fichier" : "Choisir un fichier", "PDF ou GeoJSON du cadastre", async () => (await host.pickFiles("Plan cadastral")) ?? [])], cadastral ? mapped() : []],
@@ -505,6 +508,8 @@ function fitCard() {
 
 function sketchReading() {
   if (!sketch?.points) return [];
+  if (!reading && sketch.dessin) return [card("Lire le dessin", "Les murs, les cotes écrites et les portes du dessin, lus tels quels, sans IA ; tu choisis ce que tu gardes.",
+    button("Lire le dessin", "primary", "Formes du dessin", () => run(() => act("Lecture du dessin", readSketch))), button("Retoucher le dessin", "", "Rouvrir la feuille de dessin", () => run(() => openDrawing(drawHelpers))))];
   if (!reading) return [card("Lire le croquis avec l'IA", "L'IA locale relève les murs, les cotes écrites et les portes du croquis calé ; tu choisis ce que tu gardes.",
     button("Lire le croquis", "primary", "Lecture par le modèle vision local", () => run(() => act("Lecture du croquis par l'IA", readSketch))),
     ...vision && !vision.vision_ready ? [button("Télécharger le modèle vision (≈ 6 Go)", "", "qwen2.5vl:7b, une seule fois", () => run(() => act("Téléchargement du modèle vision", pullVision)))] : [])];
@@ -587,7 +592,7 @@ async function loadPlan() {
   if (!info) return;
   [built, land, sketch, parts] = await Promise.all([call<Built[]>("plan.walls"), call<Cadastre>("plan.cadastre"), call<Sketch>("plan.sketch"), call<{ id: string; type: string }[]>("components.list")]);
   if (sketch) await host.allowAssets([sketch.path]).catch(() => {});
-  if (sketch?.points && !vision) vision = await call<{ vision_ready?: boolean }>("ai.status").catch(() => null);
+  if (sketch?.points && !sketch.dessin && !vision) vision = await call<{ vision_ready?: boolean }>("ai.status").catch(() => null);
   placeSketch(sketch);
   paint();
 }
@@ -795,8 +800,20 @@ async function finishPlan() {
 
 const helpers: Helpers = {
   guide: () => guide, save: (change, undo) => save(change as Partial<Guide>, undo), act, intro, card, row, footer, primary, back, render, paint, sketch: () => sketch, walls: () => built,
-  source: () => photoInfo().count ? photoInfo().source : null, finish: finishPlan, next: () => complete(guide.step),
+  source: () => photoInfo().count ? photoInfo().source : null, finish: finishPlan, next: () => complete(guide.step), retouch: () => run(() => openDrawing(drawHelpers)),
   classic: async () => { await save({ classic: true }); render(); paint(); },
+};
+
+const drawHelpers: DrawHelpers = {
+  intro, footer, primary, render, close: () => { render(); paint(); },
+  done: async () => {
+    await save({ classic: false, sources: [...new Set([...guide.sources ?? [], "croquis"])] });
+    await reroute();
+    await loadPlan();
+    if (guide.plan && drawn()) await act("Relecture du dessin", () => reread(helpers));
+    render();
+    paint();
+  },
 };
 
 const scaleHelpers: ScaleHelpers = {
@@ -829,15 +846,15 @@ function render() {
   const guided = mode === "guide";
   if (!guided || key() !== "meubler") $("#sidebar").append($("#gallery"), $("#layout"));
   document.body.classList.toggle("guided", guided);
-  document.body.classList.toggle("page", guided && (["projet", "sources"].includes(key()) || !info || creating));
+  document.body.classList.toggle("page", guided && !drawingOpen() && (["projet", "sources"].includes(key()) || !info || creating));
   document.body.classList.toggle("furnish", guided && key() === "meubler");
   modeButton.textContent = guided ? "Mode expert" : "Mode guidé";
   modeButton.title = guided ? "Afficher toute l'interface" : "Revenir au parcours par étapes";
-  if (!guided || key() !== "murs" || !drawn() && !building() || !info || creating) hidePlan();
+  if (!drawingOpen() && (!guided || key() !== "murs" || !drawn() && !building() || !info || creating)) hidePlan();
   if (!guided) return phoneCheck();
   renderRail();
   const bar = Object.assign(el("progress"), { max: 1, ariaLabel: "Calcul en cours" });
-  const open = Boolean(info) && !creating, view = open && !flow()[guide.step - 1]?.useful ? skippedStep : VIEWS[key(open ? guide.step : 1)];
+  const open = Boolean(info) && !creating, view = drawingOpen() ? drawingStep : open && !flow()[guide.step - 1]?.useful ? skippedStep : VIEWS[key(open ? guide.step : 1)];
   panel.replaceChildren(...pending ? [intro(pending, detail || "Un instant : l'appli calcule le plan."), bar] : view());
   if (!pending) phoneCheck();
 }
@@ -854,6 +871,7 @@ async function go(step: number) {
   const forward = step > guide.step;
   creating = false;
   if (drawing()) stopDrawing();
+  if (drawingOpen()) closeDrawing();
   if (step !== guide.step) { closeGuided(); closeScan(); restarted = null; }
   await save({ step });
   await loadPlan();
@@ -876,6 +894,7 @@ async function complete(step: number) {
 function setMode(value: string) {
   mode = value;
   if (drawing()) stopDrawing();
+  if (drawingOpen()) closeDrawing();
   localStorage.setItem(MODE, mode);
   if (mode === "guide" && info) return run(() => go(guide.step));
   render();
@@ -911,6 +930,7 @@ document.addEventListener("plans3d:opened", (event) => run(async () => {
   [info, creating, proposal, result, next, checked, fitted, everything, restarted] = [opened, false, null, null, null, new Set(), null, false, null];
   resetFour();
   resetBuild();
+  closeDrawing();
   known = "";
   guide = info ? await resume(info.guide) : { type: draft.type, step: 1, done: [] };
   await reroute();

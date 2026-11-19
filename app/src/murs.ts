@@ -1,9 +1,10 @@
-import { call, host } from "./host";
+import { call } from "./host";
 import { $, button, el, number, run } from "./ui";
 import { choice, coteLayer, locate, MODES, pair, title, type End, type Pick, type Seg, type Tool } from "./coter";
 import { drawPlan, metres, shapeOf, type Corner, type DrawnWall, type Fit, type Opening, type Plan, type Rule } from "./plan2d";
 import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previewPose, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
+import { sketchUrl, type Sketch } from "./drawing";
 import { setView, showWalls } from "./view3d";
 import { phoneButton, phonePanel } from "./telephone";
 
@@ -12,7 +13,7 @@ export type Helpers = {
   guide: () => { plan?: Plan | null; sub?: number; done?: number[]; hidden?: string[] }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
   footer: (...actions: HTMLButtonElement[]) => HTMLElement; primary: (text: string, action: () => unknown) => HTMLButtonElement; back: () => HTMLButtonElement; render: () => void; paint: () => void;
-  sketch: () => { path: string } | null; source: () => string | null; walls: () => { a: number[]; b: number[]; height: number; label: string }[]; finish: () => Promise<void>; classic: () => Promise<void>; next: () => Promise<void>;
+  sketch: () => Sketch; retouch: () => void; source: () => string | null; walls: () => { a: number[]; b: number[]; height: number; label: string }[]; finish: () => Promise<void>; classic: () => Promise<void>; next: () => Promise<void>;
 };
 
 const SUBS = ["Lire le plan", "Caler sur les photos", "Points à préciser", "Portes et fenêtres", "Valider"];
@@ -44,7 +45,7 @@ let before: Fit | null = null;
 const plan = () => h.guide().plan!;
 const sub = () => h.guide().sub ?? 1;
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n > 1 ? many : word}`;
-const scale = (p: Plan) => p.fit ? p.fit.k * (p.fit.unit ?? 1) : 6 / Math.max(1, ...[0, 1].map((i) => Math.max(...p.walls.map((w) => w.a[i])) - Math.min(...p.walls.map((w) => w.a[i]))));
+const scale = (p: Plan) => p.fit ? p.fit.k * (p.fit.unit ?? 1) : p.k ?? 6 / Math.max(1, ...[0, 1].map((i) => Math.max(...p.walls.map((w) => w.a[i])) - Math.min(...p.walls.map((w) => w.a[i]))));
 const placed = (p: Plan, w: DrawnWall) => { const { walls, extra } = shapeOf(p); return ([...walls, ...extra].find((x) => x.name === w.name) ?? w) as DrawnWall; };
 const size = (p: Plan, w: DrawnWall) => { const f = placed(p, w); return Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) * scale(p); };
 const seenOn = (p: Plan) => new Set([...Object.keys(p.fit?.pairs ?? {}), ...Object.keys(p.fit?.seen ?? {})]);
@@ -87,10 +88,11 @@ function show(half: boolean, ...parts: Node[]) {
 
 export const hidePlan = () => { overlay.hidden = true; };
 
-const image = () => Object.assign(el("img"), { src: host.photoUrl(h.sketch()!.path), alt: "Plan dessiné à main levée" });
+const image = () => Object.assign(el("img"), { src: sketchUrl(h.sketch()!), alt: "Plan dessiné" });
+const retouch = () => h.sketch()?.dessin ? [button("Retoucher le dessin", "", "Rouvrir la feuille de dessin", h.retouch)] : [];
 
 function legendText(p: Plan) {
-  const box = el("span", "", `Ton dessin · légende ${p.ai ? "lue par l'IA" : "détectée"} : `);
+  const box = el("span", "", p.formes ? "Ton dessin · formes lues telles quelles : " : `Ton dessin · légende ${p.ai ? "lue par l'IA" : "détectée"} : `);
   p.legend.filter((item) => item.role !== "ignorer").forEach((item, i) => {
     box.append(...i ? [", "] : [], Object.assign(el("b", "", item.color), { style: `color:${item.hex === "#1a1a1a" ? "var(--text)" : item.hex}` }), ` ${ROLES.find(([id]) => id === item.role)?.[1].toLowerCase()}`);
   });
@@ -189,8 +191,8 @@ async function rename(name: string) {
     rules: p.rules?.map((r) => ({ ...r, walls: r.walls.map((w) => swap(w)!) })) });
 }
 
-async function read(legend?: Plan["legend"]) {
-  const old = h.guide().plan, previous = old && ((old.points ?? []).some((c) => c.clicks.length) || h.guide().done?.includes(4)) ? old : null;
+async function read(legend?: Plan["legend"], keep = true) {
+  const old = h.guide().plan, previous = keep && old && ((old.points ?? []).some((c) => c.clicks.length) || h.guide().done?.includes(4)) ? old : null;
   const result = await call<Plan>("plan.read_drawing", { ...legend ? { legend } : {}, ...previous ? { previous } : {} });
   [selected, chosen, questions, applied] = ["", -1, null, null];
   await h.save({ plan: { ...result, fit: null, points: result.points ?? [] }, sub: 1 }, true);
@@ -378,7 +380,7 @@ async function hidden() {
 function readFirst() {
   show(false, section("Ton dessin", image()));
   return [h.intro("Lire le plan dessiné", "L'appli relève les murs, les portes, les portes-fenêtres et l'escalier d'après les couleurs du dessin, redresse les traits et met à 90° les angles qui en sont proches."),
-    h.footer(h.back(), button("Sans le dessin", "", "Murs des photos ou tracé à la main", () => run(h.classic)), h.primary("Lire le dessin", () => h.act("Lecture du dessin", () => read())))];
+    h.footer(h.back(), ...retouch(), button("Sans le dessin", "", "Murs des photos ou tracé à la main", () => run(h.classic)), h.primary("Lire le dessin", () => h.act("Lecture du dessin", () => read())))];
 }
 
 function stairText(p: Plan) {
@@ -396,7 +398,7 @@ function ruleCard(p: Plan, rule: Rule, i: number) {
 
 function readStep() {
   const p = plan(), choose = (name: string) => { selected = selected === name ? "" : name; renaming = false; h.render(); };
-  const caption = el("span", "", p.fit ? "Ce que j'ai compris · posé sur les points des photos, murs à leur place mesurée" : "Ce que j'ai compris · traits redressés, angles à 90° quand c'est proche");
+  const caption = el("span", "", p.fit ? "Ce que j'ai compris · posé sur les points des photos, murs à leur place mesurée" : p.formes ? "Ce que j'ai compris · formes telles que dessinées, murs nommés dans le sens horaire depuis le haut" : "Ce que j'ai compris · traits redressés, angles à 90° quand c'est proche");
   show(false, section(legendText(p), image()), section(caption, drawPlan(p, { selected, onWall: choose, fitted: true, cloud: points(p) })));
   overlay.lastElementChild!.append(...backdrop(p));
   const kinds = Object.entries(KINDS).map(([id, [one, many]]) => [p.openings.filter((o) => o.type === id).length, one.toLowerCase(), many] as const).filter(([n]) => n);
@@ -416,7 +418,8 @@ function readStep() {
   }));
   const list = el("div", "walls");
   list.append(...p.walls.map((w) => tagged(w.name, describe(p, w), w.name === longest ? "le plus long" : `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))),
-    ...kept(p).map((w) => tagged(w.name, "Cloison · bout libre", `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))), ...stairText(p).map((t) => tagged("≡", t)));
+    ...kept(p).map((w) => tagged(w.name, "Cloison · bout libre", `${number(size(p, w), 2)} m`, w.name === selected, () => choose(w.name))), ...stairText(p).map((t) => tagged("≡", t)),
+    ...p.cotes?.length ? [tagged("cm", `Écrit sur le dessin : ${p.cotes.map((c) => `${c.wall} ${number(c.value_cm, 0)} cm`).join(", ")}`, "cotes ± 1 cm")] : []);
   const alerts = p.extra.map((extra, i) => {
     const box = el("div", "alert");
     const near = [...p.walls].sort((a, b) => Math.hypot(...at(a, 0.5).map((v, k) => v - extra.a[k])) - Math.hypot(...at(b, 0.5).map((v, k) => v - extra.a[k])))[0];
@@ -434,7 +437,7 @@ function readStep() {
     : h.primary("Oui, continuer", () => goSub(4));
   return [h.intro("Est-ce bien ta pièce ?", `J'ai lu ${text.join(", ").replace(/, ([^,]*)$/, " et $1")}. Le dessin donne la forme et l'ordre des murs${h.source() ? " ; leur place vient des photos" : ""}.`),
     list, ...(p.rules ?? []).map((r, i) => ruleCard(p, r, i)), ...alerts, tools, ...naming, el("b", "", "Légende des couleurs"), legend,
-    h.footer(h.back(), button("Relire le dessin", "", "Relire avec la légende actuelle", () => run(() => h.act("Lecture du dessin", () => read(p.legend)))), onward)];
+    h.footer(h.back(), ...retouch(), button("Relire le dessin", "", "Relire avec la légende actuelle", () => run(() => h.act("Lecture du dessin", () => read(p.legend)))), onward)];
 }
 
 function fitStep() {
@@ -690,6 +693,12 @@ export function fourPaint() {
   if (applied) return showWalls(h.walls().map((w) => ({ a: w.a, b: w.b, height: w.height, tone: "sure", on: false, text: w.label })));
   const k = scale(p), { walls, extra } = shapeOf(p), seen = seenOn(p);
   showWalls([...walls, ...extra.filter((e) => e.name) as DrawnWall[]].map((w) => ({ a: metres(p, k, w.a), b: metres(p, k, w.b), height: p.fit?.height ?? 2.5, tone: seen.has(w.name) ? "sure" : "doubt", on: true, text: `Mur ${w.name}` })));
+}
+
+export async function reread(helpers: Helpers) {
+  h = helpers;
+  const old = h.guide().plan;
+  await read(old?.dessin ? old.legend : undefined, Boolean(old?.dessin));
 }
 
 export function resetFour() {

@@ -594,3 +594,26 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #step .stat span, #step .lines { font-size: 13px; color: var(--muted); }
 #step .lines { display: flex; flex-direction: column; gap: 2px; color: var(--soft); }
 #step .lines .warn { color: var(--warn-text); }
+.plan.dessin { cursor: crosshair; background: #0c0f13; touch-action: none; }
+.plan.dessin.choisir { cursor: default; }
+.plan.dessin.gomme { cursor: cell; }
+.plan.dessin.texte { cursor: text; }
+.plan.dessin .paper { fill: #f4f1ea; }
+.plan.dessin .sheet-grid { fill: none; stroke: #e2ddd2; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan.dessin .picked { stroke-dasharray: 10 6; filter: drop-shadow(0 0 4px #3fb6d9); }
+.plan.dessin .tag { fill: #0e1116; stroke: #2f4e5c; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan.dessin .tag-text { fill: var(--accent-text); font-family: Inter, sans-serif; font-weight: 600; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.plan.dessin .bubble { fill: var(--accent); pointer-events: none; }
+.plan.dessin .bubble-text { fill: #0e1116; font-family: var(--mono); font-weight: 600; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.plan.dessin .snap { fill: none; stroke: #1f6f8b; stroke-width: 2; }
+#plan2d .dessin-tools { flex-direction: column; align-items: stretch; }
+#plan2d .dessin-tools .seg { flex-wrap: wrap; width: auto; }
+#plan2d .dessin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+#plan2d .palette label { padding: 4px 10px 4px 6px; }
+#plan2d .palette .swatch { width: 14px; height: 14px; border: 1px solid var(--strong); border-radius: 50%; }
+#plan2d .dessin-tools input[type="range"] { width: 90px; min-height: 0; accent-color: var(--accent); }
+#plan2d .dessin-tools .measure { width: 54px; min-height: 30px; padding: 3px 6px; font-family: var(--mono); text-align: right; }
+#plan2d .dessin-status { flex: none; display: flex; align-items: center; gap: 18px; height: 34px; padding: 0 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); white-space: nowrap; }
+#plan2d .dessin-status .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#plan2d .dessin-status .m { font-family: var(--mono); color: var(--text); }
+#plan2d .dessin-text { position: absolute; z-index: 3; width: 140px; min-height: 34px; font-size: 16px; }

@@ -8,7 +8,7 @@ export type Corner = { corner: number; clicks: { image: string; u: number; v: nu
 export type Stair = { box: number[]; kept?: boolean; flights?: number[][]; treads?: number[]; turn?: { square: number[]; pivot: number[]; winders: number; tour: number } };
 export type Rule = { kind: string; walls: string[]; ok: boolean | null };
 export type Plan = { image: number[]; angle: number; walls: DrawnWall[]; extra: { a: number[]; b: number[]; inside: boolean; name?: string }[]; openings: Opening[];
-  stairs: Stair[]; rules?: Rule[]; legend: { color: string; hex: string; count: number; role: string }[]; ai?: boolean; fit?: Fit | null; points?: Corner[]; refused?: Record<string, string[]> };
+  stairs: Stair[]; rules?: Rule[]; legend: { color: string; hex: string; count: number; role: string }[]; ai?: boolean; dessin?: boolean; formes?: boolean; k?: number; cotes?: { wall: string; value_cm: number }[]; fit?: Fit | null; points?: Corner[]; refused?: Record<string, string[]> };
 type Options = { selected?: string; opening?: number; corner?: number; photo?: boolean; fitted?: boolean; cloud?: number[][] | null; onWall?: (name: string) => void; onOpening?: (i: number) => void };
 
 const NS = "http://www.w3.org/2000/svg";
