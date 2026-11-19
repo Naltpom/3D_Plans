@@ -466,6 +466,10 @@ body.page #step .actions { margin-top: 0; }
 .plan .cote.glow { stroke: var(--point); stroke-width: 12; stroke-opacity: 0.25; stroke-dasharray: none; }
 .plan .cote-label.focus { fill: var(--point); }
 .plan .snap { fill: var(--point); stroke: var(--view); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan .grid { stroke: #1b2129; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan .vertex { fill: var(--view); stroke: var(--accent-text); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.plan .wall.cloison { stroke-dasharray: 8 5; }
+#step .card.focus { border-color: var(--point); background: #221f17; }
 .seg { flex: none; display: flex; align-items: stretch; width: max-content; border: 1px solid var(--strong); border-radius: 8px; overflow: hidden; background: var(--panel); font-size: 13px; }
 .seg label { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 6px 12px; color: var(--soft); cursor: pointer; }
 .seg label.sel { background: var(--accent-bg); color: var(--text); }

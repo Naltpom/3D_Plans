@@ -2,6 +2,7 @@ import hashlib, hmac, ipaddress, json, os, re, secrets, shutil, socket, subproce
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
+from . import construction
 from .rpc import RpcError, call, cotes_path, read_cotes, rpc
 
 PAGE = os.path.join(os.path.dirname(__file__), 'telephone.html')
@@ -93,18 +94,24 @@ class Phone:
         self.ctx.send({'event': 'phone', 'clients': n})
 
     def state(self):
-        path = cotes_path(self.project)
-        return self.version, os.stat(path).st_mtime_ns if os.path.exists(path) else 0
+        return self.version, *(os.stat(p).st_mtime_ns if os.path.exists(p) else 0 for p in (cotes_path(self.project), construction.path(self.project)))
 
     def payload(self):
-        with self.ctx.lock: cotes = read_cotes(self.project)
-        return json.dumps({'project': os.path.basename(os.path.normpath(self.project.folder)), 'key': self.key, 'scene': self.scene, 'cotes': cotes}).encode()
+        with self.ctx.lock: cotes, built = read_cotes(self.project), construction.load(self.project) if self.scene.get('mode') == 'construire' else None
+        return json.dumps({'project': os.path.basename(os.path.normpath(self.project.folder)), 'key': self.key, 'scene': self.scene, 'cotes': cotes, 'construction': built}).encode()
 
     def act(self, op):
         if self.ctx.project is not self.project: raise RpcError('ce projet est fermé sur le PC')
         kind = op.get('op') if isinstance(op, dict) else None
         if kind == 'hide':
             self.ctx.send({'event': 'phone', 'hide': str(op['id']), 'shown': bool(op['shown'])}); return {}
+        if kind in ('build', 'undo'):
+            if self.scene.get('mode') != 'construire': raise RpcError('la construction est fermée sur le PC')
+            with self.ctx.lock:
+                if kind == 'undo': call(self.ctx, 'history.undo', {})
+                else: call(self.ctx, 'construction.op', {'o': {**{k: v for k, v in op.items() if k not in ('op', 'do', 'at')}, 'op': op.get('do')}})
+                built = construction.load(self.project)
+            self.notify(built=True); return {'construction': built}
         if kind not in OPS: raise RpcError('opération inconnue')
         method, allowed = OPS[kind]
         with self.ctx.lock:

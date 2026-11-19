@@ -59,14 +59,14 @@ ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: col
 .todo .num { width: 28px; height: 28px; border-radius: 14px; background: var(--point); color: #0e1116; font-weight: 600; display: flex; align-items: center; justify-content: center; }
 .todo small { display: block; font-size: 12px; line-height: 16px; color: var(--muted); }
 .empty { padding: 10px; font-size: 13px; color: var(--muted); }
-#sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; flex-direction: column; gap: 12px; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); border-top: 1px solid var(--strong); border-radius: 16px 16px 0 0; background: var(--raised); box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4); }
-#sheet .kicker { margin: 0; }
-#sheet b { display: block; font-size: 17px; font-weight: 600; }
-#sheet .line { display: flex; align-items: center; gap: 10px; }
-#sheet input { flex: 1; min-width: 0; min-height: 56px; font-size: 28px; border: 2px solid var(--accent); border-radius: 10px; }
-#sheet .unit { font-size: 17px; color: var(--soft); }
-#sheet .actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
-#sheet .error { color: var(--warn-text); font-size: 13px; }
+:is(#sheet, #build) { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; flex-direction: column; gap: 12px; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); border-top: 1px solid var(--strong); border-radius: 16px 16px 0 0; background: var(--raised); box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4); }
+:is(#sheet, #build) .kicker { margin: 0; }
+:is(#sheet, #build) b { display: block; font-size: 17px; font-weight: 600; }
+:is(#sheet, #build) .line { display: flex; align-items: center; gap: 10px; }
+:is(#sheet, #build) input { flex: 1; min-width: 0; min-height: 56px; font-size: 28px; border: 2px solid var(--accent); border-radius: 10px; }
+:is(#sheet, #build) .unit { font-size: 17px; color: var(--soft); }
+:is(#sheet, #build) .actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+:is(#sheet, #build) .error { color: var(--warn-text); font-size: 13px; }
 #toast { position: fixed; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 4; padding: 10px 14px; border: 1px solid var(--warn-border); border-radius: 10px; background: var(--warn-bg); color: var(--warn-text); font-size: 14px; }
 svg .wall { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; vector-effect: non-scaling-stroke; }
 svg .opening { stroke-width: 7; vector-effect: non-scaling-stroke; }
@@ -86,6 +86,15 @@ svg .val { fill: var(--accent-text); font-family: var(--mono); text-anchor: midd
 svg .val.bad { fill: var(--warn-text); }
 svg .val.todo, svg .val.focus { fill: #0e1116; font-weight: 600; }
 svg .snap { fill: var(--point); }
+svg .wall.cloison { stroke-dasharray: 8 5; }
+svg .wall.focus { stroke: var(--point); stroke-width: 5; }
+svg .vertex { fill: var(--view); stroke: var(--accent-text); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+#build .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#build label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+#build .grid input { min-height: 50px; font-size: 22px; border-width: 1px; }
+#build .links { display: flex; justify-content: space-between; }
+#list .undo { display: flex; flex-wrap: wrap; gap: 8px; }
+.row .num { width: 28px; height: 28px; margin-left: 8px; border-radius: 6px; background: var(--accent-bg); color: var(--accent-text); font-weight: 600; display: flex; align-items: center; justify-content: center; }
 svg .ring { fill: none; stroke: var(--point); stroke-width: 1.2; vector-effect: non-scaling-stroke; opacity: 0.7; }
 </style>
 </head>
@@ -109,6 +118,7 @@ svg .ring { fill: none; stroke: var(--point); stroke-width: 1.2; vector-effect: 
   <span class="error" id="serror" hidden></span>
   <div class="actions"><button type="button" id="scancel">Annuler</button><button type="button" class="primary" id="sok">Ajouter</button></div>
 </section>
+<section id="build" aria-label="Construire" hidden></section>
 <div id="toast" role="alert" hidden></div>
 <script>
 "use strict";
@@ -233,6 +243,7 @@ function cote(group, pts, text, cls, font, centre) {
 }
 
 function draw() {
+  if (building()) return drawBuild();
   view ??= fit();
   svg.setAttribute("viewBox", view.join(" "));
   const font = 13 * perPx(), all = segs();
@@ -257,7 +268,7 @@ function draw() {
 
 function render() {
   const s = scene(), n = queue.length;
-  $("#title").textContent = data ? `${data.project} · cotes` : "3D_Plans · cotes";
+  $("#title").textContent = data ? `${data.project} · ${building() ? "construire" : "cotes"}` : "3D_Plans · cotes";
   $("#sub").textContent = closed ? "Accès fermé" : s.title ? `${s.title} · le PC suit en direct` : data ? "Ouvre l'onglet Cotes sur le PC" : "Connexion au PC…";
   const live = $("#live");
   live.className = `pill ${online ? "on" : data || closed ? "off" : ""}`;
@@ -266,6 +277,9 @@ function render() {
     : !online && data ? `Connexion perdue.${n ? ` ${n} saisie${n > 1 ? "s" : ""} en attente : elle${n > 1 ? "s partiront" : " partira"} au retour du réseau.` : " Nouvel essai dans un instant."}` : "";
   $("#banner").hidden = !banner;
   $("#banner").textContent = banner;
+  if (!building() && !$("#build").hidden) { build = null; $("#build").hidden = true; }
+  if (building()) { renderBuild(); return draw(); }
+  $("#tabs").hidden = false;
   $("#modes").replaceChildren(...MODES.map(([id, label]) => Object.assign(btn(label, "", "", () => { mode = id; first = null; render(); }), { ariaPressed: String(id === mode) })));
   $("#help").textContent = first ? "Touche le 2e point de la cote." : MODES.find(([id]) => id === mode)[2];
   const list = rows(), wanted = todo();
@@ -363,6 +377,7 @@ async function flush() {
     const answer = await reply.json().catch(() => ({}));
     if (!reply.ok) toast(answer.error || "Saisie refusée par le PC.");
     else if (answer.row?.id && queue[0].op === "place") focus = answer.row.id;
+    else if (answer.construction && data) data.construction = answer.construction;
     queue.shift();
     keep();
   }
@@ -384,7 +399,7 @@ async function connect() {
   source.onopen = () => { seen = Date.now(); online = true; render(); flush(); };
   source.addEventListener("ping", () => { seen = Date.now(); if (!online) { online = true; render(); flush(); } });
   source.onmessage = (e) => {
-    const fresh = JSON.parse(e.data), shape = (d) => (d?.scene?.segs ?? []).map((s) => s.wall + s.kind).join(), changed = shape(fresh) !== shape(data);
+    const fresh = JSON.parse(e.data), shape = (d) => d?.scene?.mode === "construire" ? "construire" : (d?.scene?.segs ?? []).map((s) => s.wall + s.kind).join(), changed = shape(fresh) !== shape(data);
     if (!data) { try { queue = [...JSON.parse(localStorage.getItem(`plans3d.queue.${fresh.key}`) || "[]"), ...queue]; } catch {} }
     data = fresh;
     seen = Date.now();
@@ -398,6 +413,203 @@ async function connect() {
     render();
     if (source.readyState === EventSource.CLOSED) fetch(`${BASE}session`, { cache: "no-store" }).then((r) => { if (r.status === 403) { closed = true; render(); } else setTimeout(connect, 3000); }).catch(() => setTimeout(connect, 3000));
   };
+}
+
+const TOOLS = [["mur", "Murs"], ["ouverture", "Ouverture"], ["cloison", "Cloison"], ["retoucher", "Retoucher"]];
+const KINDS = [["porte", "Porte"], ["fenetre", "Fenêtre"], ["porte_fenetre", "Porte-fenêtre"]];
+const SIZES = { porte: [83, 204, 0], fenetre: [120, 125, 90], porte_fenetre: [140, 215, 0] };
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const HELP = { mur: "Touche le premier angle, puis tape la longueur de chaque mur et dis de quel côté il tourne.", ouverture: "Touche un mur : l'ouverture s'y pose, puis tape sa place et sa taille.",
+  cloison: "Touche le départ de la cloison (sur un mur ou ailleurs), puis tape sa longueur.", retoucher: "Touche un mur ou une ouverture pour changer sa longueur, son angle ou sa taille." };
+let tool = "mur", build = null;
+const building = () => scene().mode === "construire";
+const fresh = (d) => { const used = new Set(d.traces.flatMap((x) => x.names)); return [...LETTERS].find((n) => !used.has(n)) ?? "?"; };
+const current = (d) => d.traces.find((t) => t.id === d.open);
+const cm = (input, low = 1, high = 10000) => { const v = decimal(input.value); if (!(v >= low && v <= high)) throw new Error(`Valeur entre ${low} et ${high}.`); return v; };
+
+function local(d, o) {
+  const t = current(d);
+  if (o.do === "start" && !t) { d.traces.push({ id: `attente${o.at}`, closed: false, cloison: Boolean(o.cloison), points: [o.point], names: [], typed: [] }); d.open = `attente${o.at}`; }
+  else if (o.do === "add" && t) { t.points.push(o.point); t.names.push(fresh(d)); t.typed.push(o.length ?? null); }
+  else if (o.do === "close" && t) { t.closed = true; t.names.push(fresh(d)); t.typed.push(o.length ?? null); d.open = null; }
+  else if (o.do === "finish" && t) { d.open = null; if (!t.names.length) d.traces.splice(d.traces.indexOf(t), 1); }
+  else if (o.do === "back" && t) { if (t.names.length) { t.points.pop(); t.names.pop(); t.typed.pop(); } else { d.traces.splice(d.traces.indexOf(t), 1); d.open = null; } }
+  else if (o.do === "opening" && !o.id) d.openings.push({ id: `attente${o.at}`, type: o.type, wall: o.wall, pos: o.pos ?? 0, width: o.width ?? 90, height: o.height ?? 200, sill: o.sill ?? 0 });
+}
+
+function plan() {
+  const d = JSON.parse(JSON.stringify(data?.construction ?? { traces: [], openings: [], height: 250, open: null }));
+  for (const op of queue) if (op.op === "build") local(d, op);
+  return d;
+}
+
+function walls(d) {
+  return d.traces.flatMap((t) => t.names.map((name, k) => {
+    const n = t.points.length, a = t.points[k], b = t.points[(k + 1) % n], prev = k ? t.points[k - 1] : t.closed ? t.points[n - 1] : null;
+    const turn = prev ? Math.atan2((a[0] - prev[0]) * (b[1] - a[1]) - (a[1] - prev[1]) * (b[0] - a[0]), (a[0] - prev[0]) * (b[0] - a[0]) + (a[1] - prev[1]) * (b[1] - a[1])) : null;
+    return { name, trace: t, k, a, b, length: gap(a, b) * 100, typed: t.typed[k], angle: turn == null || k === 0 ? null : 180 - Math.abs(turn) * 180 / Math.PI, fixed: k === 0 || t.closed && k === t.names.length - 1 };
+  }));
+}
+
+function nearest(d, p) {
+  const best = walls(d).map((w) => { const s = Math.min(1, Math.max(0, fraction(w, p))); return { w, s, d: gap(p, along(w, s)) }; }).sort((x, y) => x.d - y.d)[0];
+  return best && best.d < 30 * perPx() ? best : null;
+}
+
+function spot(d, p) {
+  const t = current(d), last = t?.points.at(-1), near = d.traces.flatMap((x) => x.points).filter((q) => q !== last).sort((x, y) => gap(x, p) - gap(y, p))[0];
+  if (near && gap(near, p) < 26 * perPx()) return near;
+  if (!last) { const hit = tool === "cloison" && nearest(d, p); return hit ? along(hit.w, hit.s).map(round) : p.map((v) => Math.round(v * 20) / 20); }
+  const prev = t.points.at(-2), base = prev ? Math.atan2(last[1] - prev[1], last[0] - prev[0]) : 0, angle = Math.atan2(p[1] - last[1], p[0] - last[0]);
+  const quarter = base + Math.round((angle - base) / (Math.PI / 2)) * Math.PI / 2, dir = Math.abs(Math.atan2(Math.sin(angle - quarter), Math.cos(angle - quarter))) < Math.PI / 18 ? quarter : angle, length = Math.round(gap(p, last) * 20) / 20;
+  return [round(last[0] + length * Math.cos(dir)), round(last[1] + length * Math.sin(dir))];
+}
+
+function drawBuild() {
+  const d = plan(), all = d.traces.flatMap((t) => t.points), list = walls(d), t = current(d);
+  if (!view) {
+    const xs = all.map((p) => p[0]), ys = all.map((p) => p[1]), some = all.length > 1, w = some ? Math.max(...xs) - Math.min(...xs) : 6, h = some ? Math.max(...ys) - Math.min(...ys) : 4, m = Math.max(w, h, 2) * 0.15;
+    view = [(some ? Math.min(...xs) : 0) - m, (some ? Math.min(...ys) : 0) - m, w + 2 * m, h + 2 * m];
+  }
+  svg.setAttribute("viewBox", view.join(" "));
+  const font = 13 * perPx(), centre = [0, 1].map((i) => all.reduce((s, p) => s + p[i], 0) / Math.max(1, all.length)), items = [], group = node("g", {});
+  for (const w of list) {
+    items.push(node("line", { x1: w.a[0], y1: w.a[1], x2: w.b[0], y2: w.b[1] }, `wall ${w.trace.cloison ? "cloison" : ""} ${build?.wall === w.name ? "focus" : ""}`));
+    const m = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2], dist = Math.hypot(m[0] - centre[0], m[1] - centre[1]) || 1;
+    items.push(node("text", { x: m[0] - (m[0] - centre[0]) / dist * font * 1.3, y: m[1] - (m[1] - centre[1]) / dist * font * 1.3, "font-size": font * 1.1 }, "label", w.name));
+    cote(group, [w.a, w.b], w.typed ? fmt(w.typed, 0) : `≈ ${fmt(w.length, 0)}`, w.typed ? "done" : "", font, centre);
+  }
+  for (const o of d.openings) {
+    const w = list.find((x) => x.name === o.wall);
+    if (!w) continue;
+    const at = (c) => [w.a[0] + (w.b[0] - w.a[0]) * c / w.length, w.a[1] + (w.b[1] - w.a[1]) * c / w.length], p = at(o.pos), q = at(o.pos + o.width);
+    items.push(node("line", { x1: p[0], y1: p[1], x2: q[0], y2: q[1] }, `opening ${o.type}`));
+  }
+  const marks = all.map((p) => node("circle", { cx: p[0], cy: p[1], r: font * 0.3 }, "vertex")), last = t?.points.at(-1);
+  if (last) marks.push(node("circle", { cx: last[0], cy: last[1], r: font * 0.45 }, "snap"), node("circle", { cx: last[0], cy: last[1], r: font * 0.9 }, "ring"));
+  svg.replaceChildren(...items, group, ...marks);
+}
+
+function field(label, value, extra = {}) {
+  const box = el("label", "", label), input = Object.assign(el("input"), { inputMode: "decimal", autocomplete: "off", enterKeyHint: "done", value: value == null ? "" : String(value).replace(".", ","), ...extra });
+  box.append(input);
+  return [box, input];
+}
+
+function choose(name, options, value, change) {
+  const box = el("div", "seg");
+  box.setAttribute("role", "group");
+  box.ariaLabel = name;
+  box.append(...options.map(([id, label]) => Object.assign(btn(label, "", "", () => change(id)), { ariaPressed: String(id === value) })));
+  return box;
+}
+
+function sheet(kicker, title, body, actions, links = []) {
+  const head = el("div"), error = el("span", "error"), guard = (task) => () => { try { task(); } catch (e) { error.textContent = e.message; error.hidden = false; } };
+  error.hidden = true;
+  head.append(el("span", "kicker", kicker), el("b", "", title));
+  const row = el("div", "actions"), extra = el("div", "links");
+  row.append(btn("Annuler", "", "", closeBuild), ...actions.map(([label, task]) => btn(label, "primary", "", guard(task))));
+  extra.append(...links.map(([label, task]) => btn(label, "link", "", guard(task))));
+  $("#build").replaceChildren(head, ...body, error, row, ...links.length ? [extra] : []);
+  $("#build").hidden = false;
+  render();
+}
+
+function closeBuild() { build = null; $("#build").hidden = true; render(); }
+
+function wallSheet() {
+  const d = plan(), t = current(d);
+  if (!t) return closeBuild();
+  const first = t.points.length === 1, name = fresh(d), relative = (id) => ["gauche", "droit", "droite"].includes(id);
+  build = { wall: null, typing: build?.typing ?? "", turn: build?.turn && relative(build.turn) !== first ? build.turn : first ? "0" : "droite" };
+  const length = Object.assign(el("input"), { inputMode: "decimal", autocomplete: "off", enterKeyHint: "done", value: build.typing, ariaLabel: `Longueur du mur ${name} en cm` });
+  const [angleBox, angle] = field("Angle entre les murs (°)", 90, { ariaLabel: "Angle entre les murs en degrés" });
+  const turns = first ? [["0", "→"], ["90", "↓"], ["180", "←"], ["-90", "↑"]] : [["gauche", "↰ Gauche"], ["droit", "Tout droit"], ["droite", "↱ Droite"]];
+  const turnBox = choose(first ? "Direction du mur" : "Côté où tourne le mur", turns, build.turn, (id) => { build = { ...build, turn: id, typing: length.value }; wallSheet(); });
+  const put = () => {
+    const value = cm(length), last = t.points.at(-1), prev = t.points.at(-2);
+    let dir = Number(build.turn) * Math.PI / 180;
+    if (!first) { const base = Math.atan2(last[1] - prev[1], last[0] - prev[0]), free = build.turn === "droit" ? 180 : cm(angle, 1, 359); dir = base + (build.turn === "gauche" ? -1 : 1) * (180 - free) * Math.PI / 180; }
+    send({ op: "build", do: "add", point: [round(last[0] + value / 100 * Math.cos(dir)), round(last[1] + value / 100 * Math.sin(dir))], length: value });
+    build.typing = "";
+    wallSheet();
+  };
+  const line = el("div", "line");
+  line.append(length, el("span", "unit", "cm"));
+  length.onkeydown = (e) => { if (e.key === "Enter") { try { put(); } catch (err) { toast(err.message); } } };
+  const close = () => { send({ op: "build", do: "close", ...decimal(length.value) > 0 ? { length: decimal(length.value) } : {} }); closeBuild(); };
+  sheet(`${t.cloison ? "Cloison" : "Mur suivant"} · ${name}`, first ? t.cloison ? "Depuis le départ de la cloison" : "Depuis le premier angle" : `Depuis le coin ${t.names.at(-1)}–${name}`, [line, turnBox, ...first || build.turn === "droit" ? [] : [angleBox]],
+    [[`Poser le ${t.cloison ? "bout" : "mur"} ${name}`, put]],
+    [...t.cloison || t.points.length < 3 ? [] : [["Fermer la pièce", close]], [t.cloison ? "Terminer la cloison" : "Terminer sans fermer", () => { send({ op: "build", do: "finish" }); closeBuild(); }]]);
+  setTimeout(() => length.focus());
+}
+
+function holeSheet(spec) {
+  build = { hole: spec.id ?? "", type: spec.type ?? build?.type ?? "fenetre" };
+  const d = plan(), w = walls(d).find((x) => x.name === spec.wall), size = SIZES[build.type], n = w ? w.trace.names.length : 0, before = w ? w.trace.names[(w.k - 1 + n) % n] : "";
+  const [posBox, pos] = field(w && (w.k || w.trace.closed) ? `Depuis le coin ${before}–${spec.wall}` : `Depuis le début du mur ${spec.wall}`, spec.pos ?? 0);
+  const [widthBox, width] = field("Largeur", spec.width ?? size[0]), [heightBox, height] = field("Hauteur", spec.height ?? size[1]), [sillBox, sill] = field("Allège", spec.sill ?? size[2]);
+  const grid = el("div", "grid");
+  grid.append(posBox, widthBox, heightBox, ...build.type === "fenetre" ? [sillBox] : []);
+  const kinds = choose("Type", KINDS, build.type, (id) => holeSheet({ ...spec, type: id, pos: decimal(pos.value), width: SIZES[id][0], height: SIZES[id][1], sill: SIZES[id][2] }));
+  const save = () => { send({ op: "build", do: "opening", ...spec.id ? { id: spec.id } : {}, type: build.type, wall: spec.wall, pos: cm(pos, 0), width: cm(width), height: cm(height), sill: build.type === "fenetre" ? cm(sill, 0) : 0 }); closeBuild(); };
+  sheet(spec.id ? "Ouverture" : "Nouvelle ouverture", `Sur le mur ${spec.wall}${w ? ` · ${fmt(w.typed ?? w.length, 0)} cm` : ""}`, [kinds, grid], [[spec.id ? "Valider" : "Poser", save]],
+    spec.id ? [["Supprimer cette ouverture", () => { if (confirm("Supprimer cette ouverture ?")) { send({ op: "build", do: "remove", opening: spec.id }); closeBuild(); } }]] : []);
+}
+
+function retouchSheet(w) {
+  build = { wall: w.name };
+  const [lengthBox, length] = field("Longueur", w.typed ?? Math.round(w.length)), [angleBox, angle] = field("Angle avec le mur précédent (°)", w.angle == null ? "" : Math.round(w.angle), { disabled: w.fixed });
+  const grid = el("div", "grid");
+  grid.append(lengthBox, angleBox);
+  const save = () => {
+    const value = cm(length), turn = !w.fixed && angle.value.trim() ? cm(angle, 1, 359) : null;
+    if (Math.abs(value - (w.typed ?? w.length)) > 0.05) send({ op: "build", do: "length", wall: w.name, value });
+    if (turn != null && Math.abs(turn - (w.angle ?? 0)) > 0.4) send({ op: "build", do: "angle", wall: w.name, value: turn });
+    closeBuild();
+  };
+  sheet("Retoucher", `${w.trace.cloison ? "Cloison" : "Mur"} ${w.name}`, [grid, el("span", "help", "Une longueur changée déplace les murs suivants jusqu'au prochain mur parallèle ; un angle changé tourne la suite.")], [["Valider", save]],
+    [["Supprimer ce mur", () => { if (confirm(`Supprimer le mur ${w.name} ?`)) { send({ op: "build", do: "remove", wall: w.name }); closeBuild(); } }]]);
+}
+
+function pickBuild(x, y) {
+  const d = plan(), p = toPlan(x, y), t = current(d);
+  if (tool === "mur" || tool === "cloison") {
+    const q = spot(d, p);
+    if (!t) { send({ op: "build", do: "start", point: q, cloison: tool === "cloison" }); return wallSheet(); }
+    if (t.points.length > 2 && !t.cloison && q === t.points[0]) { send({ op: "build", do: "close" }); return closeBuild(); }
+    send({ op: "build", do: "add", point: q });
+    return wallSheet();
+  }
+  const hit = nearest(d, p);
+  if (!hit) { if (navigator.vibrate) navigator.vibrate(30); return; }
+  const at = hit.s * hit.w.length, hole = d.openings.find((o) => o.wall === hit.w.name && at >= o.pos - 10 && at <= o.pos + o.width + 10);
+  if (tool === "retoucher") return hole ? holeSheet(hole) : retouchSheet(hit.w);
+  holeSheet({ wall: hit.w.name, pos: Math.max(0, Math.round(at - SIZES.fenetre[0] / 2)) });
+}
+
+function renderBuild() {
+  const d = plan(), t = current(d), list = walls(d);
+  $("#modes").replaceChildren(...TOOLS.map(([id, label]) => Object.assign(btn(label, "", "", () => { tool = id; closeBuild(); }), { ariaPressed: String(id === tool) })));
+  $("#help").textContent = t ? `${t.cloison ? "Cloison" : "Pièce"} en cours : tape la longueur du mur suivant, ou touche le plan pour un angle approché.` : HELP[tool];
+  $("#tabs").hidden = true;
+  if (document.activeElement?.closest("#list")) return;
+  const top = el("li", "undo");
+  top.append(btn("↶ Annuler la dernière action", "", "", () => send({ op: "undo" })), ...t && $("#build").hidden ? [btn(`Continuer : mur ${fresh(d)}`, "primary", "", wallSheet)] : []);
+  const rows = list.map((w) => {
+    const li = el("li", `row ${build?.wall === w.name ? "focus" : ""}`);
+    li.append(el("span", "num", w.name), btn(`${w.trace.cloison ? "Cloison" : "Mur"} ${w.name}`, "name", "", () => retouchSheet(w)), el("span", "unit", w.typed ? `${fmt(w.typed, 0)} cm` : `≈ ${fmt(w.length, 0)} cm`), el("span"),
+      el("small", "", [w.typed ? Math.abs(w.length - w.typed) > 1 ? `le tracé donne ${fmt(w.length, 0)} cm` : "longueur saisie" : "longueur approchée : touche le nom pour la taper", w.angle == null ? "" : `angle ${fmt(w.angle, 0)}°`].filter(Boolean).join(" · ")));
+    return li;
+  });
+  const holes = d.openings.map((o) => {
+    const li = el("li", "row");
+    li.append(el("span", "num", o.wall), btn(`${KINDS.find(([id]) => id === o.type)?.[1] ?? o.type} · mur ${o.wall}`, "name", "", () => holeSheet(o)), el("span", "unit", `${fmt(o.width, 0)} × ${fmt(o.height, 0)}`), el("span"),
+      el("small", "", `à ${fmt(o.pos, 0)} cm du début du mur${o.type === "fenetre" ? ` · allège ${fmt(o.sill, 0)} cm` : ""}`));
+    return li;
+  });
+  $("#list").replaceChildren(top, ...rows, ...holes, ...list.length ? [] : [el("li", "empty", "Aucun mur pour l'instant. Touche le plan pour poser le premier angle.")]);
 }
 
 const pointers = new Map();
@@ -440,6 +652,7 @@ $("#zall").onclick = () => { view = null; draw(); };
 
 function pick(x, y) {
   if (!data || ask) return;
+  if (building()) return pickBuild(x, y);
   const tol = 26 * perPx(), hit = snap(toPlan(x, y), tol);
   if (!hit) { if (navigator.vibrate) navigator.vibrate(30); return; }
   if (!first) { first = hit; return render(); }

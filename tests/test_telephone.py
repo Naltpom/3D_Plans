@@ -143,3 +143,21 @@ def test_stop_closes_everything(phone):
     call(ctx, 'phone.stop', {})
     with pytest.raises(OSError): urllib.request.urlopen(base, timeout=3)
     assert ctx.phone is None
+
+
+def test_phone_builds_walls_live_and_undoes(phone):
+    ctx, base, events, _ = phone
+    from plans3d import construction  # noqa: F401
+    cookie = login(base, ctx.phone.token)
+    assert get(base + 'api', {'op': 'build', 'do': 'start', 'point': [0, 0]}, cookie)[0] == 400
+    call(ctx, 'phone.scene', {'scene': {'title': 'Étape 4 · Construire', 'mode': 'construire'}})
+    for o in ({'do': 'start', 'point': [0, 0], 'at': 1}, {'do': 'add', 'point': [4, 0], 'length': 400}, {'do': 'add', 'point': [4, 3], 'length': 300}):
+        status, body, _ = get(base + 'api', {'op': 'build', **o}, cookie)
+        assert status == 200
+    assert json.loads(body)['construction']['traces'][0]['names'] == ['A', 'B'] and any(e.get('built') for e in events)
+    seen = []
+    stream(base + 'events', cookie, 1, seen)
+    assert seen[0]['construction']['traces'][0]['typed'] == [400, 300]
+    status, body, _ = get(base + 'api', {'op': 'undo'}, cookie)
+    assert status == 200 and json.loads(body)['construction']['traces'][0]['names'] == ['A']
+    assert get(base + 'api', {'op': 'build', 'do': 'add', 'point': ['x', 0]}, cookie)[0] == 400

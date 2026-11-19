@@ -7,8 +7,8 @@ import type { End, Seg } from "./coter";
 type Link = { kind: string; host: string; url: string };
 type Note = { text: string; url?: string };
 type Todo = { key: string; label: string; hint: string; plan: number; trace: End[] | null; expr?: string; ends?: number[][] | null };
-export type Scene = { title: string; k: number; segs: Seg[]; ring: string[]; hidden: string[]; status: Record<string, { text: string; conflict?: boolean; ends?: number[][] | null }>; todo: Todo[] };
-export type Handlers = { changed: (id: string, label: string) => void; hide: (id: string, shown: boolean) => void };
+export type Scene = { title: string; mode?: string; k: number; segs: Seg[]; ring: string[]; hidden: string[]; status: Record<string, { text: string; conflict?: boolean; ends?: number[][] | null }>; todo: Todo[] };
+export type Handlers = { changed: (id: string, label: string) => void; hide: (id: string, shown: boolean) => void; built?: () => void };
 
 let links: Link[] | null = null;
 let note: Note | null = null;
@@ -102,4 +102,5 @@ onEvent((event) => {
     on?.changed(String(event.changed), String(event.label));
   }
   if (event.hide != null) on?.hide(String(event.hide), Boolean(event.shown));
+  if (event.built) { last = "construction"; on?.built?.(); }
 });

@@ -63,10 +63,10 @@ def call(ctx, name, params):
     return result
 
 
-HISTORY, HISTORY_FILES = 50, ('model.json', 'project.json', os.path.join('sources', 'cotes.csv'))
+HISTORY, HISTORY_FILES = 50, ('model.json', 'project.json', os.path.join('sources', 'cotes.csv'), os.path.join('sources', 'construction.json'))
 UNDOABLE = set('components.add components.remove furniture.add furniture.move furniture.rotate furniture.options furniture.remove layout.apply cadastre.add terrain.add '
                'photos.add photos.set_gap photos.set_group photos.associate photos.unassociate photos.axes photos.click photos.unclick photos.create_walls photos.fit_walls photos.snap_walls '
-               'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove cotes.place'.split())
+               'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle construction.op construction.apply params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove cotes.place'.split())
 
 
 def undoable(name, params):

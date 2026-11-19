@@ -10,6 +10,7 @@ import { sessions } from "./seances";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { phoneCheck } from "./telephone";
 import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
+import { buildStep, resetBuild, type Helpers as BuildHelpers } from "./construire";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; plan?: Plan | null; sub?: number; classic?: boolean; hidden?: string[]; sources?: string[] };
@@ -109,6 +110,7 @@ const walls = () => proposal?.walls ?? [];
 const created = () => walls().filter((w) => w.component);
 const side = (wall: Wall, end: End) => wall.axis === "z" ? end === "a" ? "bout de gauche" : "bout de droite" : end === "a" ? "bout du haut" : "bout du bas";
 const drawn = () => guide.type === "piece" && Boolean(sketch) && !guide.classic && has("croquis", "plan");
+const building = () => has("manuel") && !drawn();
 const missing = () => created().flatMap((w) => (["a", "b"] as End[]).filter((e) => !w.angles[e]).map((e) => [w, e] as [Wall, End]));
 
 function intro(title: string, text: string) {
@@ -798,7 +800,12 @@ const scaleHelpers: ScaleHelpers = {
   intro, card, row, footer, primary, back, render, next: () => complete(guide.step), skip: skipScale,
 };
 
-const VIEWS: Record<string, () => Node[]> = { projet: projectStep, sources: sourcesStep, positions: positionsStep, murs: () => drawn() ? fourStep(helpers) : wallsStep(), echelle: scaleStep, verifier: checkStep,
+const buildHelpers: BuildHelpers = {
+  intro, card, row, footer, primary, back, render, act, next: () => complete(guide.step), finish: async () => { await update(); await finishPlan(); },
+  extra: () => photoInfo().count && has("photos") ? [fitCard()] : [], built: () => built.filter((w) => w.source === "construction").length,
+};
+
+const VIEWS: Record<string, () => Node[]> = { projet: projectStep, sources: sourcesStep, positions: positionsStep, murs: () => drawn() ? fourStep(helpers) : building() ? buildStep(buildHelpers) : wallsStep(), echelle: scaleStep, verifier: checkStep,
   meubler: furnishStep, cadastre: cadastreStep, relief: reliefStep, toit: roofStep, facades: facadeStep, gabarit: bodyStep };
 
 function paint() {
@@ -821,7 +828,7 @@ function render() {
   document.body.classList.toggle("furnish", guided && key() === "meubler");
   modeButton.textContent = guided ? "Mode expert" : "Mode guidé";
   modeButton.title = guided ? "Afficher toute l'interface" : "Revenir au parcours par étapes";
-  if (!guided || key() !== "murs" || !drawn() || !info || creating) hidePlan();
+  if (!guided || key() !== "murs" || !drawn() && !building() || !info || creating) hidePlan();
   if (!guided) return phoneCheck();
   renderRail();
   const bar = Object.assign(el("progress"), { max: 1, ariaLabel: "Calcul en cours" });
@@ -898,6 +905,7 @@ document.addEventListener("plans3d:opened", (event) => run(async () => {
   const opened = (event as CustomEvent<Info | null>).detail;
   [info, creating, proposal, result, next, checked, fitted, everything, restarted] = [opened, false, null, null, null, new Set(), null, false, null];
   resetFour();
+  resetBuild();
   known = "";
   guide = info ? await resume(info.guide) : { type: draft.type, step: 1, done: [] };
   await reroute();
