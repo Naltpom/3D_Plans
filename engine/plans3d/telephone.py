@@ -1,9 +1,10 @@
 import hashlib, hmac, ipaddress, json, os, secrets, socket, subprocess, threading
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .rpc import RpcError, call, cotes_path, read_cotes, rpc
 
 PAGE = os.path.join(os.path.dirname(__file__), 'telephone.html')
-HOST, PORT = os.environ.get('PLANS3D_PHONE_HOST', '0.0.0.0'), 8737
+HOST, PORT = os.environ.get('PLANS3D_PHONE_HOST'), 8737
 TAILSCALE = ipaddress.ip_network('100.64.0.0/10')
 OPS = {'place': ('cotes.place', {'value', 'trace', 'id', 'label', 'expr'}), 'remove': ('cotes.remove', {'id'})}
 CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
@@ -27,16 +28,28 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address, daemon_threads = False, True
 
 
+def bind(hosts):
+    for port in (PORT, 0):
+        servers = []
+        try:
+            for host in hosts: servers.append(Server((host, port or (servers[0].server_address[1] if servers else 0)), Handler))
+            return servers
+        except OSError:
+            for server in servers: server.server_close()
+    raise RpcError('aucun port libre pour la saisie sur le téléphone')
+
+
 class Phone:
-    def __init__(self, ctx):
-        self.ctx, self.project, self.token, self.open = ctx, ctx.require_project(), secrets.token_urlsafe(32), True
+    def __init__(self, ctx, hosts):
+        self.ctx, self.project, self.token, self.open, self.sessions = ctx, ctx.require_project(), secrets.token_urlsafe(32), True, set()
         self.scene, self.version, self.clients, self.changed = {}, 0, 0, threading.Condition()
         self.key = hashlib.sha1(os.path.abspath(self.project.folder).encode()).hexdigest()[:12]
         with open(PAGE, 'rb') as fh: self.page = fh.read()
-        try: self.server = Server((HOST, PORT), Handler)
-        except OSError: self.server = Server((HOST, 0), Handler)
-        self.server.phone = self
-        threading.Thread(target=self.server.serve_forever, daemon=True, name='telephone').start()
+        self.servers = bind(hosts)
+        self.port = self.servers[0].server_address[1]
+        for server in self.servers:
+            server.phone = self
+            threading.Thread(target=server.serve_forever, daemon=True, name='telephone').start()
 
     def notify(self, **event):
         with self.changed: self.version += 1; self.changed.notify_all()
@@ -69,16 +82,15 @@ class Phone:
 
     def stop(self):
         with self.changed: self.open = False; self.changed.notify_all()
-        self.server.shutdown(); self.server.server_close()
+        for server in self.servers: server.shutdown(); server.server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
 
-    def route(self):
-        parts = self.path.split('?')[0].split('/')
-        ok = len(parts) > 2 and hmac.compare_digest(parts[1].encode(), self.server.phone.token.encode())
-        return '/'.join(parts[2:]) if ok else None
+    def allowed(self):
+        try: return SimpleCookie(self.headers.get('Cookie') or '')['s'].value in self.server.phone.sessions
+        except Exception: return False
 
     def reply(self, code, body=b'', kind='application/json; charset=utf-8', extra=()):
         self.send_response(code)
@@ -87,16 +99,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(body)
 
     def do_GET(self):
-        where = self.route()
-        if where == '': return self.reply(200, self.server.phone.page, 'text/html; charset=utf-8', [('Content-Security-Policy', CSP)])
-        if where == 'events': return self.events()
-        self.reply(404)
+        path = self.path.split('?')[0]
+        if path == '/': return self.reply(200, self.server.phone.page, 'text/html; charset=utf-8', [('Content-Security-Policy', CSP)])
+        if path not in ('/events', '/session'): return self.reply(404)
+        if not self.allowed(): return self.reply(403)
+        if path == '/events': return self.events()
+        self.reply(204)
 
     def do_POST(self):
-        if self.route() != 'api': return self.reply(404)
-        size = int(self.headers.get('Content-Length') or 0)
+        path, phone, size = self.path.split('?')[0], self.server.phone, int(self.headers.get('Content-Length') or 0)
+        if path not in ('/api', '/session'): return self.reply(404)
         if not 0 < size <= 65536: return self.reply(413)
-        try: result = self.server.phone.act(json.loads(self.rfile.read(size)))
+        body = self.rfile.read(size)
+        if path == '/session':
+            try: ok = hmac.compare_digest(str(json.loads(body)['code']).encode(), phone.token.encode())
+            except Exception: ok = False
+            if not ok: return self.reply(403)
+            session = secrets.token_urlsafe(32); phone.sessions.add(session)
+            return self.reply(204, extra=[('Set-Cookie', f's={session}; HttpOnly; SameSite=Strict; Path=/')])
+        if not self.allowed(): return self.reply(403)
+        try: result = phone.act(json.loads(body))
         except Exception as e: return self.reply(400, json.dumps({'error': str(e) if isinstance(e, ValueError) else f'requête refusée : {e!r}'}, ensure_ascii=False).encode())
         self.reply(200, json.dumps(result, ensure_ascii=False).encode())
 
@@ -121,8 +143,10 @@ class Handler(BaseHTTPRequestHandler):
 @rpc('phone.start')
 def start(ctx):
     stop(ctx)
-    ctx.phone = Phone(ctx); port = ctx.phone.server.server_address[1]
-    return {'links': [{'kind': kind, 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/{ctx.phone.token}/'} for kind, ip in addresses()]}
+    found = addresses()
+    if not found: return {'links': []}
+    ctx.phone = Phone(ctx, [HOST] if HOST else [ip for _, ip in found]); port = ctx.phone.port
+    return {'links': [{'kind': kind, 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/#{ctx.phone.token}'} for kind, ip in found]}
 
 
 @rpc('phone.stop')

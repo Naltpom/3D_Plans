@@ -61,7 +61,8 @@ export function phonePanel(scene: Scene, handlers: Handlers, render: () => void)
   } else {
     const text = el("div", "text");
     text.append(el("span", "", "Scanne avec l'appareil photo du téléphone, puis va mesurer dans la pièce."), el("span", "kicker", link.kind === "tailscale" ? "Adresse Tailscale" : "Adresse Wi-Fi"),
-      el("span", "m", link.host), el("small", "", "Le code d'accès n'est que dans le QR. Il change à chaque ouverture."));
+      el("span", "m", link.host), el("small", "", "Le code d'accès n'est que dans le QR. Il change à chaque ouverture."),
+      ...link.kind === "wifi" ? [el("small", "large", "Sur le Wi-Fi, la liaison n'est pas chiffrée : préfère Tailscale.")] : []);
     box.append(qr(link.url), text);
   }
   const foot = el("div", "foot");

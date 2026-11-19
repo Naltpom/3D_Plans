@@ -112,7 +112,7 @@ svg .ring { fill: none; stroke: var(--point); stroke-width: 1.2; vector-effect: 
 <div id="toast" role="alert" hidden></div>
 <script>
 "use strict";
-const $ = (s) => document.querySelector(s), NS = "http://www.w3.org/2000/svg", BASE = location.pathname.replace(/[^/]*$/, "");
+const $ = (s) => document.querySelector(s), NS = "http://www.w3.org/2000/svg", BASE = "/";
 const MODES = [["libre", "Libre", "Libre : 2 points n'importe où, chacun suit le mur le plus proche."], ["point", "Point", "Point : touche un coin, un bout de cloison ou le bord d'une porte, puis le 2e."], ["ligne", "Ligne", "Ligne : 2 points n'importe où sur les murs ou les ouvertures."]];
 const NOUNS = { porte: "la porte", fenetre: "la fenêtre", porte_fenetre: "la porte-fenêtre" };
 let seen = 0, data = null, mode = "point", tab = "todo", first = null, view = null, focus = "", online = false, closed = false, queue = [], flushing = false, ask = null, source = null, toastTimer = 0;
@@ -359,7 +359,7 @@ async function flush() {
     let reply;
     try { reply = await fetch(`${BASE}api`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(queue[0]), cache: "no-store" }); }
     catch { online = false; break; }
-    if (reply.status === 404) { closed = true; break; }
+    if (reply.status === 403) { closed = true; break; }
     const answer = await reply.json().catch(() => ({}));
     if (!reply.ok) toast(answer.error || "Saisie refusée par le PC.");
     else if (answer.row?.id && queue[0].op === "place") focus = answer.row.id;
@@ -370,8 +370,16 @@ async function flush() {
   render();
 }
 
-function connect() {
+async function connect() {
   source?.close();
+  const code = location.hash.slice(1);
+  if (code) {
+    try {
+      const reply = await fetch(`${BASE}session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }), cache: "no-store" });
+      if (!reply.ok) { closed = true; return render(); }
+      history.replaceState(null, "", location.pathname);
+    } catch { online = false; render(); return void setTimeout(connect, 3000); }
+  }
   source = new EventSource(`${BASE}events`);
   source.onopen = () => { seen = Date.now(); online = true; render(); flush(); };
   source.addEventListener("ping", () => { seen = Date.now(); if (!online) { online = true; render(); flush(); } });
@@ -388,7 +396,7 @@ function connect() {
   source.onerror = () => {
     online = false;
     render();
-    if (source.readyState === EventSource.CLOSED) fetch(BASE, { cache: "no-store" }).then((r) => { if (r.status === 404) { closed = true; render(); } else setTimeout(connect, 3000); }).catch(() => setTimeout(connect, 3000));
+    if (source.readyState === EventSource.CLOSED) fetch(`${BASE}session`, { cache: "no-store" }).then((r) => { if (r.status === 403) { closed = true; render(); } else setTimeout(connect, 3000); }).catch(() => setTimeout(connect, 3000));
   };
 }
 
