@@ -89,6 +89,9 @@ svg .snap { fill: var(--point); }
 svg .wall.cloison { stroke-dasharray: 8 5; }
 svg .wall.focus { stroke: var(--point); stroke-width: 5; }
 svg .vertex { fill: var(--view); stroke: var(--accent-text); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.pages { padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.seg a { display: flex; align-items: center; justify-content: center; min-height: 40px; color: var(--soft); font-weight: 500; text-decoration: none; }
+.seg a[aria-current="page"] { background: var(--accent-bg); color: var(--text); font-weight: 600; }
 #build .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 #build label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 #build .grid input { min-height: 50px; font-size: 22px; border-width: 1px; }
@@ -100,6 +103,7 @@ svg .ring { fill: none; stroke: var(--point); stroke-width: 1.2; vector-effect: 
 </head>
 <body>
 <header><div><b id="title">3D_Plans</b><small id="sub">Connexion au PC…</small></div><span id="live" class="pill">Connexion…</span></header>
+<nav class="pages" aria-label="Pages"><div class="seg"><a href="/" aria-current="page">Cotes</a><a href="/scan">Scanner</a></div></nav>
 <div id="banner" role="status" hidden></div>
 <div id="view">
   <svg id="plan" role="img" aria-label="Plan vu de dessus, murs nommés et cotes"></svg>

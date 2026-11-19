@@ -1,8 +1,10 @@
+import glob, os
 from .rpc import project_meta, rpc
 
 QUESTIONS = ('forme', 'longueurs', 'echelle', 'ouvertures', 'hauteur')
 SOURCES = {
     'photos': ('Photos', {'forme', 'longueurs', 'ouvertures', 'hauteur'}),
+    'scan': ('Scan au téléphone', {'forme', 'longueurs', 'ouvertures', 'hauteur'}),
     'croquis': ('Croquis à main levée', {'forme', 'ouvertures'}),
     'plan': ('Plan coté', {'forme', 'longueurs', 'echelle', 'ouvertures'}),
     'cadastre': ('Plan cadastral', {'forme', 'longueurs', 'echelle'}),
@@ -10,9 +12,9 @@ SOURCES = {
     'gabarit': ('Fiche constructeur', set(QUESTIONS)),
     'relief': ("Relevé d'altitudes", set()),
 }
-OFFERED = {'piece': ['photos', 'croquis', 'plan', 'manuel', 'cadastre'], 'maison': ['cadastre', 'photos', 'croquis', 'plan', 'manuel', 'relief'],
-           'vehicule': ['gabarit', 'photos', 'croquis', 'plan', 'manuel']}
-PHOTOS, DRAWN, COPIED = ['photos'], ['croquis', 'plan', 'manuel'], {'plan'}
+OFFERED = {'piece': ['photos', 'scan', 'croquis', 'plan', 'manuel', 'cadastre'], 'maison': ['cadastre', 'photos', 'croquis', 'plan', 'manuel', 'relief'],
+           'vehicule': ['gabarit', 'photos', 'scan', 'croquis', 'plan', 'manuel']}
+PHOTOS, DRAWN, COPIED = ['photos', 'scan'], ['croquis', 'plan', 'manuel'], {'plan'}
 FLOWS = {'piece': ('projet', 'sources', 'positions', 'murs', 'echelle', 'verifier', 'meubler'),
          'maison': ('projet', 'sources', 'cadastre', 'murs', 'relief', 'toit', 'facades', 'echelle', 'verifier', 'meubler'),
          'vehicule': ('projet', 'sources', 'gabarit', 'positions', 'murs', 'echelle', 'verifier', 'meubler')}
@@ -55,7 +57,7 @@ def parcours(type, sources, walls=()):
 
 def detect(project, type):
     kinds, meta = {k for (k,) in project.db.execute('select kind from sources')}, project_meta(project)
-    found = {'photos': 'photos_colmap' in kinds, 'cadastre': any(k.startswith('cadastre') for k in kinds), 'relief': 'grille_alti' in kinds,
+    found = {'photos': 'photos_colmap' in kinds, 'scan': bool(glob.glob(os.path.join(project.folder, 'sources', 'scan', '*', 'passage-*'))), 'cadastre': any(k.startswith('cadastre') for k in kinds), 'relief': 'grille_alti' in kinds,
              'croquis': bool(meta.get('croquis')), 'manuel': bool((meta.get('guide') or {}).get('manual')), 'gabarit': True}
     return [s for s in OFFERED.get(type, OFFERED['piece']) if found.get(s)] or (['cadastre'] if type == 'maison' else [])
 

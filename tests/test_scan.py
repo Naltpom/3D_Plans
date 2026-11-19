@@ -159,3 +159,13 @@ def test_simple_shape_becomes_stacked_boxes():
     angles = np.radians(np.arange(0, 360, 20)); centers = [np.array([2 * np.cos(a), 2 * np.sin(a), 1.3]) for a in angles]
     found, _ = scan.isolate({**model_of(centers, [np.array([0, 0, 0.45])] * len(centers)), 'P': points, 'Tptr': np.arange(0, 3 * len(points) + 1, 3)})
     assert found['simple'] and len(found['boxes']) == 2 and abs(found['dims'][2] - 0.95) < 0.03 and min(found['boxes'][1]['lx'], found['boxes'][1]['lz']) < 0.12
+
+
+def test_scan_source_opens_positions_step(tmp_path):
+    from plans3d import parcours
+    route = parcours.parcours('piece', {'scan'}); useful = {s['id']: s['useful'] for s in route['steps']}
+    assert route['ready'] and useful['positions'] and useful['murs'] and 'scan' not in parcours.OFFERED['maison']
+    ctx = Ctx(lambda event: None); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    assert 'scan' not in parcours.detect(ctx.project, 'piece')
+    (tmp_path / 'p' / 'sources' / 'scan' / '20261119_210000' / 'passage-1').mkdir(parents=True)
+    assert 'scan' in parcours.detect(ctx.project, 'piece')

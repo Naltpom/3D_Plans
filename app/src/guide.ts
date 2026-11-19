@@ -39,7 +39,7 @@ const TIPS: Record<string, string> = {
 };
 const OLD: Record<string, string> = { maison: "projet cadastre relief toit facades verifier meubler", vehicule: "projet gabarit positions murs verifier meubler" };
 const QUESTIONS: Record<string, [string, string]> = { forme: ["Forme", "à choisir"], longueurs: ["Longueurs", "à mesurer"], echelle: ["Échelle", "à mesurer"], ouvertures: ["Portes et fenêtres", "à poser"], hauteur: ["Hauteur", "à mesurer"] };
-const SKIPPED: Record<string, string> = { positions: "Aucune source de photos n'est cochée.", facades: "Aucune source de photos n'est cochée.", cadastre: "Le plan cadastral n'est pas coché.",
+const SKIPPED: Record<string, string> = { positions: "Ni photos ni scan au téléphone ne sont cochés.", facades: "Aucune source de photos n'est cochée.", cadastre: "Le plan cadastral n'est pas coché.",
   gabarit: "La fiche constructeur n'est pas cochée.", relief: "Le relevé d'altitudes n'est pas coché.", murs: "Tes sources donnent les murs à une autre étape.", echelle: "Tes sources donnent déjà les longueurs et l'échelle." };
 const KIND_SOURCE: Record<string, string> = { photos_colmap: "photos", cadastre_pdf: "cadastre", cadastre_geojson: "cadastre", grille_alti: "relief" };
 const BODY: [string, string, string][] = [["longueur", "Longueur utile", "330"], ["largeur", "Largeur utile", "170"], ["hauteur", "Hauteur utile", "180"],
@@ -272,6 +272,8 @@ function offer(id: string, label: string, gives: string[]) {
     cadastre: ["PDF du cadastre ou fichier GeoJSON : contour extérieur du bâtiment, parcelle.", cadastral ? "importé" : "",
       [add(cadastral ? "Choisir un autre fichier" : "Choisir un fichier", "PDF ou GeoJSON du cadastre", async () => (await host.pickFiles("Plan cadastral")) ?? [])], cadastral ? mapped() : []],
     manuel: ["Rien à importer : tu poses les murs point par point, longueurs et angles au clavier.", "", [], []],
+    scan: ["Filme la pièce avec le téléphone (Tailscale, HTTPS) : les images arrivent dans les photos et se placent en direct.", "",
+      [button("Scanner maintenant", "", "Ouvrir le QR de la page Scanner à l'étape des positions", () => run(async () => { await choose(id, true); await go(position("positions")); await startScan(); }))], []],
     gabarit: ["Les cotes utiles de la fiche constructeur : caisse, passages de roue, portes.", built.length ? "créé" : "", [], []],
     relief: ["Grille d'altitudes (ASC, GeoTIFF ou JSON) : la maison et le jardin sur le vrai terrain.", ground ? "importé" : "",
       [add("Choisir une grille", "ASC, GeoTIFF ou JSON", async () => (await host.pickFiles("Grille d'altitudes")) ?? [])], []],
@@ -323,7 +325,7 @@ function sourcesStep() {
   if (!sources.length) list.append(el("li", "empty", "Aucun fichier pour l'instant : glisse un dossier de photos ou un plan ici."));
   const more = button("Ajouter des cotes ou un relief", "link fit", "CSV de cotes, grille d'altitudes", () => run(async () => addSources((await host.pickFiles("Cotes ou relief")) ?? [])));
   return [intro("Qu'as-tu sous la main ?", "Coche ce que tu as : le parcours s'adapte. Tu peux en ajouter ou en retirer plus tard, rien de ce qui est fait n'est perdu."),
-    grid, routeBox(), list, ...photos?.photos && has("photos") ? [sessions(photos.id)] : [], more, footer(back(), onward(route.ready))];
+    grid, routeBox(), list, ...photos?.photos && has("photos", "scan") ? [sessions(photos.id)] : [], more, footer(back(), onward(route.ready))];
 }
 
 function skippedStep() {
@@ -365,7 +367,7 @@ async function startScan(mode = "piece") {
   await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
 }
 
-const scanCta = () => row(cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", "", () => startScan()));
+const scanCta = (main = false) => row(cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", main ? "primary" : "", () => startScan()));
 
 async function restart() {
   restarting = true;
@@ -383,7 +385,8 @@ function positionsStep() {
   if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
     : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
     ...progress(restarting ? "photos.restart" : photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
-  if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre. Tu peux aussi filmer la pièce au téléphone."), scanCta(), footer(back(), onward())];
+  if (!source) return has("scan") ? [intro("Scanner au téléphone", "Ouvre le QR avec le téléphone, puis filme la pièce : les images arrivent et se placent en direct."), scanCta(true), footer(back())]
+    : [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre. Tu peux aussi filmer la pièce au téléphone."), scanCta(), footer(back(), onward())];
   if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
     footer(back(), primary("Installer les outils photo", autoPositions))];
   if (photo.count) {
