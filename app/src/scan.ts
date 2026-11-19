@@ -4,8 +4,9 @@ import { button, el, number, run } from "./ui";
 
 type Link = { kind: string; host: string; url: string };
 type Phone = { passage?: number; paused?: boolean; gardees?: number; floues?: number; doublons?: number; freq?: number; attente?: number; resolution?: string };
+type Found = { dims: number[]; simple: boolean; blocs: number; points: number; added?: { label: string; dims_cm: number[] } };
 type State = { id: string; mode: string; active: boolean; final: string; received: number; placed: number; passages: Record<string, number>; phone: Phone; computing: boolean;
-  ago_s: number | null; duration_s: number | null; colmap_mb: number; engine_mb: number; gaps: string; turn?: number; error: string };
+  ago_s: number | null; duration_s: number | null; colmap_mb: number; engine_mb: number; gaps: string; turn?: number; error: string; object: Found | null };
 
 let link: Link | null = null, note: { text: string; url?: string } | null = null, state: State | null = null, showQr = false, open = false, redraw: () => void = () => {};
 
@@ -27,7 +28,7 @@ export const scanFinal = () => state?.final === "calcul";
 
 export function scanTitle() {
   const passage = state?.phone.passage;
-  return !state?.received ? "Scanner au téléphone" : scanFinal() ? "Calcul final des positions" : `Scan au téléphone${passage ? ` · passage ${passage}` : ""}`;
+  return !state?.received ? "Scanner au téléphone" : scanFinal() ? state.mode === "objet" ? "Calcul de l'objet" : "Calcul final des positions" : `${state.mode === "objet" ? "Scan d'un objet" : "Scan au téléphone"}${passage ? ` · passage ${passage}` : ""}`;
 }
 
 function qrBox() {
@@ -68,6 +69,9 @@ export function scanPanel(): Node[] {
     `Dernier calcul : il y a ${s.ago_s} s · ${number(s.duration_s ?? 0, 0)} s · mémoire ${go(s.colmap_mb)} (COLMAP), ${go(s.engine_mb)} (appli).`));
   if (!s?.computing && !scanFinal()) lines.append(el("span", "", "Prochain : toutes les 30 s, ou dès 20 nouvelles images."));
   if (s?.gaps) lines.append(el("span", "warn", s.mode === "objet" ? `Tour : ${s.turn ?? 0}° · ${s.gaps}` : `Peu vu : ${s.gaps}`));
+  const found = s?.object, size = (v: number[]) => v.map((x) => number(x, 0)).join(" × ");
+  if (found?.added) lines.append(el("span", "", `Ajouté à la galerie : ${found.added.label} · ${size(found.added.dims_cm)} cm${found.simple ? ` (${found.blocs} boîtes empilées)` : " (une boîte)"}.`));
+  else if (found) lines.append(el("span", "", `Objet isolé (${plural(found.points, "point")}) : en attente de la cote saisie sur le téléphone. Forme : ${found.simple ? `${found.blocs} boîtes empilées` : "une boîte, la forme réelle est trop complexe"}.`));
   if (s?.error) lines.append(el("span", "warn", s.error));
   const toggle = button(showQr ? "Masquer le QR" : "Afficher le QR de la page Scanner", "link", "Afficher ou masquer le QR", () => { showQr = !showQr; redraw(); });
   return [stats, lines, ...showQr ? [qrBox()] : [], toggle];
@@ -79,6 +83,8 @@ export const scanButtons = () => scanFinal() ? [] : [
 
 onEvent((event) => {
   if (event.event !== "scan" || !open) return;
+  const was = Boolean(state?.object?.added);
   state = event as unknown as State;
+  if (!was && state.object?.added) document.dispatchEvent(new CustomEvent("plans3d:catalog"));
   redraw();
 });

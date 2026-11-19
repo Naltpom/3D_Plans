@@ -102,6 +102,7 @@ const turn = (rot: number) => {
   act("furniture.rotate", { id: selected, rot });
 };
 
+document.addEventListener("plans3d:catalog", () => run(loadKinds));
 $("#ikea-button").onclick = () => run(async () => {
   count.textContent = "Téléchargement du catalogue IKEA…";
   const done = await call<{ count: number }>("catalog.import_ikea");

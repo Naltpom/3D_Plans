@@ -1,4 +1,5 @@
 import hashlib, json, math, os, re, unicodedata, urllib.parse, urllib.request
+from datetime import datetime
 from . import components as C
 from .rpc import RpcError, rpc
 
@@ -172,6 +173,15 @@ def custom_item(custom, item_id='sur_mesure'):
     shift = {'x': (low['x'] + high['x']) / 2, 'y': 0.0, 'z': (low['z'] + high['z']) / 2}
     return {'id': item_id, 'label': str(custom.get('label') or 'Objet sur mesure'), 'kind': 'sur_mesure', 'source': 'perso', 'params': {},
             'size': [high['x'] - low['x'], high['y'], high['z'] - low['z']], 'boxes': [{**b, **{a: b[a] - shift[a] for a in 'xyz'}} for b in boxes]}
+
+
+def add_perso(label, boxes):
+    items, item_id = read('perso.json'), f"perso:scan_{datetime.now():%Y%m%d_%H%M%S}"
+    entry = {'id': item_id, 'label': str(label).strip()[:80] or 'Objet scanné', 'boxes': boxes}
+    found = custom_item(entry, item_id); os.makedirs(FOLDER, exist_ok=True); path = os.path.join(FOLDER, 'perso.json')
+    with open(path + '.tmp', 'w', encoding='utf-8') as fh: json.dump([*items, entry] if isinstance(items, list) else [entry], fh, ensure_ascii=False, indent=1)
+    os.replace(path + '.tmp', path)
+    return found
 
 
 def entries():

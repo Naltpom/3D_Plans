@@ -359,13 +359,13 @@ function alert(title: string, text: string) {
   return box;
 }
 
-async function startScan() {
+async function startScan(mode = "piece") {
   if (!photoInfo().installed) await photoTask("tools.install");
   await openScan(render);
-  await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode: "piece" }).finally(render);
+  await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
 }
 
-const scanCta = () => cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", "", startScan);
+const scanCta = () => row(cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", "", () => startScan()));
 
 async function restart() {
   restarting = true;
@@ -714,7 +714,9 @@ async function openPlan() {
 function furnishStep() {
   const box = el("div", "furnish");
   box.append($("#gallery"), $("#layout"));
-  return [intro("Meubler", "Choisis des meubles dans la galerie, place-les dans la vue, puis demande des agencements."), box, footer(back(), primary("Ouvrir le plan", openPlan))];
+  const scan = photoInfo().busy === "scan.live" ? [...scanPanel(), row(...scanButtons())]
+    : [row(cta("Scanner un objet au téléphone", "Tourner autour : l'objet est mesuré et ajouté à la galerie", "", () => startScan("objet")))];
+  return [intro("Meubler", "Choisis des meubles dans la galerie, place-les dans la vue, puis demande des agencements."), ...scan, box, footer(back(), primary("Ouvrir le plan", openPlan))];
 }
 
 function pickInto(title: string) {

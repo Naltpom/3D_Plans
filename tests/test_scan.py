@@ -82,7 +82,7 @@ def test_object_turn_and_direction():
     angles = np.radians(np.arange(0, 271, 30))
     model = model_of([2 * np.array([np.cos(a), np.sin(a), 0.3]) for a in angles], [np.zeros(3)] * len(angles))
     found = scan.coverage(model, 'objet')
-    assert found['turn'] == 300 and 'continue vers la' in found['gaps'] and 'tour plus haut' in found['gaps'] and np.linalg.norm(found['center']) < 1e-6
+    assert found['turn'] == 310 and 'continue vers la' in found['gaps'] and 'tour plus haut' in found['gaps'] and np.linalg.norm(found['center']) < 1e-6
 
 
 @pytest.fixture
@@ -127,3 +127,35 @@ def test_scan_page_and_uploads_into_photo_source(phone):
     assert send(base + 'scan/cmd', {'op': 'mode', 'mode': 'objet'}, cookie)[1]['mode'] == 'piece'
     assert send(base + 'scan/cmd', {'op': 'finish'}, cookie)[1]['active'] is False and live.done
     assert send(base + 'scan/image', jpeg(), cookie, **head(2, 4))[0] == 409
+
+
+def test_object_isolated_from_floor_with_dimensions_and_gallery_entry(tmp_path, monkeypatch):
+    rng = np.random.default_rng(1); size = np.array([1.6, 0.9, 0.7]); yaw = np.radians(25)
+    faces = rng.uniform(-0.5, 0.5, (4000, 3)); axis = rng.integers(0, 3, 4000); faces[np.arange(4000), axis] = np.sign(faces[np.arange(4000), axis]) * 0.5
+    box = faces * size + [0, 0, 0.35]; box = box[box[:, 2] > 0.01]
+    turn = np.array([[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]]); floor = np.c_[rng.uniform(-3, 3, (3000, 2)), np.zeros(3000)]
+    points = np.r_[box @ turn.T, floor] + [5.0, -2.0, 0.0]
+    angles = np.radians(np.arange(0, 360, 20)); centers = [np.array([5 + 2.5 * np.cos(a), -2 + 2.5 * np.sin(a), 1.2 + 0.4 * (i % 2)]) for i, a in enumerate(angles)]
+    model = {**model_of(centers, [np.array([5.0, -2.0, 0.35])] * len(centers)), 'P': points * 0.37, 'Tptr': np.arange(0, 3 * len(points) + 1, 3)}
+    model['t'] *= 0.37
+    found, shown = scan.isolate(model)
+    assert np.allclose(np.array(found['dims']) / found['dims'][2], size / size[2], rtol=0.05) and len(shown) <= scan.PHONE_POINTS and not found['simple']
+    from plans3d import furniture
+    monkeypatch.setattr(furniture, 'FOLDER', str(tmp_path / 'catalog'))
+    ctx = Ctx(lambda event: None); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    live = scan.Scan(ctx, 'photos', 'objet'); live.object = found
+    with pytest.raises(ValueError): live.keep({'axe': 'hauteur', 'cm': 9000})
+    state = live.keep({'axe': 'hauteur', 'cm': 70, 'nom': 'Canapé'})
+    assert state['final'] == 'ajouté' and np.allclose(state['object']['added']['dims_cm'], [160, 90, 70], rtol=0.05)
+    item = next(e for e in furniture.entries() if e['source'] == 'perso')
+    assert item['label'] == 'Canapé' and np.allclose(item['size'], [1.6, 0.7, 0.9], rtol=0.05)
+
+
+def test_simple_shape_becomes_stacked_boxes():
+    rng = np.random.default_rng(2)
+    def box(n, lo, hi):
+        f = rng.uniform(0, 1, (n, 3)); a = rng.integers(0, 3, n); f[np.arange(n), a] = np.round(f[np.arange(n), a]); return np.array(lo) + f * (np.array(hi) - lo)
+    points = np.r_[box(3000, [-0.25, -0.25, 0], [0.25, 0.25, 0.45]), box(2000, [-0.25, 0.17, 0.45], [0.25, 0.25, 0.95]), np.c_[rng.uniform(-3, 3, (3000, 2)), np.zeros(3000)]]
+    angles = np.radians(np.arange(0, 360, 20)); centers = [np.array([2 * np.cos(a), 2 * np.sin(a), 1.3]) for a in angles]
+    found, _ = scan.isolate({**model_of(centers, [np.array([0, 0, 0.45])] * len(centers)), 'P': points, 'Tptr': np.arange(0, 3 * len(points) + 1, 3)})
+    assert found['simple'] and len(found['boxes']) == 2 and abs(found['dims'][2] - 0.95) < 0.03 and min(found['boxes'][1]['lx'], found['boxes'][1]['lz']) < 0.12

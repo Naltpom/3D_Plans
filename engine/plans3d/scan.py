@@ -2,6 +2,9 @@ import json, os, shutil, sqlite3, threading, time
 from collections import Counter
 from datetime import datetime
 import numpy as np
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 from . import photos
 from .rpc import RpcError, rpc
 
@@ -9,7 +12,7 @@ HERE = os.path.dirname(__file__)
 EVERY_S, EVERY_N, MIN_S, MIN_IMAGES, PHONE_POINTS, MAX_BYTES, PRE = 30, 20, 5, 5, 3000, 30 << 20, 1024
 CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 SIDES = ('devant toi', 'à droite', 'derrière toi', 'à gauche')
-MODES = ('piece',)
+MODES, AXES, LAYERS = ('piece', 'objet'), ('longueur', 'largeur', 'hauteur'), 6
 FAST = ['--Mapper.ba_global_frames_ratio', '1.5', '--Mapper.ba_global_points_ratio', '1.5', '--Mapper.ba_global_max_refinements', '1', '--Mapper.ba_global_max_num_iterations', '30',
         '--Mapper.ba_global_ignore_redundant_points3D', '1', '--Mapper.multiple_models', '0']
 PHONE_KEYS = {'passage', 'paused', 'gardees', 'floues', 'doublons', 'freq', 'attente', 'resolution'}
@@ -55,11 +58,11 @@ def coverage(model, mode):
         axes = np.eye(3) - np.einsum('ni,nj->nij', rotations[:, 2], rotations[:, 2])
         middle = np.linalg.lstsq(axes.sum(0), np.einsum('nij,nj->i', axes, centers), rcond=None)[0]
         around = flat(centers - middle, up); angle = np.arctan2(around @ right[last], around @ around[last])
-        bins = np.bincount(np.round(angle / (np.pi / 6)).astype(int) % 12, minlength=12)
-        missing = [k if k <= 6 else k - 12 for k in np.flatnonzero(bins == 0)]
+        seen = np.sort(np.degrees(angle) % 360); gaps = np.diff(np.r_[seen, seen[0] + 360]); widest = int(np.argmax(gaps)); missing = np.clip(gaps - 40, 0, None).sum()
+        far = (np.arange(12)[:, None] * 30 - seen[None] + 180) % 360 - 180
         high = np.degrees(np.arcsin(np.clip(photos.unit_rows(centers - middle) @ up, -1, 1))).max()
-        gaps = ([f"continue vers la {'droite' if min(missing, key=abs) > 0 else 'gauche'}"] if missing else []) + (['puis un tour plus haut'] if high < 20 else [])
-        return {'sectors': (bins > 0).astype(float).tolist(), 'turn': int(30 * np.count_nonzero(bins)), 'gaps': ', '.join(gaps), 'center': middle}
+        gaps = ([f"continue vers la {'droite' if (seen[widest] + gaps[widest] / 2 + 180) % 360 - 180 > 0 else 'gauche'}"] if missing else []) + (['puis un tour plus haut'] if high < 20 else [])
+        return {'sectors': (np.abs(far).min(1) <= 20).astype(float).tolist(), 'turn': int(round((360 - missing) / 10) * 10), 'gaps': ', '.join(gaps), 'center': middle}
     angle = np.arctan2(forward @ right[last], forward @ forward[last]); bins = np.bincount(np.round(angle / (np.pi / 4)).astype(int) % 8, minlength=8)
     pitch = rotations[:, 2] @ up; share = lambda mask: np.count_nonzero(mask) / len(pitch)
     gaps = list(dict.fromkeys(SIDES[(k + 1) // 2 % 4] for k in np.flatnonzero(bins < 0.35 * bins.max())))
@@ -79,6 +82,47 @@ def phone_cloud(model, version):
     return {'version': version, 'points': local.round(3).ravel().tolist(), 'colors': model['C'][seen].ravel().tolist()}
 
 
+def floor(points, up, reach):
+    low = points[points @ up <= np.percentile(points @ up, 40)]
+    for _ in range(5):
+        middle = low.mean(0); normal = np.linalg.svd(low - middle, full_matrices=False)[2][2]; normal *= np.sign(normal @ up); gap = np.abs((low - middle) @ normal)
+        low = low[gap < max(0.01 * reach, 2.5 * np.median(gap))]
+    return normal, middle
+
+
+def isolate(model):
+    found, centers, up = coverage(model, 'objet'), photos.camera_centers(model), photos.unit(photos.image_ups({**model, 'orientation': np.ones(len(model['q']))}).sum(0))
+    rel, around = model['P'][np.diff(model['Tptr']) >= 3] - found['center'], centers - found['center']
+    reach = np.median(np.linalg.norm(around - np.outer(around @ up, up), axis=1))
+    up, base = floor(rel[np.linalg.norm(rel - np.outer(rel @ up, up), axis=1) < 0.9 * reach], up, reach)
+    e1 = photos.unit(np.cross(up, [1.0, 0, 0] if abs(up[0]) < 0.9 else [0, 1.0, 0])); e2 = np.cross(up, e1)
+    xy, h, ground = np.stack([rel @ e1, rel @ e2], 1), (rel - base) @ up, 0.0; near = np.linalg.norm(xy, axis=1)
+    inside = (near < 0.75 * reach) & (h > ground + 0.02 * reach) & (h < ground + 2.5 * reach)
+    if np.count_nonzero(inside) < 30: raise ValueError("objet introuvable : tourne autour en le gardant au centre de l'image")
+    points = np.c_[xy, h][inside]; gap = cKDTree(points).query(points, 5)[0][:, -1]; radius = 2.5 * np.median(gap); points = points[gap < radius]
+    pairs = cKDTree(points).query_pairs(radius, output_type='ndarray')
+    labels = connected_components(coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(points),) * 2), directed=False)[1]
+    xy, h = points[labels == np.bincount(labels).argmax(), :2], points[labels == np.bincount(labels).argmax(), 2] - ground
+    best = min(range(90), key=lambda a: np.prod(np.ptp(np.percentile(xy @ rotation2(a), [2, 98], axis=0), axis=0)))
+    local = xy @ rotation2(best); lo, hi = np.percentile(local, [2, 98], axis=0)
+    if hi[0] - lo[0] < hi[1] - lo[1]: local, lo, hi = local[:, ::-1], lo[::-1], hi[::-1]
+    top, boxes = np.percentile(h, 98), []
+    for a, b in zip(np.linspace(0, top, LAYERS + 1)[:-1], np.linspace(0, top, LAYERS + 1)[1:]):
+        part = local[(h >= a) & (h <= b)]
+        box = list(np.percentile(part, [2, 98], axis=0).T.ravel()) if len(part) >= 15 else boxes[-1][2:] if boxes else [lo[0], hi[0], lo[1], hi[1]]
+        if boxes and max(abs(np.subtract(box, boxes[-1][2:]))) < 0.12 * (hi[0] - lo[0]): boxes[-1] = [boxes[-1][0], b, *np.where([1, 0, 1, 0], np.minimum(box, boxes[-1][2:]), np.maximum(box, boxes[-1][2:]))]
+        else: boxes.append([a, b, *box])
+    simple = 1 < len(boxes) <= 4 and len(h) >= 200
+    shapes = [{'x': x0 - lo[0], 'y': a, 'z': z0 - lo[1], 'lx': x1 - x0, 'ly': b - a, 'lz': z1 - z0} for a, b, x0, x1, z0, z1 in (boxes if simple else [[0, top, lo[0], hi[0], lo[1], hi[1]]])]
+    sample = np.random.default_rng(0).permutation(len(h))[:PHONE_POINTS]
+    shown = np.stack([local[sample, 0] - lo[0], h[sample], local[sample, 1] - lo[1]], 1)
+    return {'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(top)], 'boxes': [{k: float(v) for k, v in b.items()} for b in shapes], 'simple': simple, 'points': len(h)}, shown
+
+
+def rotation2(degrees):
+    a = np.radians(degrees); return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+
+
 def link(path, target):
     if os.path.exists(target): return
     try: os.link(path, target)
@@ -91,14 +135,14 @@ class Scan:
         self.id = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.folder, self.work = (os.path.join(self.project.folder, part, 'scan', self.id) for part in ('sources', 'cache'))
         self.lock, self.wake = threading.Lock(), threading.Condition()
-        self.paths, self.seen, self.done, self.stopped, self.now, self.processed = [], set(), False, False, False, 0
+        self.paths, self.seen, self.done, self.stopped, self.now, self.want, self.processed = [], set(), False, False, False, False, 0
         self.phone, self.cloud, self.object, self.final = {}, {}, None, ''
         self.info = {'placed': 0, 'sectors': [], 'gaps': '', 'computing': False, 'at': None, 'duration_s': None, 'colmap_mb': 0, 'engine_mb': 0, 'error': ''}
         os.makedirs(os.path.join(self.work, 'images'), exist_ok=True)
 
     def public(self):
         return {'id': self.id, 'project': os.path.basename(os.path.normpath(self.project.folder)), 'mode': self.mode, 'modes': MODES, 'active': not self.done, 'passages': dict(Counter(str(p) for p, _ in self.seen)), 'final': self.final, 'received': len(self.paths), 'phone': self.phone, 'cloud': self.cloud.get('version', 0),
-                **self.info, 'ago_s': None if self.info['at'] is None else round(time.time() - self.info['at']), 'object': self.object}
+                **self.info, 'ago_s': None if self.info['at'] is None else round(time.time() - self.info['at']), 'object': self.object and {**{k: v for k, v in self.object.items() if k != 'boxes'}, 'blocs': len(self.object['boxes'])}}
 
     def changed(self): self.ctx.send({'event': 'scan', **self.public()})
 
@@ -114,6 +158,7 @@ class Scan:
             if (passage, index) not in self.seen:
                 path = os.path.join(self.folder, f'passage-{passage}', f'{index:05d}.jpg'); os.makedirs(os.path.dirname(path), exist_ok=True)
                 open(path, 'wb').write(data); self.seen.add((passage, index)); self.paths.append(path)
+                if self.mode == 'objet' and self.final in ('objet', 'échec'): self.final, self.object = '', None
                 if self.mode == 'piece':
                     with self.ctx.lock: photos.add(self.ctx, [path], self.source)
             count = len(self.paths)
@@ -123,10 +168,21 @@ class Scan:
     def command(self, op):
         kind = op.get('op')
         if kind == 'mode' and not self.paths and op.get('mode') in MODES: self.mode = op['mode']
-        elif kind == 'finish': self.signal(done=True)
+        elif kind == 'finish': self.signal(**{'want': True} if self.mode == 'objet' else {'done': True})
+        elif kind == 'objet': return self.keep(op)
         elif kind == 'now': self.signal(now=True)
         elif kind != 'mode': raise RpcError('opération inconnue')
         self.changed()
+        return self.public()
+
+    def keep(self, op):
+        from .furniture import add_perso
+        if not self.object or op.get('axe') not in AXES: raise RpcError("pas d'objet calculé")
+        k = float(op['cm']) / 100 / self.object['dims'][AXES.index(op['axe'])]
+        if not 0 < k * max(self.object['dims']) <= 5: raise RpcError('cote hors limites')
+        item = add_perso(op.get('nom') or 'Objet scanné', [{key: round(v * k, 4) for key, v in box.items()} for box in self.object['boxes']])
+        self.object['added'] = {'label': item['label'], 'dims_cm': [round(v * 100 * k, 1) for v in self.object['dims']]}
+        self.signal(done=True, final='ajouté'); self.changed()
         return self.public()
 
     def abort(self):
@@ -142,6 +198,7 @@ class Scan:
                 due = len(self.paths) >= MIN_IMAGES and fresh and (self.now or fresh >= EVERY_N and waited >= MIN_S or waited >= EVERY_S)
             if due and not self.done:
                 self.compute(emit, progress); last = time.monotonic()
+            if self.want and not self.done: self.solve(emit, progress)
 
     def compute(self, emit, progress):
         work = lambda *parts: os.path.join(self.work, *parts)
@@ -187,6 +244,26 @@ class Scan:
             self.info.update(computing=False, at=time.time(), steps=steps, images=len(fresh), duration_s=round(time.perf_counter() - started, 1), colmap_mb=round(photos.PEAKS.get(self.work, 0)), engine_mb=round(photos.peak_mb()))
             self.changed()
 
+    def solve(self, emit, progress):
+        work = lambda *parts: os.path.join(self.work, *parts)
+        self.want, self.final = False, 'calcul'; self.changed()
+        try:
+            if len(self.paths) > self.processed: self.compute(emit, progress)
+            shutil.rmtree(work('objet'), ignore_errors=True); os.makedirs(work('objet'))
+            photos.run_colmap(['global_mapper', '--database_path', work('database.db'), '--image_path', work('images'), '--output_path', work('objet')], work('objet.log'), progress, .5, .9, 'poses')
+            folders = [work('objet', name) for name in os.listdir(work('objet')) if os.path.isdir(work('objet', name))]
+            for folder in folders:
+                photos.run_colmap(['point_filtering', '--input_path', folder, '--output_path', folder], work('filter.log'), progress, .9, .92, 'lecture')
+                photos.run_colmap(['model_converter', '--input_path', folder, '--output_path', folder, '--output_type', 'TXT'], work('convert.log'), progress, .92, .95, 'lecture')
+            model = max((photos.read_text_model(folder)[0] for folder in folders), key=lambda m: len(m['names']), default=None)
+            if model is None or len(model['names']) < 8: raise ValueError("trop peu d'images placées pour l'objet : fais un tour de plus")
+            self.object, shown = isolate(model); self.info.update(placed=len(model['names']), **{k: v for k, v in coverage(model, 'objet').items() if k != 'center'})
+            self.cloud = {'version': self.cloud.get('version', 0) + 1, 'points': shown.round(4).ravel().tolist(), 'colors': [], 'box': [self.object['dims'][0], self.object['dims'][2], self.object['dims'][1]]}
+            self.final = 'objet'
+        except photos.Stopped: pass
+        except ValueError as error: self.final, self.info['error'] = 'échec', str(error)
+        self.changed()
+
     def show(self, model, names, live):
         position = {name: i for i, name in enumerate(names)}; kept = np.random.default_rng(0).permutation(len(model['P']))[:photos.LIVE_POINTS]
         live(placed=sorted(position[name] for name in model['names']))
@@ -197,7 +274,7 @@ class Scan:
 
     def finish(self, emit, progress):
         result = {'id': self.id, 'received': len(self.paths), 'stopped': self.stopped}
-        if self.stopped or len(self.paths) < MIN_IMAGES: return result
+        if self.stopped or len(self.paths) < MIN_IMAGES or self.mode == 'objet': return {**result, 'objet': self.object and self.object.get('added')}
         self.final = 'calcul'; self.changed()
         try:
             seed = (self.work, {path: f'{i:05d}.jpg' for i, path in enumerate(self.paths[:self.processed])})
