@@ -12,6 +12,7 @@ export type Handlers = { changed: (id: string, label: string) => void; hide: (id
 
 let links: Link[] | null = null;
 let note: Note | null = null;
+let wifi: string | null = null;
 let which = 0;
 let clients = 0;
 let last = "";
@@ -23,12 +24,12 @@ const chip = el("span", "chip");
 const paint = () => { chip.className = `chip ${clients ? "ok" : ""}`; chip.textContent = clients ? clients > 1 ? `${clients} téléphones connectés` : "Téléphone connecté" : "En attente du téléphone"; };
 
 async function start() {
-  ({ links, tailscale: note } = await call<{ links: Link[]; tailscale: Note | null }>("phone.start"));
+  ({ links, wifi, tailscale: note } = await call<{ links: Link[]; wifi: string | null; tailscale: Note | null }>("phone.start"));
   [which, clients, last, sent] = [0, 0, "", ""];
 }
 
 function stop() {
-  [links, note] = [null, null];
+  [links, note, wifi] = [null, null, null];
   return call("phone.stop");
 }
 
@@ -65,7 +66,7 @@ export function phonePanel(scene: Scene, handlers: Handlers, render: () => void)
     box.append(alert);
   }
   if (!link) {
-    box.append(el("div", "alert", "Aucun réseau : connecte le PC au Wi-Fi de la maison ou ouvre Tailscale, puis rouvre ce panneau."));
+    if (!wifi) box.append(el("div", "alert", "Aucun réseau : connecte le PC au Wi-Fi de la maison ou ouvre Tailscale, puis rouvre ce panneau."));
   } else {
     const text = el("div", "text");
     text.append(el("span", "", "Scanne avec l'appareil photo du téléphone, puis va mesurer dans la pièce."), el("span", "kicker", link.kind === "tailscale" ? "Adresse Tailscale · HTTPS" : "Adresse Wi-Fi"),
@@ -76,7 +77,12 @@ export function phonePanel(scene: Scene, handlers: Handlers, render: () => void)
   }
   const foot = el("div", "foot");
   if (last) foot.append(el("span", "", `Dernière saisie : ${last}`));
-  if (other) foot.append(button(other.kind === "wifi" ? `Pas de Tailscale sur le téléphone ? QR du Wi-Fi de la maison (${other.host.split(":")[0]})` : `QR Tailscale (${other.host.split(":")[0]})`, "link", "Changer d'adresse", () => { which = 1 - which; render(); }));
+  if (link?.kind === "wifi" && other) foot.append(button(`QR Tailscale (${other.host.split(":")[0]})`, "link", "Changer d'adresse", () => { which = 1 - which; render(); }));
+  else if (link?.kind !== "wifi" && wifi) foot.append(button(`${link ? "Pas de Tailscale sur le téléphone ? " : ""}QR du Wi-Fi de la maison (${wifi})`, "link", "Ouvrir la saisie sur le réseau local, liaison non chiffrée", () => run(async () => {
+    if (!links!.some((l) => l.kind === "wifi")) links!.push(await call<Link>("phone.wifi"));
+    which = links!.findIndex((l) => l.kind === "wifi");
+    render();
+  })));
   box.append(foot, button("Arrêter", "", "Arrêter la saisie sur le téléphone", () => run(async () => { await stop(); render(); })));
   return [box];
 }

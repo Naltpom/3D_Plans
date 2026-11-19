@@ -76,14 +76,16 @@ def test_tailscale_serve_publishes_loopback_server_and_keeps_other_entries(phone
     assert tailnet.conf == IMMICH and not any('reset' in c for c in tailnet.calls)
 
 
-def test_wifi_fallback_with_activation_link(project, tailnet, monkeypatch):
+def test_wifi_only_on_demand_with_activation_link(project, tailnet, monkeypatch):
     ctx, _ = project
     tailnet.serve = (False, ENABLE)
     monkeypatch.setattr(telephone, 'lan', lambda: '127.0.0.2')
     started = call(ctx, 'phone.start', {})
-    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1', '127.0.0.2'] and started['tailscale']['url'] == 'https://login.tailscale.com/f/serve?node=abc'
-    assert [link['url'] for link in started['links']] == [f'http://127.0.0.2:{ctx.phone.port}/#{ctx.phone.token}']
-    login(f'http://127.0.0.2:{ctx.phone.port}/', ctx.phone.token)
+    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1'] and started['links'] == [] and started['wifi'] == '127.0.0.2'
+    assert started['tailscale']['url'] == 'https://login.tailscale.com/f/serve?node=abc'
+    link = call(ctx, 'phone.wifi', {})
+    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1', '127.0.0.2'] and call(ctx, 'phone.wifi', {}) == link and link['url'].endswith(f'/#{ctx.phone.token}')
+    login(link['url'].split('#')[0], ctx.phone.token)
     monkeypatch.setattr(telephone, 'tailscale', lambda *args: (None, ''))
     assert 'pas installé' in call(ctx, 'phone.start', {})['tailscale']['text']
 

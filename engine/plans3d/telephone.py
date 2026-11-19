@@ -61,28 +61,28 @@ class Server(ThreadingHTTPServer):
     def server_bind(self): TCPServer.server_bind(self); self.server_name, self.server_port = self.server_address[:2]
 
 
-def bind(hosts):
+def bind(host):
     for port in (PORT, 0):
-        servers = []
-        try:
-            for host in hosts: servers.append(Server((host, port or (servers[0].server_address[1] if servers else 0)), Handler))
-            return servers
-        except OSError:
-            for server in servers: server.server_close()
+        try: return Server((host, port), Handler)
+        except OSError: pass
     raise RpcError('aucun port libre pour la saisie sur le téléphone')
 
 
 class Phone:
-    def __init__(self, ctx, hosts):
+    def __init__(self, ctx, host):
         self.ctx, self.project, self.token, self.open, self.sessions = ctx, ctx.require_project(), secrets.token_urlsafe(32), True, set()
         self.scene, self.version, self.clients, self.changed = {}, 0, 0, threading.Condition()
         self.key = hashlib.sha1(os.path.abspath(self.project.folder).encode()).hexdigest()[:12]
         with open(PAGE, 'rb') as fh: self.page = fh.read()
-        self.servers = bind(hosts)
-        self.port = self.servers[0].server_address[1]
-        for server in self.servers:
-            server.phone = self
-            threading.Thread(target=server.serve_forever, daemon=True, name='telephone').start()
+        self.servers = []
+        self.port = self.listen(host)
+
+    def listen(self, host):
+        port = next((s.server_address[1] for s in self.servers if s.server_address[0] == host), None)
+        if port: return port
+        server = bind(host); server.phone = self; self.servers.append(server)
+        threading.Thread(target=server.serve_forever, daemon=True, name='telephone').start()
+        return server.server_address[1]
 
     def notify(self, **event):
         with self.changed: self.version += 1; self.changed.notify_all()
@@ -176,11 +176,17 @@ class Handler(BaseHTTPRequestHandler):
 @rpc('phone.start')
 def start(ctx):
     stop(ctx)
-    wifi = lan()
-    phone = ctx.phone = Phone(ctx, [HOST] if HOST else ['127.0.0.1', *[wifi] * bool(wifi)])
+    phone = ctx.phone = Phone(ctx, HOST or '127.0.0.1')
     host, note = publish(phone.port)
-    links = [('tailscale', host, 'https')] * bool(host) + [('wifi', f'{wifi}:{phone.port}', 'http')] * bool(wifi)
-    return {'links': [{'kind': kind, 'host': h, 'url': f'{scheme}://{h}/#{phone.token}'} for kind, h, scheme in links], 'tailscale': note}
+    return {'links': [{'kind': 'tailscale', 'host': host, 'url': f'https://{host}/#{phone.token}'}] * bool(host), 'wifi': lan(), 'tailscale': note}
+
+
+@rpc('phone.wifi')
+def wifi(ctx):
+    ip = lan()
+    if not (ctx.phone and ip): raise RpcError('pas de réseau local pour la saisie sur le téléphone')
+    port = ctx.phone.listen(ip)
+    return {'kind': 'wifi', 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/#{ctx.phone.token}'}
 
 
 @rpc('phone.stop')
