@@ -44,7 +44,7 @@ function proposals() {
   const no = refused(), gone = new Set([...no, ...measured()]), byKey = new Map(state!.candidates.map((c) => [c.key, c]));
   const near = (a: Item, b: Item) => [b.ends, [...b.ends].reverse()].some((e) => a.ends.every((p, i) => Math.hypot(p[0] - e[i][0], p[1] - e[i][1]) < 0.3));
   const left = state!.candidates.filter((c) => !gone.has(c.key) && (!c.twin || gone.has(c.twin) && !(no.has(c.twin) && near(c, byKey.get(c.twin)!)))), wall = (c: Item) => c.key.startsWith("longueur.");
-  return h.lengths() ? [...left.filter(wall), ...left.filter((c) => !wall(c)).slice(0, 4)] : left.slice(0, 4);
+  return h.lengths() ? [...state!.candidates.filter((c) => wall(c) && !gone.has(c.key)), ...left.filter((c) => !wall(c)).slice(0, 4)] : left.slice(0, 4);
 }
 
 async function refresh() {

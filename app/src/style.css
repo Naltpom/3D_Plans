@@ -361,7 +361,7 @@ body.page #step .actions { margin-top: 0; }
 #step .grid:has(.src) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 #step .card.src { border-color: var(--border); background: var(--panel); }
 #step .card.src.on { border-color: var(--accent); background: #17262e; }
-#step .src-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+#step .src-head { flex-direction: row; align-items: center; gap: 10px; font-size: 14px; color: var(--text); cursor: pointer; }
 #step .src-head input { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--accent); }
 #step .gives { display: flex; flex-wrap: wrap; gap: 4px; }
 #step .gives span { padding: 1px 8px; border: 1px solid var(--strong); border-radius: 999px; font-size: 11px; line-height: 16px; color: var(--muted); }

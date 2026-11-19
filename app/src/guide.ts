@@ -255,7 +255,7 @@ function offer(id: string, label: string, gives: string[]) {
     const paths = await pick();
     if (paths.length) { await addSources(paths); await choose(id, true); }
   }));
-  const image = button(sketch ? "Choisir une autre image" : "Choisir une image", "", "Image JPEG ou PNG", () => run(async () => {
+  const image = button(sketch && on ? "Choisir une autre image" : "Choisir une image", "", "Image JPEG ou PNG", () => run(async () => {
     const [path] = (await host.pickFiles(label)) ?? [];
     if (path) { await call("plan.sketch", { path }); await save({ classic: false }); await choose(id, true); }
     await loadPlan();
