@@ -25,6 +25,7 @@ STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
 FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M, TOUCH_M, SAME_M, GOING_SIGMA_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5, 0.05, 0.6, 0.01
 CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
 AXIS_TOL, COTE_SIGMA_M, SCALE_SIGMA, EDGE_GAP = np.tan(np.radians(2)), 0.01, 0.1, 0.2
+TOL_BASE, TOL_SLOPE, TOL_MAX, SURE_M, ROBUST_M, KEEP, NEAR_M, SCALE_SPREAD, SAME_F, SAME_SHIFT_M = 0.15, 0.5, 1.2, 0.5, 0.3, 3, 0.4, 0.5, 0.08, 0.4
 ROT = np.array([[0.0, -1.0], [1.0, 0.0]])
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
@@ -352,18 +353,18 @@ def match(drawn, photo, f, shift, tol=MATCH_TOL):
             if groups and abs(drawn[i]['pos'] - drawn[groups[-1][-1]]['pos']) < COLLINEAR_M: groups[-1].append(i)
             else: groups.append([i])
 
-        def score(group, j):
+        def score(group, j, overlap=-0.3):
             p = photo[j]; y, lo, hi, total = f * p['pos'] + shift[ax], f * p['lo'] + shift[1 - ax], f * p['hi'] + shift[1 - ax], 0.0
             for i in group:
-                w = drawn[i]; gap = abs(w['pos'] - y)
-                common = min(hi, w['hi']) - max(lo, w['lo'])
-                if gap >= tol or common <= -0.3: return 0.0
-                total += max(common, 0.1) * (1 - (gap / tol) ** 2)
+                w = drawn[i]; common = min(hi, w['hi']) - max(lo, w['lo']); gap, limit = abs(w['pos'] - y), w.get('tol', tol)
+                limit = min(limit, TOL_BASE + (limit - TOL_BASE) * max(common, 0.0) / SURE_M) if 'tol' in w else limit
+                if gap >= limit or common <= overlap: return 0.0
+                total += max(common, 0.1) * (1 - (gap / limit) ** 2)
             return total
         best, move = np.zeros((len(groups) + 1, len(planes) + 1)), {}
         for a in range(1, len(groups) + 1):
             for b in range(1, len(planes) + 1):
-                s = score(groups[a - 1], planes[b - 1]); options = [(best[a - 1, b], 'skip'), (best[a, b - 1], 'left')] + [(best[a - 1, b - 1] + s, 'take')] * (s > 0)
+                s = score(groups[a - 1], planes[b - 1]); options = [(best[a - 1, b], 'skip'), (best[a, b - 1], 'left')] + [(best[a - 1, b - 1] + s, 'take')] * bool(s > 0)
                 best[a, b], move[a, b] = max(options, key=lambda o: o[0])
         a, b, chosen = len(groups), len(planes), []
         while a and b:
@@ -371,12 +372,14 @@ def match(drawn, photo, f, shift, tol=MATCH_TOL):
             a, b = a - (move[a, b] != 'left'), b - (move[a, b] != 'skip')
         for n, (g, _) in enumerate(chosen):
             low, high, out = chosen[n - 1][1] if n else -1, chosen[n + 1][1] if n + 1 < len(chosen) else len(planes), drawn[groups[g][0]].get('out', 0.0)
-            chosen[n][1] = max((r for r in range(low + 1, high) if score(groups[g], planes[r]) > 0), key=lambda r: (out * photo[planes[r]]['pos'], r == chosen[n][1]))
+            least, points = OUTER_SHARE * score(groups[g], planes[chosen[n][1]]), lambda r: photo[planes[r]].get('plane', {}).get('n', 0)
+            chosen[n][1] = max((r for r in range(low + 1, high) if r == chosen[n][1] or (v := score(groups[g], planes[r], 0.0)) >= least or v > 0 and points(r) >= points(chosen[n][1])),
+                               key=lambda r: (out * photo[planes[r]]['pos'], r == chosen[n][1]))
         for g, r in chosen:
             for i in groups[g]: pairs[i] = (abs(drawn[i]['pos'] - f * photo[planes[r]]['pos'] - shift[ax]), planes[r])
-    placed = {i: (drawn[i], f * photo[j]['pos'] + shift[drawn[i]['ax']]) for i, (_, j) in pairs.items()}
-    beyond = lambda p: any(w['ax'] != p['ax'] and w['lo'] + 0.1 < f * p['pos'] + shift[p['ax']] < w['hi'] - 0.1
-                           and min((f * p[end] + shift[w['ax']] - y) * w.get('out', 0.0) for end in ('lo', 'hi')) > 0.05 for w, y in placed.values())
+    placed = [(drawn[i], f * photo[j]['pos'] + shift[drawn[i]['ax']], f * photo[j]['lo'] + shift[1 - drawn[i]['ax']], f * photo[j]['hi'] + shift[1 - drawn[i]['ax']]) for i, (_, j) in pairs.items()]
+    beyond = lambda p: any(w['ax'] != p['ax'] and max(w['lo'], lo) + 0.1 < f * p['pos'] + shift[p['ax']] < min(w['hi'], hi) - 0.1
+                           and min((f * p[end] + shift[w['ax']] - y) * w.get('out', 0.0) for end in ('lo', 'hi')) > 0.05 for w, y, lo, hi in placed)
     return {i: pair for i, pair in pairs.items() if not beyond(photo[pair[1]])}
 
 def search(drawn, planes, turns, cameras, traced):
@@ -395,24 +398,69 @@ def search(drawn, planes, turns, cameras, traced):
                 T = (X[ax][:, None] - f * Q[ax][None, :]).ravel(); R = X[ax][None, :, None] - f * Q[ax][None, None, :] - T[:, None, None]
                 S = (np.minimum(LX[ax][:, None], f * LQ[ax][None, :])[None] * np.exp(-0.5 * (R / MATCH_M) ** 2)).max(2).sum(1); b = int(np.argmax(S))
                 total, shift[ax] = total + float(S[b]), float(T[b])
-            inside = walls.inside_share(f * turned + np.array(shift), traced)
-            found.append((total * (0.1 + 0.9 * inside) ** 2 * np.exp(-(np.log(f) / 0.3) ** 2), turn, f, shift, photo))
-    return max(found, key=lambda item: item[0], default=None)
+            found.append((total * camera_term(f, shift, turned, traced), turn, f, shift, photo))
+    best = []
+    for item in sorted(found, key=lambda item: -item[0]):
+        if sum(b[1] == item[1] for b in best) < KEEP and all(b[1] != item[1] or abs(np.log(b[2] / item[2])) > 0.05 for b in best): best.append(item)
+    return best
+
+
+def camera_term(f, shift, turned, traced): return (0.1 + 0.9 * walls.inside_share(f * turned + np.array(shift), traced)) ** 2 * np.exp(-(np.log(f) / SCALE_SPREAD) ** 2)
+
+
+def near_share(points, weights, traced, margin=NEAR_M):
+    if not len(points): return 1.0
+    inside, gap = np.zeros(len(points), bool), np.full(len(points), np.inf)
+    for t in traced:
+        a, b = np.asarray(t['a'], float), np.asarray(t['b'], float); d = b - a; x, z = points[:, 0], points[:, 1]
+        inside ^= ((a[1] > z) != (b[1] > z)) & (x < d[0] * (z - a[1]) / np.where(d[1] == 0, 1e-300, d[1]) + a[0])
+        w = np.clip((points - a) @ d / max(d @ d, 1e-12), 0, 1); gap = np.minimum(gap, np.hypot(*(points - a - w[:, None] * d).T))
+    return float(np.sum(weights * (inside | (gap < margin))) / np.sum(weights))
 
 
 def refine(drawn, photo, f, shift):
-    for _ in range(3):
+    for _ in range(4):
         pairs = match(drawn, photo, f, shift)
         if not pairs: break
-        rows, rhs = [], []
-        for i, (_, j) in pairs.items():
-            w = drawn[i]; rows.append(np.array([photo[j]['pos'], float(w['ax'] == 0), float(w['ax'] == 1)]) * w['len']); rhs.append(w['pos'] * w['len'])
-        rows, rhs = np.array(rows), np.array(rhs); axes = [ax for ax in (0, 1) if rows[:, 1 + ax].any()]
-        if len(axes) == 2 and any(len({round(r[0], 1) for r in rows if r[1 + ax]}) >= 2 for ax in (0, 1)):
-            solution = np.linalg.lstsq(rows, rhs, rcond=None)[0]
-            if SCALES[0] < solution[0] < SCALES[1]: f, shift = float(solution[0]), [float(solution[1]), float(solution[2])]; continue
-        shift = [float(np.sum([rhs[n] - f * rows[n, 0] for n in range(len(rows)) if rows[n, 1 + ax]]) / np.sum(rows[:, 1 + ax])) if rows[:, 1 + ax].any() else shift[ax] for ax in (0, 1)]
-    return f, shift, match(drawn, photo, f, shift)
+        f, shift = similarity(drawn, photo, pairs, f, shift)
+    pairs = match(drawn, photo, f, shift)
+    for _ in range(3): pairs = match(deform(drawn, photo, f, shift, pairs), photo, f, shift); f, shift = similarity(drawn, photo, pairs, f, shift)
+    owners = {j: [i for i, (_, l) in pairs.items() if l == j] for _, j in pairs.values()}
+    gap = lambda i, j: abs(drawn[i]['pos'] - f * photo[j]['pos'] - shift[drawn[i]['ax']])
+    score = sum(min(sum(drawn[i]['len'] for i in ids), f * photo[j]['len']) * max(0.0, 1 - (min(gap(i, j) for i in ids) / TOL_MAX) ** 2) for j, ids in owners.items())
+    return (*robust_fit(drawn, photo, pairs, f, shift), pairs, score)
+
+
+def weighted_median(values, weights):
+    order = np.argsort(values); c = np.cumsum(np.asarray(weights, float)[order]); return float(np.asarray(values, float)[order][np.searchsorted(c, c[-1] / 2)])
+
+
+def similarity(drawn, photo, pairs, f, shift):
+    ratios = [((drawn[i]['pos'] - drawn[k]['pos']) / dq, abs(drawn[i]['pos'] - drawn[k]['pos']) * min(drawn[i]['len'], drawn[k]['len'])) for i, (_, j) in pairs.items() for k, (_, l) in pairs.items()
+              if i < k and drawn[i]['ax'] == drawn[k]['ax'] and abs(dq := photo[j]['pos'] - photo[l]['pos']) > 0.3 and SCALES[0] < (drawn[i]['pos'] - drawn[k]['pos']) / dq < SCALES[1]]
+    f = weighted_median(*zip(*ratios)) if ratios else f
+    rows = [[(drawn[i]['pos'] - f * photo[j]['pos'], drawn[i]['len']) for i, (_, j) in pairs.items() if drawn[i]['ax'] == ax] for ax in (0, 1)]
+    return f, [weighted_median(*zip(*rows[ax])) if rows[ax] else shift[ax] for ax in (0, 1)]
+
+
+def robust_fit(drawn, photo, pairs, f, shift):
+    if len({drawn[i]['ax'] for i in pairs}) < 2 or len({round(photo[j]['pos'], 1) for _, j in pairs.values()}) < 3: return f, shift
+    rows = np.array([[photo[j]['pos'], drawn[i]['ax'] == 0, drawn[i]['ax'] == 1, drawn[i]['pos'], drawn[i]['len']] for i, (_, j) in pairs.items()], float); x = np.array([f, *shift])
+    for _ in range(5):
+        r = rows[:, :3] @ x - rows[:, 3]; w = np.sqrt(rows[:, 4] / (1 + (r / ROBUST_M) ** 2)); x = np.linalg.lstsq(rows[:, :3] * w[:, None], rows[:, 3] * w, rcond=None)[0]
+    return (float(x[0]), [float(x[1]), float(x[2])]) if SCALES[0] < x[0] < SCALES[1] else (f, shift)
+
+
+def deform(drawn, photo, f, shift, pairs):
+    maps = []
+    for ax in (0, 1):
+        known = sorted({round(drawn[i]['pos'], 3): f * photo[j]['pos'] + shift[ax] for i, (_, j) in pairs.items() if drawn[i]['ax'] == ax}.items())
+        x, y = (np.array(v, float) for v in zip(*known)) if known else (np.zeros(0), np.zeros(0))
+        keep = [k for k in range(len(x)) if all(y[k] > y[m] for m in range(k))]; x, y = x[keep], y[keep]
+        maps.append((lambda p, x=x, y=y: p + float(np.interp(p, x, y)) - min(max(p, x[0]), x[-1]) if len(x) else p, x))
+    move = lambda ax, p: maps[ax][0](p)
+    return [{**w, 'pos': move(w['ax'], w['pos']), 'lo': move(1 - w['ax'], w['lo']), 'hi': move(1 - w['ax'], w['hi']),
+             'tol': min(TOL_MAX, TOL_BASE + TOL_SLOPE * float(np.min(np.abs(maps[w['ax']][1] - w['pos']), initial=1e9)))} for w in drawn]
 
 
 def ring_model(plan, forward, rules=()):
@@ -466,7 +514,7 @@ def ring_ends(ring, d): return [(Ma @ d + ca, Mb @ d + cb) for (Ma, ca), (Mb, cb
 def length_row(ring, i): (Ma, ca), (Mb, cb) = ring['ends'][i]; return ring['u'][i] @ (Mb - Ma), float(ring['u'][i] @ (cb - ca))
 
 
-EDGE_LENGTHS, EDGE_M, EDGE_SHARE = (0.4, 1.0), 0.02, 0.7
+EDGE_LENGTHS, EDGE_M, EDGE_SHARE, OUTER_SHARE = (0.4, 1.0), 0.02, 0.7, 0.3
 
 
 def wall_points(cloud, a, b, n, out, top, meubles, explained, edge=False):
@@ -475,14 +523,16 @@ def wall_points(cloud, a, b, n, out, top, meubles, explained, edge=False):
     keep = (t > margin) & (t < length - margin) & (np.abs(s) < BAND_M) & (h > 0.1) & (h < top - 0.1)
     for p, q in meubles + explained:
         d = q - p; w = np.clip((flat - p) @ d / max(d @ d, 1e-9), 0, 1); keep &= np.hypot(*(flat - p - w[:, None] * d).T) > 0.06
+    found = None
     if keep.sum() >= PEAK_POINTS:
         s, h = s[keep], h[keep]; middles = np.arange(-BAND_M, BAND_M, BIN_M) + BIN_M / 2
         counts = np.convolve(np.histogram(s, bins=np.append(middles - BIN_M / 2, BAND_M))[0], [1, 2, 1], 'same'); levels = np.arange(0.2, top - 0.2, 0.2)
         tall = lambda x: np.isin(np.arange(len(levels)), ((h[np.abs(s - x) < 1.5 * BIN_M] - 0.2) // 0.2).astype(int)).mean() >= (EDGE_SHARE if edge else TALL_SHARE)
         parallel = lambda x: any(abs(cross(u, (q - p) / max(np.hypot(*(q - p)), 1e-9))) < 0.17 and abs(((p + q) / 2 - a) @ n - x) < 0.25 and max((p - a) @ u, (q - a) @ u) > 0 and min((p - a) @ u, (q - a) @ u) < length for p, q in meubles)
         peaks = [(counts[i], middles[i]) for i in range(len(counts)) if counts[i] >= PEAK_POINTS and counts[i] == counts[max(0, i - 1):i + 2].max() and tall(middles[i]) and not parallel(middles[i])]
-        if peaks: best = max(peaks)[1]; near = s[np.abs(s - best) < 1.5 * BIN_M]; return float(np.median(near)), int(len(near))
-    return None if edge or not EDGE_LENGTHS[0] <= length < EDGE_LENGTHS[1] else wall_points(cloud, a, b, n, out, top, meubles, explained, True)
+        if peaks: best = max((p for p in peaks if p[0] >= OUTER_SHARE * max(peaks)[0]), key=lambda p: (out * p[1], p[0]))[1]; near = s[np.abs(s - best) < 1.5 * BIN_M]; found = float(np.median(near)), int(len(near))
+    if edge or not EDGE_LENGTHS[0] <= length < EDGE_LENGTHS[1]: return found
+    return max((x for x in (found, wall_points(cloud, a, b, n, out, top, meubles, explained, True)) if x), key=lambda x: x[1], default=None)
 
 
 def adjust(ring, seen, cloud, top, meubles, rules, cotes=()):
@@ -551,6 +601,18 @@ def cote_ends(plan, ring, rows):
         if len(ends) == 2: found.append({'id': row['id'], 'value': row['value'] * UNITS[row['unit']], 'ends': ends})
     return found
 
+def hidden_walls(again, seen, planes, angle, f, shift):
+    every, found = [x for q in planes if (x := lined(walls.rotate(q['a'], angle), walls.rotate(q['b'], angle), plane=q)) is not None], {}
+    at = lambda p: f * p['pos'] + shift[p['ax']]
+    common = lambda p, w: min(f * p['hi'] + shift[1 - p['ax']], w['hi']) - max(f * p['lo'] + shift[1 - p['ax']], w['lo'])
+    for w in again:
+        if w['name'] in seen or not w['out']: continue
+        near = [p for p in every if p['plane']['meuble'] and p['ax'] == w['ax'] and abs(at(p) - w['pos']) < SNAP_M and common(p, w) > min(0.2, 0.5 * f * p['len'])]
+        near = [p for p in near if not any(o['ax'] == w['ax'] and (at(o) - at(p)) * w['out'] > 0.05 and common(o, w) > 0.1 for o in every)]
+        if near: found[w['name']] = min(near, key=lambda p: abs(at(p) - w['pos']))['plane']
+    return found
+
+
 @rpc('plan.fit', long=True)
 def fit(ctx, plan, turn=None):
     project = ctx.require_project(); source = photo_source(project)
@@ -564,9 +626,15 @@ def fit(ctx, plan, turn=None):
     outward = lambda w: 1.0 if walls.inside_share(((w['a'] + w['b']) / 2 + 0.05 * normal(w))[None], traced) < 0.5 else -1.0
     drawn = [x for w in traced if (x := lined(w['a'], w['b'], name=w['id'], out=outward(w))) is not None]
     cameras = (photos.camera_centers(model) @ L0.T + c0)[:, [0, 2]]
-    best = search(drawn, [p for p in planes if not p['meuble']], [int(turn)] if turn is not None else range(4), cameras, traced)
-    if not best: raise ValueError('calage impossible : aucun mur du dessin ne correspond aux surfaces des photos')
-    _, quarter, f, shift, photo = best; f, shift, paired = refine(drawn, photo, f, shift)
+    found = search(drawn, [p for p in planes if not p['meuble']], [int(turn)] if turn is not None else range(4), cameras, traced)
+    if not found: raise ValueError('calage impossible : aucun mur du dessin ne correspond aux surfaces des photos')
+    turned = lambda q: np.array([walls.rotate(c, q * np.pi / 2) for c in cameras]).reshape(-1, 2)
+    samples = [(p['a'] + t * (p['b'] - p['a']), np.hypot(*(p['b'] - p['a'])) / 5) for p in planes for t in np.linspace(0.1, 0.9, 5)]
+    spots, weights = np.array([x for x, _ in samples]).reshape(-1, 2), np.array([w for _, w in samples])
+    seen_inside = lambda q, f, shift: (0.2 + 0.8 * near_share(f * np.array([walls.rotate(x, q * np.pi / 2) for x in spots]).reshape(-1, 2) + np.array(shift), weights, traced)) ** 2
+    tried = [(s * camera_term(f, shift, turned(q), traced) * seen_inside(q, f, shift), s, q, f, shift, photo, pairs) for _, q, f0, s0, photo in found for f, shift, pairs, s in [refine(drawn, photo, f0, s0)]]
+    top = max(tried, key=lambda c: c[0])
+    _, _, quarter, f, shift, photo, paired = max((c for c in tried if c[2] == top[2] and abs(np.log(c[3] / top[3])) < SAME_F and np.hypot(*np.subtract(c[4], top[4])) < SAME_SHIFT_M), key=lambda c: c[1])
     angle, k = quarter * np.pi / 2, k0 / f; T = walls.turn_matrix(angle); moved = np.array(shift) / f; forward, back = frame(plan, k)
     placed = lambda p: walls.rotate(np.array(p, float), angle) + moved; pose = {'L': (T @ L0).tolist(), 'c': (T @ c0 + np.array([moved[0], 0.0, moved[1]])).tolist()}
     cloud, height = photos.load_model(cache)['P'] @ np.array(pose['L']).T + pose['c'], walls.levels(state)[2]
@@ -576,6 +644,7 @@ def fit(ctx, plan, turn=None):
     cotes = cote_ends(plan, ring, read_cotes(project)); offsets = adjust(ring, on_photo(), cloud, height, meubles, rules, cotes)[0]
     again = [x for name, (a, b) in zip(ring['names'], ring_ends(ring, offsets)) if (x := lined(f * a, f * b, name=name, out=outs.get(name, 0.0))) is not None]
     seen = {again[i]['name']: photo[j]['plane'] for i, (_, j) in match(again, photo, f, shift, SNAP_M).items()}
+    seen.update(hidden_walls(again, seen, planes, angle, f, shift)); meubles = [(placed(q['a']), placed(q['b'])) for q in planes if q['meuble'] and q not in seen.values()]
     offsets, evidence, solved = adjust(ring, on_photo(), cloud, height, meubles, rules, cotes)
     openings = [{**o, **{key: float(np.clip(solved['edges'][(j, side)], 0, 1)) for side, key in enumerate(('t0', 't1')) if (j, side) in solved['edges']}} for j, o in enumerate(plan.get('openings', []))]
     pairs, planes_of = {name: [q['id']] for name, q in seen.items()}, {name: list(q['planes']) for name, q in seen.items()}
@@ -584,7 +653,7 @@ def fit(ctx, plan, turn=None):
 
     def front(q):
         p = lined(walls.rotate(q['a'], angle), walls.rotate(q['b'], angle))
-        if not q['meuble'] or p is None: return None
+        if not q['meuble'] or q['id'] in owner or p is None: return None
         y, lo, hi = f * p['pos'] + shift[p['ax']], f * p['lo'] + shift[1 - p['ax']], f * p['hi'] + shift[1 - p['ax']]
         return min(((abs(w['pos'] - y), w['name']) for w in again if w['ax'] == p['ax'] and abs(w['pos'] - y) < walls.FRONT_MAX_M * f and (y - w['pos']) * w['out'] < 0
                     and min(hi, w['hi']) > max(lo, w['lo'])), default=(0, None))[1]
@@ -602,7 +671,7 @@ def fit(ctx, plan, turn=None):
             'walls': fitted[:n], 'extra': fitted[n:], 'gaps': {name: round(gap * 100, 1) for name, (_, gap) in evidence.items()}, 'seen': {name: kind for name, (kind, _) in evidence.items()},
             'moved': {name: round(abs(offsets[l] - ring['d0'][l]) * 100, 1) for name, l in zip(ring['names'], ring['line'])}, 'stairs': [stair_width(st) for st in plan.get('stairs', [])],
             'cotes': solved['cotes'], 'unit': solved['unit'], 'openings': openings,
-            'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'meuble': q['meuble'], 'front': front(q), 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
+            'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'meuble': q['meuble'] and q['id'] not in owner, 'front': front(q), 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
 
 @rpc('plan.cloud')
 def top_cloud(ctx, plan, limit=6000):

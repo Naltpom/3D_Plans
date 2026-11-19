@@ -244,6 +244,26 @@ def test_short_wall_found_on_corner_edge():
     assert found(column(0.04, 0.24, 2.0, 90), column(0.3, -0.1, 2.0))[0] == pytest.approx(-0.1)
 
 
+def test_far_wall_matched_by_order_and_extent():
+    drawn = [lecture.lined(np.array([x, 0.0]), np.array([x, top]), name=n, out=-1.0 if x < 2 else 1.0) for x, top, n in ((0.0, 4.0, 'A'), (1.4, 2.0, 'B'), (5.0, 4.0, 'C'))]
+    drawn += [lecture.lined(np.array([0.0, y]), np.array([5.0, y]), name=n, out=-1.0 if y < 2 else 1.0) for y, n in ((0.0, 'D'), (4.0, 'E'))]
+    photo = [lecture.lined(np.array(a), np.array(b), plane={'id': i, 'n': 100}) for i, (a, b) in enumerate((([0.0, 0.0], [0.0, 4.0]), ([0.7, 0.0], [0.7, 2.0]), ([1.3, 3.0], [1.3, 3.5]),
+                                                                                                       ([5.0, 0.0], [5.0, 4.0]), ([0.0, 0.0], [5.0, 0.0]), ([0.0, 4.0], [5.0, 4.0])))]
+    pairs = lecture.refine(drawn, photo, 1.0, [0.0, 0.0])[2]
+    assert {drawn[i]['name']: j for i, (_, j) in pairs.items()} == {'A': 0, 'B': 1, 'C': 3, 'D': 4, 'E': 5}
+
+
+def test_outermost_strong_peak_and_hidden_wall():
+    column = lambda t, s, n: np.column_stack([np.full(n, t), np.linspace(0.2, 2.2, n), np.full(n, s)])
+    cloud = np.vstack([column(t, 0.3, 120) for t in (0.5, 1.5)] + [column(t, -0.1, 60) for t in (0.5, 1.5)] + [column(1.0, -0.4, 6)])
+    assert lecture.wall_points(cloud, np.zeros(2), np.array([2.0, 0.0]), np.array([0.0, 1.0]), -1.0, 2.4, [], [])[0] == pytest.approx(-0.1, abs=0.01)
+    wall = lecture.lined(np.array([0.0, 0.0]), np.array([0.0, 3.0]), name='A', out=-1.0)
+    planes = [{'id': 'p1', 'meuble': True, 'a': np.array([0.05, 0.5]), 'b': np.array([0.05, 2.5])}, {'id': 'p2', 'meuble': True, 'a': np.array([0.6, 0.5]), 'b': np.array([0.6, 2.0])}]
+    assert lecture.hidden_walls([wall], {}, planes, 0.0, 1.0, [0.0, 0.0]) == {'A': planes[0]}
+    planes.append({'id': 'p3', 'meuble': False, 'a': np.array([-0.4, 1.0]), 'b': np.array([-0.4, 2.0])})
+    assert lecture.hidden_walls([wall], {}, planes, 0.0, 1.0, [0.0, 0.0]) == {}
+
+
 def test_reread_keeps_names_and_clicks(tmp_path):
     quarter_turn(tmp_path / 'plan.png'); new = lecture.read(str(tmp_path / 'plan.png'), ai=False)
     old = {**new, 'walls': [{**w, 'name': n} for w, n in zip(new['walls'][:6], 'PQRSTU')] + [{'name': 'V', 'a': new['walls'][6]['a'], 'b': new['walls'][7]['b']}], 'extra': [],
