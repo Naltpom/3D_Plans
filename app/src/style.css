@@ -358,6 +358,28 @@ body.page #step .actions { margin-top: 0; }
 #step .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 #step .card.done { border-color: var(--accent); }
 #step .status { color: var(--accent-text); font-weight: 600; }
+#step .grid:has(.src) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#step .card.src { border-color: var(--border); background: var(--panel); }
+#step .card.src.on { border-color: var(--accent); background: #17262e; }
+#step .src-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+#step .src-head input { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--accent); }
+#step .gives { display: flex; flex-wrap: wrap; gap: 4px; }
+#step .gives span { padding: 1px 8px; border: 1px solid var(--strong); border-radius: 999px; font-size: 11px; line-height: 16px; color: var(--muted); }
+#step .gives span.on { border-color: #2f4e5c; color: var(--accent-text); }
+#step .route-box { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+#step .route-box > div { display: flex; flex-direction: column; gap: 10px; }
+#step .route-box small { font-size: 12px; color: var(--muted); }
+#step .route { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; font-size: 13px; line-height: 18px; color: var(--soft); }
+#step .route li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; }
+#step .route b { display: block; color: var(--text); font-size: 14px; font-weight: 600; }
+#step .route .n { display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid var(--accent); border-radius: 50%; color: var(--accent); font-size: 12px; font-weight: 600; }
+#step .who { display: flex; flex-direction: column; gap: 6px; }
+#step .who div { display: grid; grid-template-columns: 130px 1fr; gap: 8px; padding: 6px 10px; border-radius: 8px; background: var(--raised); font-size: 13px; }
+#step .who span:first-child { color: var(--muted); }
+#step .who .todo, #step .card.todo b { color: var(--point); }
+#step .card.todo { border-color: #6b5a22; background: #221f17; }
+#rail .st.off { opacity: 0.55; }
+#rail .st.off b { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--strong); }
 #sketch-view { position: fixed; inset: 0 0 30px; z-index: 7; display: grid; grid-template-rows: 48px 1fr; background: var(--bg); }
 #sketch-bar { display: flex; align-items: center; gap: 12px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--panel); }
 #sketch-bar label { flex-direction: row; align-items: center; gap: 8px; }

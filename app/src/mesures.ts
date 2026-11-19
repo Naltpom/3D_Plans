@@ -16,7 +16,7 @@ export type Helpers = {
   guide: () => { refused?: string[]; plan?: Plan | null; hidden?: string[] }; save: (change: Record<string, unknown>) => Promise<void>; active: () => boolean;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
   footer: (...actions: HTMLButtonElement[]) => HTMLElement; primary: (text: string, action: () => unknown) => HTMLButtonElement; back: () => HTMLButtonElement; render: () => void;
-  next: () => Promise<void>; skip: () => Promise<void>;
+  next: () => Promise<void>; skip: () => Promise<void>; lengths: () => boolean; copied: () => boolean;
 };
 
 const NS = "http://www.w3.org/2000/svg";
@@ -43,7 +43,8 @@ const margin = (s: number | null) => s == null ? "inconnue" : `± ${cm(s)}`;
 function proposals() {
   const no = refused(), gone = new Set([...no, ...measured()]), byKey = new Map(state!.candidates.map((c) => [c.key, c]));
   const near = (a: Item, b: Item) => [b.ends, [...b.ends].reverse()].some((e) => a.ends.every((p, i) => Math.hypot(p[0] - e[i][0], p[1] - e[i][1]) < 0.3));
-  return state!.candidates.filter((c) => !gone.has(c.key) && (!c.twin || gone.has(c.twin) && !(no.has(c.twin) && near(c, byKey.get(c.twin)!)))).slice(0, 4);
+  const left = state!.candidates.filter((c) => !gone.has(c.key) && (!c.twin || gone.has(c.twin) && !(no.has(c.twin) && near(c, byKey.get(c.twin)!)))), wall = (c: Item) => c.key.startsWith("longueur.");
+  return h.lengths() ? [...left.filter(wall), ...left.filter((c) => !wall(c)).slice(0, 4)] : left.slice(0, 4);
 }
 
 async function refresh() {
@@ -195,9 +196,12 @@ export function scaleStep(helpers: Helpers): Node[] {
   const known = !before && s.measures.length ? [h.card(`${s.measures.length} mesure${s.measures.length > 1 ? "s" : ""} déjà saisie${s.measures.length > 1 ? "s" : ""}`, "Les cotes posées à l'étape 4 en font partie : elles comptent déjà, je ne te les redemande pas.")] : [];
   drawPlan();
   const toggle = button(flat ? "Voir en 3D" : "Voir le plan 2D", "link start", "Changer d'affichage", () => { flat = !flat; if (!flat) setView("3d"); h.render(); });
-  return [h.intro("Des mesures au mètre", "Les photos donnent la forme, pas la taille. Chaque mesure fixe l'échelle et corrige le plan là où elle est prise. Mesure ce que tu peux, dans l'ordre que tu veux."),
+  const [title, text] = h.lengths() ? ["Les longueurs", "Tes sources donnent la forme, pas la taille : mesure chaque mur au mètre, puis ce qui reste utile. Dans l'ordre que tu veux."]
+    : h.copied() ? ["Les cotes du plan", "Recopie les longueurs écrites sur ton plan : chacune fixe l'échelle et corrige le plan là où elle est prise."]
+    : ["Des mesures au mètre", "Les photos donnent la forme, pas la taille. Chaque mesure fixe l'échelle et corrige le plan là où elle est prise. Mesure ce que tu peux, dans l'ordre que tu veux."];
+  return [h.intro(title, text),
     ...phone(list), toggle, ...known, ...effect(), ...s.precise ? [precision()] : [],
-    el("span", "kicker", "Mesures proposées · la plus utile d'abord"), ...list.map((c, i) => entry(c, i + 1)), ...list.length ? [] : [el("p", "", "Plus rien à proposer.")],
+    el("span", "kicker", h.lengths() ? "Chaque mur, puis la mesure la plus utile" : "Mesures proposées · la plus utile d'abord"), ...list.map((c, i) => entry(c, i + 1)), ...list.length ? [] : [el("p", "", "Plus rien à proposer.")],
     ...custom(), ...s.precise ? [] : [precision()], ...s.conflicts.length ? [conflicts()] : [], ...mine(), ...gone ? [button(`${gone} mesure${gone > 1 ? "s" : ""} écartée${gone > 1 ? "s" : ""} · les reproposer`, "link start", "Remettre les mesures écartées", () => run(async () => { await h.save({ refused: [] }); h.render(); }))] : [],
     h.footer(h.back(), ...s.measures.length ? [] : [button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(h.skip))],
       ...s.measures.length ? [s.precise ? h.primary("Étape suivante", h.next) : button("Passer à Vérifier", "", "Étape suivante", () => run(h.next))] : [])];
