@@ -76,6 +76,7 @@ def main():
         if method in LONG_METHODS: threading.Thread(target=run, args=(request.get('id'), method, params), name=method).start()
         else:
             with ctx.lock: run(request.get('id'), method, params)
+    if ctx.phone: call(ctx, 'phone.stop', {})
 
 
 if __name__ == '__main__':

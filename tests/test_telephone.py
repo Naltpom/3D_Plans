@@ -4,17 +4,48 @@ from plans3d import mesures, telephone  # noqa: F401
 from plans3d.rpc import Ctx, call, read_cotes
 
 TRACE = [{'wall': 'A', 's': 0.0}, {'wall': 'A', 's': 1.0}]
+IMMICH = {'TCP': {'443': {'HTTPS': True}}, 'Web': {'pc.example.ts.net:443': {'Handlers': {'/': {'Proxy': 'http://127.0.0.1:2283'}}}}}
+ENABLE = 'Serve is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=abc'
+
+
+class Tailnet:
+    def __init__(self): self.conf, self.serve, self.calls = json.loads(json.dumps(IMMICH)), (True, ''), []
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        if args[0] == 'status': return True, json.dumps({'BackendState': 'Running', 'Self': {'DNSName': 'pc.example.ts.net.'}})
+        if args[1:] == ('status', '--json'): return True, json.dumps(self.conf)
+        port = next(a[8:] for a in args if a.startswith('--https='))
+        if args[-1] == 'off': del self.conf['TCP'][port], self.conf['Web'][f'pc.example.ts.net:{port}']; return True, ''
+        if self.serve[0]: self.conf['TCP'][port], self.conf['Web'][f'pc.example.ts.net:{port}'] = {'HTTPS': True}, {'Handlers': {'/': {'Proxy': args[-1]}}}
+        return self.serve
+
+    def add(self, proxy):
+        self.conf['TCP']['8738'], self.conf['Web']['pc.example.ts.net:8738'] = {'HTTPS': True}, {'Handlers': {'/': {'Proxy': proxy}}}
+
+
+@pytest.fixture(autouse=True)
+def tailnet(monkeypatch):
+    fake = Tailnet()
+    monkeypatch.setattr(telephone, 'tailscale', fake)
+    monkeypatch.setattr(telephone, 'lan', lambda: None)
+    return fake
 
 
 @pytest.fixture
-def phone(tmp_path, monkeypatch):
-    monkeypatch.setattr(telephone, 'addresses', lambda: [('tailscale', '127.0.0.1')])
+def project(tmp_path):
     events = []
     ctx = Ctx(events.append)
     call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
-    link = call(ctx, 'phone.start', {})['links'][0]
-    yield ctx, link['url'].split('#')[0], events, link
+    yield ctx, events
     call(ctx, 'phone.stop', {})
+
+
+@pytest.fixture
+def phone(project):
+    ctx, events = project
+    link = call(ctx, 'phone.start', {})['links'][0]
+    return ctx, f'http://127.0.0.1:{ctx.phone.port}/3d_plans/', events, link
 
 
 def get(url, data=None, cookie=''):
@@ -26,7 +57,7 @@ def get(url, data=None, cookie=''):
 
 def login(base, code):
     status, _, cookie = get(base + 'session', {'code': code})
-    assert status == 204 and 'HttpOnly' in cookie and 'SameSite=Strict' in cookie
+    assert status == 204 and 'HttpOnly' in cookie and 'SameSite=Strict' in cookie and ('Secure' in cookie) == base.startswith('http://127.0.0.1:')
     return cookie.split(';')[0]
 
 
@@ -37,9 +68,37 @@ def stream(url, cookie, n, out):
             if line.startswith('data: '): out.append(json.loads(line[6:]))
 
 
-def test_listens_only_on_shown_addresses(phone):
+def test_tailscale_serve_publishes_loopback_server_and_keeps_other_entries(phone, tailnet):
     ctx, base, _, link = phone
-    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1'] and link['url'] == f'http://127.0.0.1:{ctx.phone.port}/#{ctx.phone.token}'
+    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1'] and link['url'] == f'https://pc.example.ts.net:8738/#{ctx.phone.token}'
+    assert tailnet.conf['Web']['pc.example.ts.net:8738'] == {'Handlers': {'/': {'Proxy': f'http://127.0.0.1:{ctx.phone.port}/3d_plans'}}}
+    call(ctx, 'phone.stop', {})
+    assert tailnet.conf == IMMICH and not any('reset' in c for c in tailnet.calls)
+
+
+def test_wifi_fallback_with_activation_link(project, tailnet, monkeypatch):
+    ctx, _ = project
+    tailnet.serve = (False, ENABLE)
+    monkeypatch.setattr(telephone, 'lan', lambda: '127.0.0.2')
+    started = call(ctx, 'phone.start', {})
+    assert [s.server_address[0] for s in ctx.phone.servers] == ['127.0.0.1', '127.0.0.2'] and started['tailscale']['url'] == 'https://login.tailscale.com/f/serve?node=abc'
+    assert [link['url'] for link in started['links']] == [f'http://127.0.0.2:{ctx.phone.port}/#{ctx.phone.token}']
+    login(f'http://127.0.0.2:{ctx.phone.port}/', ctx.phone.token)
+    monkeypatch.setattr(telephone, 'tailscale', lambda *args: (None, ''))
+    assert 'pas installé' in call(ctx, 'phone.start', {})['tailscale']['text']
+
+
+def test_only_own_leftover_entry_removed(project, tailnet):
+    ctx, _ = project
+    tailnet.add('http://127.0.0.1:5555/3d_plans')
+    call(ctx, 'phone.stop', {})
+    assert tailnet.conf == IMMICH and tailnet.calls[-1] == ('serve', '--https=8738', 'off')
+    tailnet.calls.clear()
+    tailnet.add('http://127.0.0.1:9000')
+    call(ctx, 'phone.stop', {})
+    started = call(ctx, 'phone.start', {})
+    assert started['links'] == [] and '8738' in started['tailscale']['text'] and tailnet.conf['Web']['pc.example.ts.net:8738']['Handlers']['/']['Proxy'] == 'http://127.0.0.1:9000'
+    assert not any(c[-1] == 'off' or '--bg' in c for c in tailnet.calls)
 
 
 def test_code_exchanged_for_cookie_and_nothing_else_served(phone):

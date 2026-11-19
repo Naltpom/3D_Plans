@@ -5,11 +5,13 @@ import { button, el, number, run } from "./ui";
 import type { End, Seg } from "./coter";
 
 type Link = { kind: string; host: string; url: string };
+type Note = { text: string; url?: string };
 type Todo = { key: string; label: string; hint: string; plan: number; trace: End[] | null; expr?: string; ends?: number[][] | null };
 export type Scene = { title: string; k: number; segs: Seg[]; ring: string[]; hidden: string[]; status: Record<string, { text: string; conflict?: boolean; ends?: number[][] | null }>; todo: Todo[] };
 export type Handlers = { changed: (id: string, label: string) => void; hide: (id: string, shown: boolean) => void };
 
 let links: Link[] | null = null;
+let note: Note | null = null;
 let which = 0;
 let clients = 0;
 let last = "";
@@ -21,12 +23,12 @@ const chip = el("span", "chip");
 const paint = () => { chip.className = `chip ${clients ? "ok" : ""}`; chip.textContent = clients ? clients > 1 ? `${clients} téléphones connectés` : "Téléphone connecté" : "En attente du téléphone"; };
 
 async function start() {
-  links = (await call<{ links: Link[] }>("phone.start")).links;
+  ({ links, tailscale: note } = await call<{ links: Link[]; tailscale: Note | null }>("phone.start"));
   [which, clients, last, sent] = [0, 0, "", ""];
 }
 
 function stop() {
-  links = null;
+  [links, note] = [null, null];
   return call("phone.stop");
 }
 
@@ -56,12 +58,19 @@ export function phonePanel(scene: Scene, handlers: Handlers, render: () => void)
   paint();
   head.append(el("b", "", "Saisir sur le téléphone"), chip);
   box.append(head);
+  if (note) {
+    const alert = el("div", "alert");
+    alert.append(el("span", "", note.text));
+    if (note.url) alert.append(Object.assign(el("a", "m", note.url), { href: note.url, target: "_blank", rel: "noreferrer" }));
+    box.append(alert);
+  }
   if (!link) {
     box.append(el("div", "alert", "Aucun réseau : connecte le PC au Wi-Fi de la maison ou ouvre Tailscale, puis rouvre ce panneau."));
   } else {
     const text = el("div", "text");
-    text.append(el("span", "", "Scanne avec l'appareil photo du téléphone, puis va mesurer dans la pièce."), el("span", "kicker", link.kind === "tailscale" ? "Adresse Tailscale" : "Adresse Wi-Fi"),
-      el("span", "m", link.host), el("small", "", "Le code d'accès n'est que dans le QR. Il change à chaque ouverture."),
+    text.append(el("span", "", "Scanne avec l'appareil photo du téléphone, puis va mesurer dans la pièce."), el("span", "kicker", link.kind === "tailscale" ? "Adresse Tailscale · HTTPS" : "Adresse Wi-Fi"),
+      el("span", "m", link.host), ...link.kind === "tailscale" ? [el("span", "chip serve", "Tailscale Serve actif · chiffré")] : [],
+      el("small", "", "Le code d'accès n'est que dans le QR. Il change à chaque ouverture."),
       ...link.kind === "wifi" ? [el("small", "large", "Sur le Wi-Fi, la liaison n'est pas chiffrée : préfère Tailscale.")] : []);
     box.append(qr(link.url), text);
   }
@@ -76,6 +85,8 @@ export function phoneCheck() {
   if (links && !seen) void stop();
   seen = false;
 }
+
+void call("phone.stop").catch(() => {});
 
 onEvent((event) => {
   if (event.event !== "phone" || !links) return;

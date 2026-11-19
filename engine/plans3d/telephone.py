@@ -1,31 +1,64 @@
-import hashlib, hmac, ipaddress, json, os, secrets, socket, subprocess, threading
+import hashlib, hmac, ipaddress, json, os, re, secrets, shutil, socket, subprocess, threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from .rpc import RpcError, call, cotes_path, read_cotes, rpc
 
 PAGE = os.path.join(os.path.dirname(__file__), 'telephone.html')
-HOST, PORT = os.environ.get('PLANS3D_PHONE_HOST'), 8737
+HOST, PORT, HTTPS, MOUNT = os.environ.get('PLANS3D_PHONE_HOST'), 8737, 8738, '/3d_plans'
 TAILSCALE = ipaddress.ip_network('100.64.0.0/10')
 OPS = {'place': ('cotes.place', {'value', 'trace', 'id', 'label', 'expr'}), 'remove': ('cotes.remove', {'id'})}
 CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 
 
-def addresses():
-    found = sorted({a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)})
-    tail = next((a for a in found if ipaddress.ip_address(a) in TAILSCALE), None)
-    if not tail:
-        try: tail = subprocess.run(['tailscale', 'ip', '-4'], capture_output=True, text=True, timeout=3, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout.split()[0]
-        except (OSError, IndexError, subprocess.SubprocessError): pass
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s: s.connect(('192.0.2.1', 9)); lan = s.getsockname()[0]
-    except OSError: lan = None
+def lan():
     home = lambda a: ipaddress.ip_address(a).is_private and ipaddress.ip_address(a) not in TAILSCALE and not ipaddress.ip_address(a).is_loopback
-    if not (lan and home(lan)): lan = next((a for a in found if home(a)), None)
-    return [(kind, ip) for kind, ip in (('tailscale', tail), ('wifi', lan)) if ip]
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s: s.connect(('192.0.2.1', 9)); ip = s.getsockname()[0]
+    except OSError: ip = None
+    return ip if ip and home(ip) else next((a for a in sorted({a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}) if home(a)), None)
+
+
+def tailscale(*args):
+    text = lambda *out: ''.join(o.decode('utf-8', 'replace') if isinstance(o, bytes) else o or '' for o in out).strip()
+    try:
+        r = subprocess.run([shutil.which('tailscale') or r'C:\Program Files\Tailscale\tailscale.exe', *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=6, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return r.returncode == 0, text(r.stdout, r.stderr)
+    except subprocess.TimeoutExpired as e: return False, text(e.stdout, e.stderr)
+    except OSError: return None, ''
+
+
+def served():
+    ok, out = tailscale('serve', 'status', '--json')
+    try: conf = json.loads(out) if ok else {}
+    except ValueError: conf = {}
+    mounts = [h.get('Proxy') or '' for k, v in (conf.get('Web') or {}).items() if k.endswith(f':{HTTPS}') for h in (v.get('Handlers') or {}).values()]
+    return str(HTTPS) in (conf.get('TCP') or {}), bool(mounts) and all(re.fullmatch(rf'http://127\.0\.0\.1:\d+{MOUNT}', m) for m in mounts)
+
+
+def unpublish():
+    taken, mine = served()
+    if taken and mine: tailscale('serve', f'--https={HTTPS}', 'off')
+
+
+def publish(port):
+    ok, out = tailscale('status', '--json', '--peers=false')
+    if ok is None: return None, {'text': "Tailscale n'est pas installé sur ce PC."}
+    try: status = json.loads(out)
+    except ValueError: status = {}
+    if status.get('BackendState') != 'Running': return None, {'text': 'Tailscale est arrêté sur ce PC : ouvre Tailscale, puis rouvre ce panneau.'}
+    taken, mine = served()
+    if taken and not mine: return None, {'text': f'Le port {HTTPS} de Tailscale Serve sert déjà à une autre appli.'}
+    ok, out = tailscale('serve', '--bg', '--yes', f'--https={HTTPS}', f'http://127.0.0.1:{port}{MOUNT}')
+    if ok: return f"{status['Self']['DNSName'].rstrip('.')}:{HTTPS}", None
+    url = re.search(r'https://\S+/f/\S+', out)
+    return None, {'text': "HTTPS (Tailscale Serve) n'est pas activé sur ton réseau Tailscale : ouvre ce lien, active-le, puis rouvre ce panneau.", 'url': url[0]} if url else {'text': out or 'Tailscale Serve a échoué.'}
 
 
 class Server(ThreadingHTTPServer):
     allow_reuse_address, daemon_threads = False, True
+
+    def server_bind(self): TCPServer.server_bind(self); self.server_name, self.server_port = self.server_address[:2]
 
 
 def bind(hosts):
@@ -99,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(body)
 
     def do_GET(self):
-        path = self.path.split('?')[0]
+        path = self.path.split('?')[0].removeprefix(MOUNT) or '/'
         if path == '/': return self.reply(200, self.server.phone.page, 'text/html; charset=utf-8', [('Content-Security-Policy', CSP)])
         if path not in ('/events', '/session'): return self.reply(404)
         if not self.allowed(): return self.reply(403)
@@ -107,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(204)
 
     def do_POST(self):
-        path, phone, size = self.path.split('?')[0], self.server.phone, int(self.headers.get('Content-Length') or 0)
+        path, phone, size = self.path.split('?')[0].removeprefix(MOUNT), self.server.phone, int(self.headers.get('Content-Length') or 0)
         if path not in ('/api', '/session'): return self.reply(404)
         if not 0 < size <= 65536: return self.reply(413)
         body = self.rfile.read(size)
@@ -116,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception: ok = False
             if not ok: return self.reply(403)
             session = secrets.token_urlsafe(32); phone.sessions.add(session)
-            return self.reply(204, extra=[('Set-Cookie', f's={session}; HttpOnly; SameSite=Strict; Path=/')])
+            return self.reply(204, extra=[('Set-Cookie', f's={session}; HttpOnly; SameSite=Strict; Path=/' + '; Secure' * (self.server.server_address[0] == '127.0.0.1'))])
         if not self.allowed(): return self.reply(403)
         try: result = phone.act(json.loads(body))
         except Exception as e: return self.reply(400, json.dumps({'error': str(e) if isinstance(e, ValueError) else f'requête refusée : {e!r}'}, ensure_ascii=False).encode())
@@ -143,16 +176,18 @@ class Handler(BaseHTTPRequestHandler):
 @rpc('phone.start')
 def start(ctx):
     stop(ctx)
-    found = addresses()
-    if not found: return {'links': []}
-    ctx.phone = Phone(ctx, [HOST] if HOST else [ip for _, ip in found]); port = ctx.phone.port
-    return {'links': [{'kind': kind, 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/#{ctx.phone.token}'} for kind, ip in found]}
+    wifi = lan()
+    phone = ctx.phone = Phone(ctx, [HOST] if HOST else ['127.0.0.1', *[wifi] * bool(wifi)])
+    host, note = publish(phone.port)
+    links = [('tailscale', host, 'https')] * bool(host) + [('wifi', f'{wifi}:{phone.port}', 'http')] * bool(wifi)
+    return {'links': [{'kind': kind, 'host': h, 'url': f'{scheme}://{h}/#{phone.token}'} for kind, h, scheme in links], 'tailscale': note}
 
 
 @rpc('phone.stop')
 def stop(ctx):
     phone, ctx.phone = ctx.phone, None
     if phone: phone.stop()
+    unpublish()
 
 
 @rpc('phone.scene')

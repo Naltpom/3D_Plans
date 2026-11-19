@@ -551,6 +551,8 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #step .phone .chip { font-size: 12px; }
 #step .phone .chip.ok { border-color: #2e5b45; background: #15241c; color: #8fd0a8; }
 #step .phone .chip.ok::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #5fc08a; }
+#step .phone .chip.serve { align-self: flex-start; border-color: #2f4e5c; background: #14252e; color: #9adcf0; }
+#step .phone .alert a { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 #step .phone .qr { width: 148px; height: 148px; border-radius: 8px; background: #fff; }
 #step .phone .qr path { fill: #0e1116; }
 #step .phone .text { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--soft); }
