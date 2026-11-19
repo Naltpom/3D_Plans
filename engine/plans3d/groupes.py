@@ -5,7 +5,7 @@ from . import photos
 from .rpc import rpc
 
 GAP_MIN, CELL_M, MIN_FREE, FREE_RATIO, MIN_POINTS, MIN_COS, GROW, MAX_RAYS, MARGIN, VERSION = 5.0, 0.1, 3, 2, 2, 0.5, 1, 600000, 4.0, 2
-NAME_TIME = re.compile(r'(20\d\d)(\d\d)(\d\d)\D?(\d\d)(\d\d)(\d\d)')
+NAME_TIME, PASSAGE = re.compile(r'(20\d\d)(\d\d)(\d\d)\D?(\d\d)(\d\d)(\d\d)'), re.compile(r'passage-(\d+)$')
 PALETTE = np.array([(63, 182, 217), (232, 149, 58), (180, 140, 240), (108, 197, 138), (240, 122, 174), (245, 196, 81), (90, 200, 190), (220, 90, 80)], np.uint8)
 FIXED, MOBILE, SHARED, UNSEEN = (139, 149, 163), (232, 149, 58), (236, 238, 241), (70, 76, 86)
 OFFSET = 1 << 20
@@ -31,10 +31,13 @@ def capture_time(path):
     return TIMES[key]
 
 
-def split(times, gap_s):
-    sessions = []
+def passage(path): return PASSAGE.search(os.path.basename(os.path.dirname(path)))
+
+
+def split(times, gap_s, passes=None):
+    sessions, passes = [], passes or [None] * len(times)
     for i in sorted(range(len(times)), key=lambda i: times[i]):
-        if not sessions or (times[i] - times[sessions[-1][-1]]).total_seconds() > gap_s: sessions.append([])
+        if not sessions or (times[i] - times[sessions[-1][-1]]).total_seconds() > gap_s or passes[i] != passes[sessions[-1][-1]]: sessions.append([])
         sessions[-1].append(i)
     return sessions
 
@@ -47,9 +50,10 @@ def gap_minutes(project, source):
 def sessions(project, source):
     manifest, _ = photos.source_cache(project, source); paths = photos.read_manifest(manifest); times = [capture_time(path) for path in paths]
     names = dict(project.db.execute('select first, name from photos_groups where source=?', (source,))); excluded = photos.excluded_photos(project, source)
-    return [{'id': paths[members[0]], 'name': names.get(paths[members[0]]) or f'Séance {k + 1}', 'start': times[members[0]].isoformat(), 'end': times[members[-1]].isoformat(),
+    passes = [os.path.dirname(path) if passage(path) else None for path in paths]
+    return [{'id': paths[members[0]], 'name': names.get(paths[members[0]]) or (f'Passage {passage(paths[members[0]])[1]}' if passes[members[0]] else f'Séance {k + 1}'), 'start': times[members[0]].isoformat(), 'end': times[members[-1]].isoformat(),
              'photos': [paths[i] for i in members], 'excluded': all(paths[i] in excluded for i in members), 'color': '#%02x%02x%02x' % tuple(PALETTE[k % len(PALETTE)])}
-            for k, members in enumerate(split(times, 60 * gap_minutes(project, source)))]
+            for k, members in enumerate(split(times, 60 * gap_minutes(project, source), passes))]
 
 
 def key(path): return os.path.normcase(os.path.abspath(path))

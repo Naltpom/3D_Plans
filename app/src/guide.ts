@@ -9,6 +9,7 @@ import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { phoneCheck } from "./telephone";
+import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; plan?: Plan | null; sub?: number; classic?: boolean; hidden?: string[]; sources?: string[] };
@@ -356,6 +357,14 @@ function alert(title: string, text: string) {
   return box;
 }
 
+async function startScan() {
+  if (!photoInfo().installed) await photoTask("tools.install");
+  await openScan(render);
+  await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode: "piece" }).finally(render);
+}
+
+const scanCta = () => cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", "", startScan);
+
 async function restart() {
   restarting = true;
   restarted = await photoTask("photos.extract", { fresh: true }).catch((error: Error) => ({ error: error.message })).finally(() => { restarting = false; });
@@ -367,10 +376,12 @@ function positionsStep() {
   const photo = photoInfo(), source = photoSource();
   if (photo.busy === "tools.install") return [intro("Installation des outils photo", "Tu peux laisser l'appli travailler : le calcul des positions suit."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
+  if (photo.busy === "scan.live") return [intro(scanTitle(), scanFinal() ? "Le téléphone a fini : toutes les images sont recalculées ensemble, comme des photos." : "Les images du téléphone arrivent au fil du scan et se placent en direct dans la vue."),
+    ...scanPanel(), ...scanFinal() ? progress("photos.extract", photo.fraction, photo.message, photo.started) : [], footer(...scanButtons())];
   if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
     : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
     ...progress(restarting ? "photos.restart" : photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
-  if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre."), footer(back(), onward())];
+  if (!source) return [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre. Tu peux aussi filmer la pièce au téléphone."), scanCta(), footer(back(), onward())];
   if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
     footer(back(), primary("Installer les outils photo", autoPositions))];
   if (photo.count) {
@@ -382,14 +393,14 @@ function positionsStep() {
     const next = lost && drawn() ? cta("Refaire le calage (4.2)", "Les murs : caler le dessin sur les nouvelles positions", "primary", async () => { await save({ sub: 2 }); await complete(guide.step); })
       : cta("Passer à l'étape suivante", "Les murs : valider ce qui est trouvé", "primary", () => complete(guide.step));
     return [intro(`${photo.count} photos positionnées sur ${source.photos}`, "Les positions sont déjà calculées. Dans la vue, chaque cône bleu est une photo, les points sont les détails retrouvés sur plusieurs photos."),
-      ...outcome, row(next, cta("Recommencer l'analyse", `Tout recalculer depuis les photos, sans rien réutiliser (≈ ${minutes(source)} min)`, "", restart)),
+      ...outcome, row(next, cta("Recommencer l'analyse", `Tout recalculer depuis les photos, sans rien réutiliser (≈ ${minutes(source)} min)`, "", restart)), scanCta(),
       card("Si tu recommences", "Gardé : points cliqués en 4.3, mesures de l'étape 5, séances exclues. Le nouveau calcul est recalé sur l'ancien ; s'il ne colle pas, il faudra refaire le calage des murs. Arrêté en route, l'ancien résultat reste en place."),
       footer(back())];
   }
   phase = -1;
   return [intro("Calculer la position des photos", "L'appli retrouve d'où chaque photo a été prise et place en 3D les détails qu'elles ont en commun."),
     ...progress("photos.extract", NaN, "", Date.now()).slice(0, 1), el("p", "", `Durée estimée : ≈ ${minutes(source)} min pour ${plural(source.photos ?? 0, "photo")}.`),
-    ...source.state === "échec" ? [card("Le dernier calcul a échoué", source.error ?? "")] : [],
+    ...source.state === "échec" ? [card("Le dernier calcul a échoué", source.error ?? "")] : [], scanCta(),
     footer(back(), primary("Calculer les positions", autoPositions))];
 }
 
@@ -831,7 +842,7 @@ async function go(step: number) {
   const forward = step > guide.step;
   creating = false;
   if (drawing()) stopDrawing();
-  if (step !== guide.step) { closeGuided(); restarted = null; }
+  if (step !== guide.step) { closeGuided(); closeScan(); restarted = null; }
   await save({ step });
   await loadPlan();
   await reroute();

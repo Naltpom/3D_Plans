@@ -38,7 +38,7 @@ export function phoneButton(render: () => void) {
     { ariaPressed: String(Boolean(links)) });
 }
 
-function qr(url: string) {
+export function qr(url: string) {
   const code = qrcode(0, "M");
   code.addData(url);
   code.make();

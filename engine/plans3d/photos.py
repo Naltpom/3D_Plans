@@ -13,7 +13,7 @@ CLICK_SIGMA_M = 0.04
 PLANE_SIGMA_M, CLICK_SIGMA_PX, CAMERA_HEIGHT_M, INLIER_M, PLANE_GAP_M, MERGE_M, FRAME_VERSION = 0.015, 3.0, 1.4, 0.01, 0.3, 0.05, 5
 IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
-RUNNING, STOPPED, PROCESSES = set(), set(), {}
+RUNNING, STOPPED, PROCESSES, PEAKS = set(), set(), {}, {}
 LIVE_POINTS, FEATURES, IMAGE_SIZE, PAIR_INLIERS = 50000, 8192, 2400, 15
 ALIGN_M, FRESH = 0.05, '.new'
 PROCESSED = re.compile(r'Name:\s+(\S+)')
@@ -57,6 +57,15 @@ def read_exif(path):
         return {'size': None, 'date': '', 'focal35': 0.0, 'orientation': 1}
 
 
+def peak_mb(process=None):
+    if os.name != 'nt': return 0.0
+    import ctypes, ctypes.wintypes as w
+    class Counters(ctypes.Structure): _fields_ = [('cb', w.DWORD), ('faults', w.DWORD), ('peak', ctypes.c_size_t)] + [(f'f{i}', ctypes.c_size_t) for i in range(7)]
+    counters = Counters(); counters.cb = ctypes.sizeof(counters)
+    handle = int(process._handle) if process else ctypes.windll.kernel32.GetCurrentProcess()
+    return counters.peak / 2 ** 20 if ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.c_void_p(handle), ctypes.byref(counters), counters.cb) else 0.0
+
+
 def run_colmap(arguments, log_path, progress, start, end, message, image_count=1, line_total=None, watch=None):
     cache = os.path.dirname(log_path)
     if cache in STOPPED: raise Stopped('calcul arrêté')
@@ -74,7 +83,7 @@ def run_colmap(arguments, log_path, progress, start, end, message, image_count=1
                 done, total = (matched, line_total) if line_total else (found[1], found[2]) if found[1] else (found[3], found[4]) if found[3] else (found[5], image_count)
                 progress(start + (end - start) * min(1.0, int(done) / int(total)), message)
         finally:
-            PROCESSES.pop(cache, None)
+            PROCESSES.pop(cache, None); PEAKS[cache] = max(PEAKS.get(cache, 0.0), peak_mb(process))
     if cache in STOPPED: raise Stopped('calcul arrêté')
     if process.returncode: raise ValueError(f'COLMAP {arguments[0]} a échoué (journal : {log_path})')
 
@@ -153,7 +162,7 @@ def link_images(paths, image_dir):
     return image_dir, names
 
 
-def reconstruct(paths, cache, progress=no_progress, emit=None):
+def reconstruct(paths, cache, progress=no_progress, emit=None, seed=None):
     in_cache = lambda *parts: os.path.join(cache, *parts)
     if os.path.exists(in_cache('meta.json')): return load_json(in_cache('meta.json'))
     os.makedirs(cache, exist_ok=True); timings = {}; started = time.perf_counter()
@@ -168,6 +177,7 @@ def reconstruct(paths, cache, progress=no_progress, emit=None):
         if (found := PROCESSED.search(line)) and found[1] in position: pool.submit(lambda name=found[1]: live(index=position[name], thumb=thumbnail(os.path.join(image_dir, name))))
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
+    if seed: seeded(seed, database, dict(zip(paths, names)))
     shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse'), exist_ok=True); write_lines(in_cache('images.txt'), names)
     sizes = {exif[path]['size'] for path in paths}; camera = []
     if len(sizes) == 1 and None not in sizes:
@@ -209,6 +219,13 @@ def reconstruct(paths, cache, progress=no_progress, emit=None):
             'pairs': pair_count, 'reproj_px': reprojection_px, 'timings': timings}
     json.dump(meta, open(in_cache('meta.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
     return meta
+
+
+def seeded(seed, database, names):
+    folder, renamed = seed; shutil.copy(os.path.join(folder, 'database.db'), database)
+    db = sqlite3.connect(database)
+    db.executemany('update images set name=? where name=?', [('~' + name, name) for name in renamed.values()])
+    db.executemany('update images set name=? where name=?', [(names[path], '~' + name) for path, name in renamed.items()]); db.commit(); db.close()
 
 
 def load_model(cache):
@@ -424,14 +441,15 @@ def source_cache(project, source):
     return row[0], cache_folder(project, source, row[0])
 
 
-def photo_state(project, source, progress=no_progress, compute=True, emit=None):
+def photo_state(project, source, progress=no_progress, compute=True, emit=None, seed=None):
     manifest, cache = source_cache(project, source)
     if not os.path.exists(os.path.join(cache, 'meta.json')):
         if not compute: raise ValueError(f'source {source} : reconstruction non faite (photos.extract)')
         key, error_path = (os.path.abspath(project.folder), source), os.path.join(cache, 'error.txt'); RUNNING.add(key); STOPPED.discard(cache)
         try:
             if os.path.exists(error_path): os.remove(error_path)
-            reconstruct(active_photos(project, source, manifest), cache, progress, emit)
+            active = active_photos(project, source, manifest)
+            reconstruct(active, cache, progress, emit, seed if seed and set(seed[1]) <= set(active) else None)
         except Stopped: raise
         except Exception as error:
             os.makedirs(cache, exist_ok=True); open(error_path, 'w', encoding='utf-8').write(str(error) or type(error).__name__); raise

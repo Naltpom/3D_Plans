@@ -21,7 +21,8 @@ const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "
 const KINDS = ["point", "face", "arête", "point"];
 const BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
 const STEPS = 8;
-const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification" };
+const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification", "scan.live": "Scan au téléphone" };
+const LIVE = new Set(["photos.extract", "scan.live"]);
 const TASK_KEY = "plans3d.photoTask";
 const STAGES = ["orientation des photos", "pistes de points", "position des photos", "ajustement", "retriangulation"];
 
@@ -122,8 +123,8 @@ async function refresh() {
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
-  if (busy !== "photos.extract") showCloud(cloud.points, cloud.colors);
-  showColors(source, busy !== "photos.extract" && cloud.points.length > 0);
+  if (!LIVE.has(busy)) showCloud(cloud.points, cloud.colors);
+  showColors(source, !LIVE.has(busy) && cloud.points.length > 0);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
   if (image) await draw();
@@ -146,7 +147,7 @@ function render() {
   renderClicks();
   renderPlanes();
   renderGuide();
-  if (busy !== "photos.extract") showCameras(cameras(), image);
+  if (!LIVE.has(busy)) showCameras(cameras(), image);
   renderLive();
   signal();
 }
@@ -161,10 +162,12 @@ canvas.addEventListener("wheel", () => { touched = true; }, { passive: true });
 
 function showLive(event: Record<string, unknown>) {
   const total = Number(event.total);
-  if (!live || live.total !== total) {
+  if (!live || live.total > total || busy !== "scan.live" && live.total !== total) {
     live = { total, done: new Set(), placed: [], pairs: 0, points: 0, stage: -1 };
-    liveTiles.replaceChildren(...Array.from({ length: total }, () => el("span")));
+    liveTiles.replaceChildren();
   }
+  liveTiles.append(...Array.from({ length: total - liveTiles.children.length }, () => el("span")));
+  live.total = total;
   if (typeof event.index === "number") {
     live.done.add(event.index);
     if (event.thumb) liveTiles.children[event.index]?.replaceChildren(Object.assign(el("img"), { src: String(event.thumb), alt: "" }));
@@ -183,7 +186,7 @@ function showLive(event: Record<string, unknown>) {
 }
 
 function renderLive() {
-  liveTiles.hidden = liveBox.hidden = !live || busy !== "photos.extract";
+  liveTiles.hidden = liveBox.hidden = !live || !LIVE.has(busy);
   if (!live || liveBox.hidden) return;
   const placing = /poses|lecture|plans/.test(step.message), matching = step.message.includes("appariement");
   const placed = new Set(live.placed), fresh = new Set(live.placed.slice(-3));
@@ -506,7 +509,7 @@ async function draw() {
 function interrupted() {
   const saved = JSON.parse(localStorage.getItem(TASK_KEY) ?? "null") as { method: string; project: string; source: string } | null;
   if (busy || !saved || saved.method !== "tools.install" && (saved.project !== projectPath || saved.source !== source)) return "";
-  if (!({ "tools.install": installed, "photos.extract": Boolean(located) } as Record<string, boolean>)[saved.method]) return saved.method;
+  if (!({ "tools.install": installed, "photos.extract": Boolean(located), "scan.live": true } as Record<string, boolean>)[saved.method]) return saved.method;
   localStorage.removeItem(TASK_KEY);
   return "";
 }
@@ -529,7 +532,7 @@ export async function photoTask(method: string, params: Record<string, unknown> 
   busy = method;
   step = { fraction: NaN, message: "", started: Date.now() };
   [live, touched] = [null, false];
-  if (method === "photos.extract") {
+  if (LIVE.has(method)) {
     showCloud([]);
     showCameras([], null);
     showColors(null, false);
@@ -554,7 +557,7 @@ export async function photoTask(method: string, params: Record<string, unknown> 
     for (const bar of bars) bar.hidden = true;
     render();
     await Promise.all([refresh(), refreshSources()]).catch(report);
-    if (method === "photos.extract") refit();
+    if (LIVE.has(method)) refit();
   }
 }
 
@@ -658,7 +661,7 @@ form.onsubmit = (event) => {
 };
 
 onEvent((event) => {
-  if (event.event === "photos.live" && busy === "photos.extract") return showLive(event);
+  if (event.event === "photos.live" && LIVE.has(busy)) return showLive(event);
   if (event.event !== "progress" || event.method !== busy) return;
   step = { ...step, fraction: Number(event.fraction), message: String(event.message ?? "") };
   showStep();

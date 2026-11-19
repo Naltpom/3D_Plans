@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>3D_Plans · scanner</title>
+<style>
+:root { --bg: #14171c; --panel: #181c22; --raised: #1f242c; --control: #232832; --view: #0b0d10; --border: #2a303a; --strong: #39404c; --text: #e6e8eb; --soft: #c9cfd8; --muted: #a3abb7;
+  --accent: #3fb6d9; --accent-text: #9adcf0; --accent-bg: #1c3440; --warn: #e8953a; --warn-text: #f2b36e; --warn-bg: #2a2116; --warn-border: #6b4a22; --ok: #5fc08a; --rec: #e5484d; --mono: ui-monospace, "Cascadia Mono", Menlo, monospace; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 400 15px/22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { min-height: 48px; padding: 10px 12px; border: 1px solid var(--strong); border-radius: 10px; background: var(--control); font-weight: 600; cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { border-color: var(--accent); background: var(--accent); color: #0e1116; }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); border-bottom: 1px solid var(--border); background: var(--panel); }
+header div { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+header b { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header small { font-size: 12px; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--strong); border-radius: 999px; font-size: 13px; white-space: nowrap; color: var(--muted); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.on { border-color: #2e5b45; background: #15241c; color: #8fd0a8; }
+.pill.on::before { background: var(--ok); }
+.pill.off { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-text); }
+.pill.off::before { background: var(--warn); }
+nav { padding: 8px 16px 0; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); border: 1px solid var(--strong); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.seg a, .seg button { display: flex; align-items: center; justify-content: center; min-height: 44px; border: 0; border-radius: 0; background: none; color: var(--soft); font-weight: 500; text-decoration: none; }
+.seg [aria-pressed="true"], .seg [aria-current="page"] { background: var(--accent-bg); color: var(--text); font-weight: 600; }
+.banner { padding: 8px 16px; border-bottom: 1px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-text); font-size: 13px; }
+.banner.info { border-color: #2f4e5c; background: #15202a; color: var(--accent-text); }
+#view { position: relative; flex: 1; min-height: 200px; margin: 10px 16px 0; border-radius: 12px; overflow: hidden; background: var(--view); }
+#view.full { margin: 0; border-radius: 0; }
+video, #cloud { position: absolute; inset: 0; width: 100%; height: 100%; }
+video { object-fit: cover; }
+#cloud { background: #101318; touch-action: none; }
+.chips { position: absolute; left: 10px; right: 10px; top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--strong); background: rgba(14, 17, 22, 0.86); }
+.chip.rec::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--rec); }
+.grow { flex: 1; }
+.m { font-family: var(--mono); }
+#tip { position: absolute; left: 0; right: 0; top: 54px; display: flex; justify-content: center; pointer-events: none; }
+#tip span { padding: 8px 14px; border-radius: 999px; border: 1px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-text); font-weight: 600; }
+.box { position: absolute; bottom: 10px; padding: 8px 12px; border-radius: 10px; background: rgba(14, 17, 22, 0.86); }
+#cover { left: 10px; display: flex; gap: 10px; align-items: center; max-width: 64%; }
+#cover span { font-size: 13px; line-height: 18px; }
+#count { right: 10px; display: grid; grid-template-columns: auto auto; gap: 0 14px; }
+#count b { font: 500 22px/26px var(--mono); }
+#count small { font-size: 12px; color: var(--muted); }
+.hint { position: absolute; left: 10px; bottom: 10px; padding: 2px 8px; border-radius: 6px; background: #0e1116; font-size: 12px; color: var(--muted); pointer-events: none; }
+#res { position: absolute; left: 10px; bottom: 10px; }
+section.panel { padding: 12px 16px calc(14px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 10px; }
+.k { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.help { font-size: 13px; color: var(--muted); }
+.line { font-size: 13px; color: var(--soft); }
+.row3 { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 8px; }
+.big { min-height: 56px; font-size: 17px; }
+input[type=range] { width: 100%; accent-color: var(--accent); min-height: 32px; margin: 0; }
+.sw { display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
+.sw input { appearance: none; -webkit-appearance: none; position: relative; width: 46px; height: 28px; margin: 0; border-radius: 14px; background: var(--strong); cursor: pointer; }
+.sw input::before { content: ""; position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--soft); transition: left 0.15s; }
+.sw input:checked { background: var(--accent); }
+.sw input:checked::before { left: 21px; background: #0e1116; }
+.alert { margin: 16px; padding: 16px; border: 1px solid var(--warn-border); border-radius: 12px; background: var(--warn-bg); display: flex; flex-direction: column; gap: 8px; }
+.alert b { color: var(--warn-text); font-size: 17px; }
+a.link { color: var(--accent-text); }
+</style>
+</head>
+<body>
+<header><div><b id="title">3D_Plans · scanner</b><small id="sub">Connexion au PC…</small></div><span id="live" class="pill">Connexion…</span></header>
+<nav aria-label="Pages"><div class="seg"><a href="/">Cotes</a><a href="/scan" aria-current="page">Scanner</a></div></nav>
+<div id="banner" class="banner" role="status" hidden></div>
+<section id="nocam" class="alert" role="alert" hidden><b>La caméra n'est pas disponible ici</b><span id="nocamtext"></span><a class="link" href="/">Revenir aux cotes</a></section>
+<div id="view" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="cloud" aria-label="Nuage de la zone vue par la dernière image placée" hidden></canvas>
+  <div class="chips"><span id="rec" class="chip rec" hidden></span><span id="modechip" class="chip" hidden></span><span class="grow"></span><span id="freqchip" class="chip m" hidden></span></div>
+  <div id="tip" role="status" hidden><span></span></div>
+  <div id="cover" class="box" hidden><svg id="ring" width="64" height="64" viewBox="-40 -40 80 80" role="img"></svg><span></span></div>
+  <div id="count" class="box" hidden><b id="kept">0</b><b id="thrown" style="color: var(--muted)">0</b><small>gardées</small><small>jetées</small></div>
+  <span id="res" class="hint" hidden></span>
+</div>
+<section id="setup" class="panel" hidden>
+  <span class="k" id="modelabel">Que scannes-tu ?</span>
+  <div class="seg" id="modes" role="group" aria-label="Mode de scan"><button type="button" data-mode="piece">Pièce</button><button type="button" data-mode="objet">Objet</button></div>
+  <span class="help" id="modehelp"></span>
+  <label for="freq" class="sw"><span class="k">Images par seconde, au plus</span><span class="m" id="freqval">2</span></label>
+  <input id="freq" type="range" min="1" max="3" step="1" value="2">
+  <span class="help">Seules les images nettes et assez différentes de la précédente sont gardées et envoyées.</span>
+  <button type="button" class="primary big" id="go">Lancer le scan</button>
+</section>
+<section id="running" class="panel" hidden>
+  <span class="line" id="pcline"></span>
+  <span class="help" id="sendline"></span>
+  <label class="sw"><span>Voir le nuage</span><input type="checkbox" id="showcloud"></label>
+  <div class="row3"><button type="button" id="pause">Pause</button><button type="button" id="passage">Nouveau passage</button><button type="button" class="primary" id="finish">Terminer</button></div>
+</section>
+<section id="done" class="panel" hidden>
+  <b id="donetitle"></b><span class="help" id="donetext"></span>
+  <label class="sw"><span>Voir le nuage</span><input type="checkbox" id="showcloud2"></label>
+</section>
+<script>
+/*FILTRE*/
+</script>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s), BASE = "/", MAX = 2400, TICK = 125, POLL = 2000, NS = "http://www.w3.org/2000/svg";
+const HELP = { piece: "Place-toi au milieu de la pièce. Filme chaque mur en tournant lentement, puis le plafond et le sol.", objet: "Pose l'objet bien dégagé. Tourne autour en le gardant au centre, à hauteur des yeux, puis un tour plus haut." };
+const TIPS = { lumiere: "Plus de lumière", bouge: "Avance ou tourne doucement", ralentis: "Ralentis : l'image est floue", vite: "Ralentis : tu tournes trop vite" };
+const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let pc = null, etat = "pret", mode = "piece", freq = 2, passage = 1, index = 0, filtre = null, timer = 0, wake = null, closed = false, online = false, pumping = false, waiting = 0, sent = 0;
+let stream = null, tipTimer = 0, cloud = null, cloudVersion = 0, orbit = { yaw: 0, pitch: -0.35, zoom: 1 }, memory = [], db = null, finishing = false;
+const video = $("#video"), small = document.createElement("canvas"), best = document.createElement("canvas"), sctx = small.getContext("2d", { willReadFrequently: true }), bctx = best.getContext("2d");
+let bestTime = 0;
+
+const store = () => db ? new Promise((ok) => { const t = db.transaction("q", "readonly").objectStore("q").openCursor(); t.onsuccess = () => ok(t.result ? { key: t.result.key, ...t.result.value } : null); t.onerror = () => ok(null); }) : Promise.resolve(memory[0] ?? null);
+const put = (key, value) => db ? new Promise((ok) => { const t = db.transaction("q", "readwrite"); t.objectStore("q").put(value, key); t.oncomplete = ok; t.onerror = ok; }) : (memory.push({ key, ...value }), Promise.resolve());
+const drop = (key) => db ? new Promise((ok) => { const t = db.transaction("q", "readwrite"); t.objectStore("q").delete(key); t.oncomplete = ok; t.onerror = ok; }) : (memory = memory.filter((m) => m.key !== key), Promise.resolve());
+const count = () => db ? new Promise((ok) => { const t = db.transaction("q", "readonly").objectStore("q").count(); t.onsuccess = () => ok(t.result); t.onerror = () => ok(0); }) : Promise.resolve(memory.length);
+const openDb = () => new Promise((ok) => { try { const r = indexedDB.open("plans3d-scan", 1); r.onupgradeneeded = () => r.result.createObjectStore("q"); r.onsuccess = () => ok(r.result); r.onerror = () => ok(null); } catch { ok(null); } });
+
+function saveProgress() { try { localStorage.setItem(`plans3d.scan.${pc.id}`, JSON.stringify({ passage, index })); } catch {} }
+function loadProgress() { try { ({ passage, index } = { passage: 1, index: 0, ...JSON.parse(localStorage.getItem(`plans3d.scan.${pc.id}`) || "{}") }); } catch {} }
+
+async function camera() {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) return fail("Le navigateur ne donne la caméra qu'aux pages chiffrées (HTTPS). Cette page est ouverte sans chiffrement, par le Wi-Fi de la maison. Pour scanner : ouvre Tailscale sur le téléphone, puis scanne le QR Tailscale affiché sur le PC.");
+  for (const video of [{ facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } }, { facingMode: { ideal: "environment" } }, true]) {
+    try { stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); break; }
+    catch (e) { if (e.name === "NotAllowedError" || e.name === "SecurityError") return fail("La caméra est refusée : autorise-la pour cette page dans les réglages du navigateur, puis recharge la page."); }
+  }
+  if (!stream) return fail("Aucune caméra trouvée sur ce téléphone.");
+  const track = stream.getVideoTracks()[0];
+  track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+  video.srcObject = stream;
+  await video.play().catch(() => {});
+  const s = track.getSettings();
+  $("#res").textContent = `Caméra arrière · ${s.width ?? video.videoWidth} × ${s.height ?? video.videoHeight}`;
+  render();
+}
+
+function fail(text) { $("#nocamtext").textContent = text; $("#nocam").hidden = false; stream = null; render(); }
+
+function tick() {
+  if (etat !== "scan" || video.readyState < 2 || !video.videoWidth) return;
+  const vw = video.videoWidth, vh = video.videoHeight, w = 320, h = Math.round(320 * vh / vw);
+  if (small.width !== w || small.height !== h) [small.width, small.height] = [w, h];
+  sctx.drawImage(video, 0, 0, w, h);
+  const r = filtre.offre(performance.now(), FILTRE.luma(sctx.getImageData(0, 0, w, h).data, w * h), w, h);
+  if (r.mieux) {
+    const k = Math.min(1, MAX / Math.max(vw, vh));
+    [best.width, best.height] = [Math.round(vw * k), Math.round(vh * k)];
+    bctx.drawImage(video, 0, 0, best.width, best.height);
+    bestTime = Date.now();
+  }
+  if (!r.decision) return;
+  const d = r.decision;
+  if (d.conseil) tip(d.conseil === "ralentis" && d.garde ? TIPS.vite : TIPS[d.conseil]);
+  if (d.garde) {
+    const meta = { scan: pc.id, passage, index: ++index, time: bestTime };
+    saveProgress();
+    best.toBlob((blob) => { if (blob) put(`${meta.scan}|${String(meta.passage).padStart(3, "0")}|${String(meta.index).padStart(6, "0")}`, { ...meta, blob }).then(() => { waiting++; pump(); }); }, "image/jpeg", 0.92);
+  }
+  render();
+}
+
+function tip(text) {
+  clearTimeout(tipTimer);
+  $("#tip span").textContent = text;
+  $("#tip").hidden = false;
+  tipTimer = setTimeout(() => { $("#tip").hidden = true; }, 2500);
+}
+
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (let item = await store(); item; item = await store()) {
+      let r;
+      try { r = await fetch(`${BASE}scan/image`, { method: "POST", body: item.blob, cache: "no-store", headers: { "Content-Type": "image/jpeg", "X-Scan": item.scan, "X-Passage": String(item.passage), "X-Index": String(item.index), "X-Time": String(item.time) } }); }
+      catch { online = false; render(); await sleep(2000); continue; }
+      online = true;
+      if (r.status === 403) { closed = true; break; }
+      const body = await r.json().catch(() => ({}));
+      if (r.ok || body.old || r.status === 400 || r.status === 413) { await drop(item.key); if (r.ok) sent++; }
+      else await sleep(2000);
+      waiting = await count();
+      render();
+    }
+  } finally { pumping = false; waiting = await count(); render(); }
+}
+
+async function command(op) {
+  const r = await fetch(`${BASE}scan/cmd`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(op), cache: "no-store" });
+  if (r.ok) pc = await r.json();
+  return r.ok;
+}
+
+async function poll() {
+  try {
+    const f = filtre ?? { gardees: 0, floues: 0, doublons: 0 };
+    const r = await fetch(`${BASE}scan/state`, { method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+      body: JSON.stringify({ passage, paused: etat === "pause", gardees: f.gardees, floues: f.floues, doublons: f.doublons, freq, attente: waiting, resolution: $("#res").textContent }) });
+    if (r.status === 403) { closed = true; return render(); }
+    const fresh = await r.json();
+    online = true;
+    if (fresh.id && fresh.id !== pc?.id) { pc = fresh; mode = fresh.mode; loadProgress(); }
+    pc = fresh;
+    if (pc.received) mode = pc.mode;
+    if (pc.final === "terminé" || pc.final === "échec" || pc.final === "arrêté" || !pc.active && etat !== "pret") etat = "fini";
+    if (showing() && pc.cloud !== cloudVersion) await loadCloud();
+  } catch { online = false; }
+  render();
+}
+
+const showing = () => $("#showcloud").checked || $("#showcloud2").checked;
+async function loadCloud() {
+  try { cloud = await (await fetch(`${BASE}scan/cloud`, { cache: "no-store" })).json(); cloudVersion = cloud.version ?? 0; draw(); } catch {}
+}
+
+function draw() {
+  const c = $("#cloud"), rect = c.getBoundingClientRect(), k = devicePixelRatio || 1;
+  if (!rect.width) return;
+  [c.width, c.height] = [Math.round(rect.width * k), Math.round(rect.height * k)];
+  const g = c.getContext("2d"), p = cloud?.points ?? [], col = cloud?.colors ?? [], n = p.length / 3;
+  g.fillStyle = "#101318"; g.fillRect(0, 0, c.width, c.height);
+  if (!n) { g.fillStyle = "#a3abb7"; g.font = `${14 * k}px system-ui`; g.textAlign = "center"; g.fillText("Le nuage arrive après le premier calcul du PC.", c.width / 2, c.height / 2); return; }
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += p[3 * i] / n; cy += p[3 * i + 1] / n; cz += p[3 * i + 2] / n; }
+  const d = []; let r = 0;
+  for (let i = 0; i < n; i++) d.push(Math.hypot(p[3 * i] - cx, p[3 * i + 1] - cy, p[3 * i + 2] - cz));
+  r = [...d].sort((a, b) => a - b)[Math.floor(n * 0.9)] || 1;
+  const cy0 = Math.cos(orbit.yaw), sy = Math.sin(orbit.yaw), cp = Math.cos(orbit.pitch), sp = Math.sin(orbit.pitch), dist = 2.6 * r / orbit.zoom, f = 0.9 * Math.min(c.width, c.height);
+  const project = (x, y, z) => { x -= cx; y -= cy; z -= cz; const x1 = cy0 * x + sy * z, z1 = -sy * x + cy0 * z, y2 = cp * y - sp * z1, z2 = sp * y + cp * z1 + dist; return z2 > 0.05 * r ? [c.width / 2 + f * x1 / z2, c.height / 2 - f * y2 / z2] : null; };
+  const s = Math.max(2, 2 * k);
+  for (let i = 0; i < n; i++) {
+    const q = project(p[3 * i], p[3 * i + 1], p[3 * i + 2]);
+    if (!q) continue;
+    g.fillStyle = col.length ? `rgb(${col[3 * i]},${col[3 * i + 1]},${col[3 * i + 2]})` : "#c9cfd8";
+    g.fillRect(q[0] - s / 2, q[1] - s / 2, s, s);
+  }
+  const o = project(0, 0, 0), a = project(0, 0, -0.4 * r);
+  if (o && a) { g.strokeStyle = "#f5c451"; g.lineWidth = 2 * k; g.beginPath(); g.moveTo(o[0], o[1]); g.lineTo(a[0], a[1]); g.stroke(); g.fillStyle = "#f5c451"; g.beginPath(); g.arc(o[0], o[1], 5 * k, 0, 7); g.fill(); }
+}
+
+const touches = new Map();
+$("#cloud").addEventListener("pointerdown", (e) => { touches.set(e.pointerId, [e.clientX, e.clientY]); $("#cloud").setPointerCapture(e.pointerId); });
+$("#cloud").addEventListener("pointermove", (e) => {
+  const old = touches.get(e.pointerId);
+  if (!old) return;
+  if (touches.size === 1) { orbit.yaw += (e.clientX - old[0]) * 0.01; orbit.pitch = Math.max(-1.5, Math.min(1.5, orbit.pitch + (e.clientY - old[1]) * 0.01)); }
+  else { const other = [...touches].find(([id]) => id !== e.pointerId)[1], before = Math.hypot(old[0] - other[0], old[1] - other[1]), after = Math.hypot(e.clientX - other[0], e.clientY - other[1]); orbit.zoom = Math.max(0.3, Math.min(8, orbit.zoom * after / Math.max(before, 1))); }
+  touches.set(e.pointerId, [e.clientX, e.clientY]);
+  draw();
+});
+for (const kind of ["pointerup", "pointercancel"]) $("#cloud").addEventListener(kind, (e) => touches.delete(e.pointerId));
+
+function ring(values) {
+  const svg = $("#ring"), n = values.length;
+  svg.replaceChildren();
+  values.forEach((v, i) => {
+    const a = (i - 0.5) * 2 * Math.PI / n, b = (i + 0.5) * 2 * Math.PI / n, R = 35, pt = (t) => `${(R * Math.sin(t)).toFixed(1)} ${(-R * Math.cos(t)).toFixed(1)}`;
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", `M0 0 L${pt(a)} A${R} ${R} 0 0 1 ${pt(b)} Z`);
+    path.setAttribute("fill", v >= 0.6 ? "#3fb6d9" : v >= 0.35 ? "#2b6e83" : "#e8953a");
+    path.setAttribute("stroke", "#14171c"); path.setAttribute("stroke-width", "2");
+    svg.append(path);
+  });
+  const hub = document.createElementNS(NS, "circle"); hub.setAttribute("r", "12"); hub.setAttribute("fill", "#14171c");
+  const arrow = document.createElementNS(NS, "path"); arrow.setAttribute("d", "M0 -9 L5 3 L0 0 L-5 3 Z"); arrow.setAttribute("fill", "#e6e8eb");
+  svg.append(hub, arrow);
+  svg.setAttribute("aria-label", mode === "objet" ? "Tour de l'objet : côtés vus en bleu, manquants en orange" : "Couverture autour de toi : bien vu en bleu, peu vu en orange");
+}
+
+function render() {
+  const cam = Boolean(stream), active = Boolean(pc?.active), placed = pc?.placed ?? 0;
+  $("#title").textContent = pc?.project ? `${pc.project} · scanner` : "3D_Plans · scanner";
+  $("#sub").textContent = closed ? "Accès fermé" : !pc ? "Connexion au PC…" : active || etat === "fini" ? "Le PC construit le scan en direct" : "Le PC n'attend pas de scan";
+  $("#live").className = `pill ${online && !closed ? "on" : "off"}`;
+  $("#live").textContent = closed ? "Fermé" : online ? "Connecté" : "Hors ligne";
+  const banner = closed ? "Accès fermé : rouvre « Scanner au téléphone » sur le PC et scanne le nouveau QR." : !online && pc ? `Hors ligne : ${plural(waiting, "image")} en attente sur le téléphone, envoyées au retour du réseau.`
+    : pc && !active && etat === "pret" ? "Le PC n'attend pas de scan : ouvre « Scanner au téléphone » sur le PC (étape Positions des photos)." : etat === "pause" ? "En pause · rien n'est filmé" : "";
+  $("#banner").textContent = banner; $("#banner").hidden = !banner; $("#banner").classList.toggle("info", etat === "pause" && online);
+  $("#view").hidden = !cam;
+  $("#view").classList.toggle("full", etat !== "pret");
+  $("#setup").hidden = !cam || etat !== "pret";
+  $("#running").hidden = !cam || !["scan", "pause"].includes(etat);
+  $("#done").hidden = !cam || etat !== "fini";
+  for (const b of document.querySelectorAll("#modes button")) { b.ariaPressed = String(b.dataset.mode === mode); b.disabled = Boolean(pc?.received); }
+  $("#modehelp").textContent = HELP[mode];
+  $("#modelabel").hidden = $("#modes").hidden = (pc?.modes?.length ?? 1) < 2;
+  $("#freqval").textContent = String(freq);
+  $("#go").disabled = !active || closed;
+  $("#rec").hidden = etat !== "scan" && etat !== "pause";
+  $("#rec").textContent = `Passage ${passage}${etat === "pause" ? " · en pause" : ""}`;
+  $("#modechip").hidden = etat === "pret"; $("#modechip").textContent = mode === "objet" ? "Objet" : "Pièce";
+  $("#freqchip").hidden = etat !== "scan"; $("#freqchip").textContent = `${freq} img/s`;
+  $("#res").hidden = etat !== "pret";
+  $("#count").hidden = etat === "pret";
+  $("#kept").textContent = String(filtre?.gardees ?? 0); $("#thrown").textContent = String((filtre?.floues ?? 0) + (filtre?.doublons ?? 0));
+  const sectors = pc?.sectors ?? [];
+  $("#cover").hidden = etat === "pret" || !sectors.length;
+  if (sectors.length) { ring(sectors); $("#cover span").textContent = mode === "objet" ? `Tour : ${pc.turn ?? 0}°${pc.gaps ? ` · ${pc.gaps}` : ""}` : pc.gaps ? `Peu vu : ${pc.gaps}` : "Bien couvert"; }
+  const ago = pc?.ago_s == null ? "" : ` · calcul il y a ${pc.ago_s} s`;
+  $("#pcline").textContent = !pc ? "" : pc.computing ? `PC : calcul en cours · ${placed} placées sur ${pc.received} reçues` : `PC : ${placed} placées sur ${pc.received} reçues${ago}${pc.error ? ` · ${pc.error}` : ""}`;
+  $("#sendline").textContent = `Envoyées ${sent} · en attente ${waiting}`;
+  $("#pause").textContent = etat === "pause" ? "Reprendre" : "Pause";
+  $("#pause").className = etat === "pause" ? "primary" : "";
+  $("#finish").className = etat === "pause" ? "" : "primary";
+  $("#finish").disabled = finishing;
+  $("#cloud").hidden = !showing();
+  $("#donetitle").textContent = pc?.final === "terminé" ? "Scan terminé" : pc?.final === "échec" ? "Le calcul final a échoué" : pc?.final === "arrêté" ? "Scan arrêté sur le PC" : waiting ? "Envoi des dernières images" : "Calcul final sur le PC…";
+  $("#donetext").textContent = pc?.final === "terminé" ? `${plural(placed, "image")} placée${placed > 1 ? "s" : ""} sur ${pc.received}. La suite se fait sur le PC.` : pc?.final === "échec" ? (pc.error || "") : waiting ? `${plural(waiting, "image")} encore à envoyer : garde la page ouverte.` : "Les positions finales sont calculées sur le PC. Tu peux poser le téléphone.";
+}
+
+function start() {
+  if (!pc?.active) return;
+  etat = "scan"; filtre = filtre ?? new FILTRE.Filtre(freq); filtre.freq = freq;
+  clearInterval(timer); timer = setInterval(tick, TICK);
+  lock(true); render();
+}
+
+function pause() { etat = "pause"; clearInterval(timer); lock(false); $("#tip").hidden = true; render(); }
+
+async function lock(on) {
+  try {
+    if (on && !wake && navigator.wakeLock) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); }
+    if (!on && wake) { await wake.release(); wake = null; }
+  } catch {}
+}
+
+async function finish() {
+  finishing = true; clearInterval(timer); lock(false); etat = "fini"; render();
+  while ((waiting = await count()) > 0) { pump(); await sleep(1000); render(); }
+  while (!(await command({ op: "finish" }).catch(() => false))) await sleep(2000);
+  finishing = false; render();
+}
+
+for (const b of document.querySelectorAll("#modes button")) b.onclick = () => { mode = b.dataset.mode; render(); };
+$("#freq").oninput = () => { freq = Number($("#freq").value); if (filtre) filtre.freq = freq; render(); };
+$("#go").onclick = async () => { if (!pc?.received) await command({ op: "mode", mode }).catch(() => {}); start(); };
+$("#pause").onclick = () => etat === "pause" ? start() : pause();
+$("#passage").onclick = () => { passage++; if (filtre) filtre.dernier = null; saveProgress(); start(); };
+$("#finish").onclick = () => { if (confirm("Terminer le scan ? Le PC calcule alors les positions finales.")) finish(); };
+for (const id of ["#showcloud", "#showcloud2"]) $(id).onchange = (e) => { $("#showcloud").checked = $("#showcloud2").checked = e.target.checked; render(); if (e.target.checked) loadCloud(); };
+document.addEventListener("visibilitychange", () => { if (document.hidden && etat === "scan") pause(); });
+addEventListener("resize", () => { if (showing()) draw(); });
+
+async function connect() {
+  const code = location.hash.slice(1);
+  if (code) {
+    try {
+      const reply = await fetch(`${BASE}session`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }), cache: "no-store" });
+      if (!reply.ok) { closed = true; return render(); }
+      history.replaceState(null, "", location.pathname);
+    } catch { online = false; render(); return void setTimeout(connect, 3000); }
+  }
+  db = await openDb();
+  waiting = await count();
+  await poll();
+  setInterval(poll, POLL);
+  pump();
+  camera();
+}
+
+render();
+connect();
+</script>
+</body>
+</html>

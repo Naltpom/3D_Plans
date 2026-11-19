@@ -133,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split('?')[0].removeprefix(MOUNT) or '/'
+        if path.startswith('/scan'): from . import scan; return scan.get(self, path)
         if path == '/': return self.reply(200, self.server.phone.page, 'text/html; charset=utf-8', [('Content-Security-Policy', CSP)])
         if path not in ('/events', '/session'): return self.reply(404)
         if not self.allowed(): return self.reply(403)
@@ -141,6 +142,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path, phone, size = self.path.split('?')[0].removeprefix(MOUNT), self.server.phone, int(self.headers.get('Content-Length') or 0)
+        if path.startswith('/scan'): from . import scan; return scan.post(self, path, size)
         if path not in ('/api', '/session'): return self.reply(404)
         if not 0 < size <= 65536: return self.reply(413)
         body = self.rfile.read(size)
@@ -174,19 +176,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 @rpc('phone.start')
-def start(ctx):
+def start(ctx, page=''):
     stop(ctx)
     phone = ctx.phone = Phone(ctx, HOST or '127.0.0.1')
     host, note = publish(phone.port)
-    return {'links': [{'kind': 'tailscale', 'host': host, 'url': f'https://{host}/#{phone.token}'}] * bool(host), 'wifi': lan(), 'tailscale': note}
+    return {'links': [{'kind': 'tailscale', 'host': host, 'url': f'https://{host}/{page}#{phone.token}'}] * bool(host), 'wifi': lan(), 'tailscale': note}
 
 
 @rpc('phone.wifi')
-def wifi(ctx):
+def wifi(ctx, page=''):
     ip = lan()
     if not (ctx.phone and ip): raise RpcError('pas de réseau local pour la saisie sur le téléphone')
     port = ctx.phone.listen(ip)
-    return {'kind': 'wifi', 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/#{ctx.phone.token}'}
+    return {'kind': 'wifi', 'host': f'{ip}:{port}', 'url': f'http://{ip}:{port}/{page}#{ctx.phone.token}'}
 
 
 @rpc('phone.stop')
