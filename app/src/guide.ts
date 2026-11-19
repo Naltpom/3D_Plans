@@ -8,6 +8,7 @@ import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
+import { phoneCheck } from "./telephone";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
 type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean; hidden?: string[] };
@@ -755,10 +756,11 @@ function render() {
   modeButton.textContent = guided ? "Mode expert" : "Mode guidé";
   modeButton.title = guided ? "Afficher toute l'interface" : "Revenir au parcours par étapes";
   if (!guided || key() !== "murs" || !drawn() || !info || creating) hidePlan();
-  if (!guided) return;
+  if (!guided) return phoneCheck();
   renderRail();
   const bar = Object.assign(el("progress"), { max: 1, ariaLabel: "Calcul en cours" });
   panel.replaceChildren(...pending ? [intro(pending, detail || "Un instant : l'appli calcule le plan."), bar] : VIEWS[key(info && !creating ? guide.step : 1)]());
+  if (!pending) phoneCheck();
 }
 
 async function save(change: Partial<Guide> = {}, undo = false) {

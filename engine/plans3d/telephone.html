@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<title>3D_Plans · cotes</title>
+<style>
+:root { --bg: #14171c; --panel: #181c22; --raised: #1f242c; --control: #232832; --view: #101318; --border: #2a303a; --strong: #39404c; --text: #e6e8eb; --soft: #c9cfd8; --muted: #a3abb7;
+  --accent: #3fb6d9; --accent-text: #9adcf0; --accent-bg: #1c3440; --warn: #e8953a; --warn-text: #f2b36e; --warn-bg: #2a2116; --warn-border: #6b4a22; --point: #f5c451; --ok: #5fc08a; --mono: ui-monospace, "Cascadia Mono", Menlo, monospace; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 400 15px/22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+button, input { font: inherit; color: inherit; }
+button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--strong); border-radius: 10px; background: var(--control); font-weight: 600; cursor: pointer; }
+button.primary { border-color: var(--accent); background: var(--accent); color: #0e1116; }
+button.link { min-height: 44px; border: 0; background: none; padding: 0 4px; color: var(--accent-text); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; }
+input { min-height: 44px; padding: 6px 10px; border: 1px solid var(--strong); border-radius: 8px; background: var(--bg); font-family: var(--mono); font-size: 17px; text-align: right; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); border-bottom: 1px solid var(--border); background: var(--panel); }
+header div { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+header b { font-size: 17px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header small { font-size: 12px; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--strong); border-radius: 999px; font-size: 13px; white-space: nowrap; color: var(--muted); }
+.pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.pill.on { border-color: #2e5b45; background: #15241c; color: #8fd0a8; }
+.pill.on::before { background: var(--ok); }
+.pill.off { border-color: var(--warn-border); background: var(--warn-bg); color: var(--warn-text); }
+.pill.off::before { background: var(--warn); }
+#banner { padding: 8px 16px; border-bottom: 1px solid var(--warn-border); background: var(--warn-bg); color: var(--warn-text); font-size: 13px; }
+#view { position: relative; flex: none; height: 46vh; min-height: 240px; background: var(--view); }
+#plan { width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none; display: block; }
+.zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.zoom button { width: 44px; height: 44px; padding: 0; border-radius: 22px; font-size: 20px; font-weight: 500; }
+.hint { position: absolute; left: 10px; bottom: 8px; padding: 2px 8px; border-radius: 6px; background: #0e1116; font-size: 12px; color: var(--muted); pointer-events: none; }
+main { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px calc(16px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 10px; }
+main > * { flex-shrink: 0; }
+.seg { display: grid; grid-auto-columns: minmax(0, 1fr); grid-auto-flow: column; margin: 0; padding: 0; border: 1px solid var(--strong); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.seg button { min-height: 46px; border: 0; border-radius: 0; background: none; font-weight: 500; color: var(--soft); }
+.seg button[aria-pressed="true"] { background: var(--accent-bg); color: var(--text); font-weight: 600; }
+.help { font-size: 13px; color: var(--muted); }
+.kicker { margin-top: 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto 44px; align-items: center; gap: 2px 8px; padding: 6px 6px 6px 2px; border: 1px solid transparent; border-radius: 10px; background: var(--raised); }
+.row .name { border: 0; background: none; min-height: 44px; padding: 0; text-align: left; font-weight: 500; overflow-wrap: anywhere; }
+.row input { width: 84px; }
+.row small { grid-column: 2 / 5; font-size: 12px; line-height: 16px; color: var(--muted); }
+.row.bad { border-color: var(--warn); background: var(--warn-bg); }
+.row.bad .name, .row.bad small { color: var(--warn-text); }
+.row.wait { border-style: dashed; border-color: #6b7380; }
+.row.focus { border-color: var(--point); }
+.row .unit { color: var(--soft); }
+.icon { width: 44px; height: 44px; padding: 0; border: 0; background: none; display: flex; align-items: center; justify-content: center; color: var(--accent-text); }
+.icon.off { color: #6b7380; }
+.icon.x { color: var(--muted); font-size: 24px; font-weight: 400; }
+.todo { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; padding: 10px; border-radius: 10px; background: var(--raised); }
+.todo .num { width: 28px; height: 28px; border-radius: 14px; background: var(--point); color: #0e1116; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.todo small { display: block; font-size: 12px; line-height: 16px; color: var(--muted); }
+.empty { padding: 10px; font-size: 13px; color: var(--muted); }
+#sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; flex-direction: column; gap: 12px; padding: 16px; padding-bottom: calc(16px + env(safe-area-inset-bottom)); border-top: 1px solid var(--strong); border-radius: 16px 16px 0 0; background: var(--raised); box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.4); }
+#sheet .kicker { margin: 0; }
+#sheet b { display: block; font-size: 17px; font-weight: 600; }
+#sheet .line { display: flex; align-items: center; gap: 10px; }
+#sheet input { flex: 1; min-width: 0; min-height: 56px; font-size: 28px; border: 2px solid var(--accent); border-radius: 10px; }
+#sheet .unit { font-size: 17px; color: var(--soft); }
+#sheet .actions { display: grid; grid-template-columns: 1fr 2fr; gap: 10px; }
+#sheet .error { color: var(--warn-text); font-size: 13px; }
+#toast { position: fixed; left: 16px; right: 16px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 4; padding: 10px 14px; border: 1px solid var(--warn-border); border-radius: 10px; background: var(--warn-bg); color: var(--warn-text); font-size: 14px; }
+svg .wall { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+svg .opening { stroke-width: 7; vector-effect: non-scaling-stroke; }
+svg .porte { stroke: var(--warn-text); }
+svg .fenetre { stroke: #7fd0ea; }
+svg .porte_fenetre { stroke: #8fb8f0; }
+svg .label { fill: var(--accent-text); text-anchor: middle; dominant-baseline: middle; }
+svg .cote { fill: none; stroke: var(--point); stroke-width: 1.6; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
+svg .cote.done { stroke: var(--accent); stroke-dasharray: none; }
+svg .cote.bad { stroke: var(--warn); stroke-dasharray: none; }
+svg .cote.focus { stroke: var(--point); stroke-width: 3; }
+svg .cote.ext { stroke-width: 0.8; stroke-dasharray: none; }
+svg .glow { stroke: var(--point); stroke-opacity: 0.3; stroke-width: 9; fill: none; vector-effect: non-scaling-stroke; }
+svg .tag { fill: #0e1116; }
+svg .tag.todo, svg .tag.focus { fill: var(--point); }
+svg .val { fill: var(--accent-text); font-family: var(--mono); text-anchor: middle; dominant-baseline: middle; }
+svg .val.bad { fill: var(--warn-text); }
+svg .val.todo, svg .val.focus { fill: #0e1116; font-weight: 600; }
+svg .snap { fill: var(--point); }
+svg .ring { fill: none; stroke: var(--point); stroke-width: 1.2; vector-effect: non-scaling-stroke; opacity: 0.7; }
+</style>
+</head>
+<body>
+<header><div><b id="title">3D_Plans</b><small id="sub">Connexion au PC…</small></div><span id="live" class="pill">Connexion…</span></header>
+<div id="banner" role="status" hidden></div>
+<div id="view">
+  <svg id="plan" role="img" aria-label="Plan vu de dessus, murs nommés et cotes"></svg>
+  <div class="zoom"><button type="button" id="zin" aria-label="Zoomer">+</button><button type="button" id="zout" aria-label="Dézoomer">−</button><button type="button" id="zall" aria-label="Tout voir">⤢</button></div>
+  <span class="hint">2 doigts : zoom · glisser : déplacer</span>
+</div>
+<main>
+  <div class="seg" id="modes" role="group" aria-label="Mode de cote"></div>
+  <span class="help" id="help"></span>
+  <div class="seg" id="tabs" role="group" aria-label="Liste"></div>
+  <ul id="list"></ul>
+</main>
+<section id="sheet" aria-label="Saisir une longueur" hidden>
+  <div><span class="kicker" id="skick">Nouvelle cote</span><b id="stitle"></b><span class="help" id="splan"></span></div>
+  <div class="line"><input id="svalue" inputmode="decimal" autocomplete="off" enterkeyhint="done" aria-label="Longueur mesurée en cm"><span class="unit">cm</span></div>
+  <span class="error" id="serror" hidden></span>
+  <div class="actions"><button type="button" id="scancel">Annuler</button><button type="button" class="primary" id="sok">Ajouter</button></div>
+</section>
+<div id="toast" role="alert" hidden></div>
+<script>
+"use strict";
+const $ = (s) => document.querySelector(s), NS = "http://www.w3.org/2000/svg", BASE = location.pathname.replace(/[^/]*$/, "");
+const MODES = [["libre", "Libre", "Libre : 2 points n'importe où, chacun suit le mur le plus proche."], ["point", "Point", "Point : touche un coin, un bout de cloison ou le bord d'une porte, puis le 2e."], ["ligne", "Ligne", "Ligne : 2 points n'importe où sur les murs ou les ouvertures."]];
+const NOUNS = { porte: "la porte", fenetre: "la fenêtre", porte_fenetre: "la porte-fenêtre" };
+let seen = 0, data = null, mode = "point", tab = "todo", first = null, view = null, focus = "", online = false, closed = false, queue = [], flushing = false, ask = null, source = null, toastTimer = 0;
+
+const sub = (p, q) => [p[0] - q[0], p[1] - q[1]], dot = (u, v) => u[0] * v[0] + u[1] * v[1], gap = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+const round = (x) => Math.round(x * 1e4) / 1e4, along = (s, t) => [s.a[0] + t * (s.b[0] - s.a[0]), s.a[1] + t * (s.b[1] - s.a[1])];
+const fraction = (s, p) => dot(sub(p, s.a), sub(s.b, s.a)) / Math.max(1e-12, dot(sub(s.b, s.a), sub(s.b, s.a)));
+const isWall = (s) => s.kind === "mur" || s.kind === "cloison";
+const scene = () => data?.scene ?? {};
+const segs = () => scene().segs ?? [];
+const host = (name) => segs().find((s) => isWall(s) && s.wall === name);
+const fmt = (x, d = 1) => Number(x).toLocaleString("fr-FR", { maximumFractionDigits: d });
+const decimal = (t) => Number(String(t).trim().replace(",", "."));
+const el = (tag, cls = "", text = "") => Object.assign(document.createElement(tag), { className: cls, textContent: text });
+const node = (tag, attrs, cls = "", text = "") => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); if (cls) n.setAttribute("class", cls); if (text) n.textContent = text; return n; };
+const btn = (text, cls, label, onclick) => Object.assign(el("button", cls, text), { type: "button", onclick, ...label ? { ariaLabel: label } : {} });
+
+function locate(end) {
+  const w = host(end.wall);
+  if (!w) return null;
+  if (end.edge) {
+    const best = segs().filter((s) => !isWall(s) && s.wall === end.wall).flatMap((s) => [s.a, s.b]).map((p) => [Math.abs(fraction(w, p) - end.s), p]).sort((x, y) => x[0] - y[0])[0];
+    return best && best[0] < 0.2 ? best[1] : null;
+  }
+  const v = sub(w.b, w.a), r = end.r ?? 0;
+  return [w.a[0] + end.s * v[0] - r * v[1], w.a[1] + end.s * v[1] + r * v[0]];
+}
+
+function snap(p, tol) {
+  const all = segs();
+  if (mode === "point") {
+    const spots = all.flatMap((s) => [s.a, s.b].map((at, i) => ({ at, end: isWall(s) ? { wall: s.wall, s: i } : { wall: s.wall, s: round(fraction(host(s.wall), at)), edge: 1 } })));
+    const best = [...spots].sort((x, y) => gap(x.at, p) - gap(y.at, p))[0];
+    return best && gap(best.at, p) < tol ? { at: best.at, ends: spots.filter((x) => gap(x.at, best.at) < tol * 0.05).map((x) => x.end) } : null;
+  }
+  const near = all.filter((s) => mode === "ligne" || isWall(s)).map((s) => { const t = Math.min(1, Math.max(0, fraction(s, p))); return { s, t, d: gap(along(s, t), p) }; }).sort((x, y) => x.d - y.d)[0];
+  if (!near || mode === "ligne" && near.d > tol) return null;
+  if (mode === "ligne") { const at = along(near.s, near.t); return { at, ends: [{ wall: near.s.wall, s: round(fraction(host(near.s.wall), at)) }] }; }
+  const v = sub(near.s.b, near.s.a), q = sub(p, near.s.a), n = dot(v, v);
+  return { at: p, ends: [{ wall: near.s.wall, s: round(dot(q, v) / n), r: round((v[0] * q[1] - v[1] * q[0]) / n) }] };
+}
+
+function pair(a, b) {
+  for (const e of a.ends) for (const f of b.ends) if (e.wall === f.wall) return [e, f];
+  return [a.ends[0], b.ends[0]];
+}
+
+function describe(end) {
+  const ring = scene().ring ?? [], w = host(end.wall), [word, of] = w?.kind === "cloison" ? ["cloison", "de la cloison"] : ["mur", "du mur"], i = ring.indexOf(end.wall), n = ring.length;
+  if (end.edge) return `bord de ${NOUNS[segs().find((s) => !isWall(s) && s.wall === end.wall && [s.a, s.b].some((p) => Math.abs(fraction(w, p) - end.s) < 0.02))?.kind ?? ""] ?? "l'ouverture"} du mur ${end.wall}`;
+  if (end.r) return `près ${of} ${end.wall}`;
+  if (end.s !== 0 && end.s !== 1) return `${word} ${end.wall}`;
+  if (i < 0) return `${end.s ? "bout" : "départ"} ${of} ${end.wall}`;
+  return `coin ${end.s ? `${end.wall}–${ring[(i + 1) % n]}` : `${ring[(i - 1 + n) % n]}–${end.wall}`}`;
+}
+
+function title(ends) {
+  const [a, b] = ends;
+  if (a.wall === b.wall && !a.edge && !b.edge && !a.r && !b.r && a.s + b.s === 1 && a.s * b.s === 0) return `Longueur ${host(a.wall)?.kind === "cloison" ? "de la cloison" : "du mur"} ${a.wall}`;
+  const text = `${describe(a)} → ${describe(b)}`;
+  return text[0].toUpperCase() + text.slice(1);
+}
+
+function same(a, b) {
+  const close = (e, f) => e.wall === f.wall && Boolean(e.edge) === Boolean(f.edge) && Math.abs(e.s - f.s) < 0.01 && Math.abs((e.r ?? 0) - (f.r ?? 0)) < 0.01;
+  return Boolean(a && b) && [b, [...b].reverse()].some((o) => a.every((e, i) => close(e, o[i])));
+}
+
+const ends = (trace) => { const pts = (trace ?? []).map(locate); return pts.length === 2 && pts.every(Boolean) ? pts : null; };
+const planCm = (pts) => gap(pts[0], pts[1]) * (scene().k ?? 1) * 100;
+const hidden = () => new Set(scene().hidden ?? []);
+
+function rows() {
+  const list = (data?.cotes ?? []).map((r) => ({ ...r }));
+  for (const op of queue) {
+    const i = op.op === "place" ? list.findIndex((r) => r.id === op.id || !op.id && same(r.trace, op.trace)) : list.findIndex((r) => r.id === op.id);
+    if (op.op === "remove") { if (i >= 0) list.splice(i, 1); continue; }
+    if (op.op !== "place") continue;
+    const row = { ...i >= 0 ? list[i] : { id: op.id || `attente.${op.at}`, unit: "cm", status: "mesuré" }, value: op.value, label: op.label ?? list[i]?.label ?? "Cote", trace: op.trace ?? list[i]?.trace, wait: true };
+    if (i >= 0) list[i] = row; else list.push(row);
+  }
+  return list;
+}
+
+function todo() {
+  const list = rows();
+  return (scene().todo ?? []).filter((t) => !list.some((r) => t.key && r.id === t.key || same(r.trace, t.trace)));
+}
+
+function hiddenNow() {
+  const set = hidden();
+  for (const op of queue) if (op.op === "hide") op.shown ? set.delete(op.id) : set.add(op.id);
+  return set;
+}
+
+function fit() {
+  const pts = segs().flatMap((s) => [s.a, s.b]);
+  if (!pts.length) return [0, 0, 1, 1];
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]), w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys), m = Math.max(w, h, 1e-6) * 0.1;
+  return [Math.min(...xs) - m, Math.min(...ys) - m, w + 2 * m, h + 2 * m];
+}
+
+const svg = $("#plan");
+const perPx = () => 1 / (svg.getScreenCTM()?.a || 1);
+const toPlan = (x, y, m = svg.getScreenCTM().inverse()) => { const p = new DOMPoint(x, y).matrixTransform(m); return [p.x, p.y]; };
+
+function cote(group, pts, text, cls, font, centre) {
+  const [dx, dy] = sub(pts[1], pts[0]), length = Math.hypot(dx, dy) || 1;
+  let [nx, ny] = [-dy / length, dx / length];
+  if (nx * ((pts[0][0] + pts[1][0]) / 2 - centre[0]) + ny * ((pts[0][1] + pts[1][1]) / 2 - centre[1]) < 0) [nx, ny] = [-nx, -ny];
+  const [p, q] = pts.map(([x, y]) => [x + nx * font * 1.1, y + ny * font * 1.1]);
+  const tick = ([x, y]) => `M${x - nx * font * 0.35} ${y - ny * font * 0.35}L${x + nx * font * 0.35} ${y + ny * font * 0.35}`;
+  if (cls.includes("focus")) group.append(node("path", { d: `M${p[0]} ${p[1]}L${q[0]} ${q[1]}` }, "glow"));
+  group.append(node("path", { d: `M${pts[0][0]} ${pts[0][1]}L${p[0]} ${p[1]}M${pts[1][0]} ${pts[1][1]}L${q[0]} ${q[1]}` }, `cote ext ${cls}`));
+  group.append(node("path", { d: `M${p[0]} ${p[1]}L${q[0]} ${q[1]}${tick(p)}${tick(q)}` }, `cote ${cls}`));
+  const c = [(p[0] + q[0]) / 2 + nx * font * 0.9, (p[1] + q[1]) / 2 + ny * font * 0.9], w = font * (0.62 * text.length + 0.9);
+  group.append(node("rect", { x: c[0] - w / 2, y: c[1] - font * 0.72, width: w, height: font * 1.44, rx: font * 0.72 }, `tag ${cls}`), node("text", { x: c[0], y: c[1] + font * 0.05, "font-size": font }, `val ${cls}`, text));
+}
+
+function draw() {
+  view ??= fit();
+  svg.setAttribute("viewBox", view.join(" "));
+  const font = 13 * perPx(), all = segs();
+  const pts = all.flatMap((s) => [s.a, s.b]), centre = [0, 1].map((i) => pts.reduce((t, p) => t + p[i], 0) / Math.max(1, pts.length));
+  const items = [];
+  for (const s of [...all].sort((a, b) => Number(!isWall(a)) - Number(!isWall(b)))) items.push(node("line", { x1: s.a[0], y1: s.a[1], x2: s.b[0], y2: s.b[1] }, isWall(s) ? "wall" : `opening ${s.kind}`));
+  for (const s of all.filter(isWall)) {
+    const m = [(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2], d = Math.hypot(m[0] - centre[0], m[1] - centre[1]) || 1;
+    items.push(node("text", { x: m[0] + (m[0] - centre[0]) / d * font * 1.3, y: m[1] + (m[1] - centre[1]) / d * font * 1.3, "font-size": font * 1.1 }, "label", s.wall));
+  }
+  const group = node("g", {}), off = hiddenNow(), status = scene().status ?? {};
+  if (tab === "todo") todo().forEach((t, i) => { const at = ends(t.trace) ?? t.ends; if (at) cote(group, at, String(i + 1), `todo ${t.key === focus && focus ? "focus" : ""}`, font, centre); });
+  for (const r of rows()) {
+    const at = ends(r.trace) ?? status[r.id]?.ends;
+    if (at && !off.has(r.id)) cote(group, at, fmt(r.value), `${status[r.id]?.conflict ? "bad" : "done"} ${r.id === focus ? "focus" : ""}`, font, centre);
+  }
+  const draft = ask?.pts;
+  if (draft) cote(group, draft, `≈ ${fmt(planCm(draft), 0)}`, "focus", font, centre);
+  const marks = first ? [node("circle", { cx: first.at[0], cy: first.at[1], r: font * 0.45 }, "snap"), node("circle", { cx: first.at[0], cy: first.at[1], r: font * 0.9 }, "ring")] : [];
+  svg.replaceChildren(...items, group, ...marks);
+}
+
+function render() {
+  const s = scene(), n = queue.length;
+  $("#title").textContent = data ? `${data.project} · cotes` : "3D_Plans · cotes";
+  $("#sub").textContent = closed ? "Accès fermé" : s.title ? `${s.title} · le PC suit en direct` : data ? "Ouvre l'onglet Cotes sur le PC" : "Connexion au PC…";
+  const live = $("#live");
+  live.className = `pill ${online ? "on" : data || closed ? "off" : ""}`;
+  live.textContent = online ? "En direct" : data || closed ? "Hors ligne" : "Connexion…";
+  const banner = closed ? "Accès fermé par le PC. Rouvre « Saisir sur le téléphone » sur le PC et scanne le nouveau QR." + (n ? ` ${n} saisie${n > 1 ? "s" : ""} en attente : elle${n > 1 ? "s partiront" : " partira"} après le nouveau scan.` : "")
+    : !online && data ? `Connexion perdue.${n ? ` ${n} saisie${n > 1 ? "s" : ""} en attente : elle${n > 1 ? "s partiront" : " partira"} au retour du réseau.` : " Nouvel essai dans un instant."}` : "";
+  $("#banner").hidden = !banner;
+  $("#banner").textContent = banner;
+  $("#modes").replaceChildren(...MODES.map(([id, label]) => Object.assign(btn(label, "", "", () => { mode = id; first = null; render(); }), { ariaPressed: String(id === mode) })));
+  $("#help").textContent = first ? "Touche le 2e point de la cote." : MODES.find(([id]) => id === mode)[2];
+  const list = rows(), wanted = todo();
+  $("#tabs").replaceChildren(...[["todo", `À mesurer · ${wanted.length}`], ["mine", `Mes cotes · ${list.length}`]].map(([id, label]) => Object.assign(btn(label, "", "", () => { tab = id; render(); }), { ariaPressed: String(id === tab) })));
+  if (!document.activeElement?.closest("#list")) $("#list").replaceChildren(...tab === "todo" ? todoItems(wanted) : mineItems(list));
+  draw();
+}
+
+function todoItems(wanted) {
+  if (!wanted.length) return [el("li", "empty", "Rien à proposer pour l'instant. Pose une cote sur le plan : 2 touches, puis la longueur.")];
+  return wanted.map((t, i) => {
+    const li = el("li", "todo"), text = el("span");
+    text.append(el("b", "", t.label), el("small", "", `${t.hint ? `${t.hint} · ` : ""}le plan dit ≈ ${fmt(t.plan, 0)} cm`));
+    li.append(el("span", "num", String(i + 1)), text, btn("Mesurer", "", `Mesurer ${t.label}`, () => { focus = t.key || ""; open({ kicker: "À mesurer", title: t.label, plan: t.plan, pts: ends(t.trace) ?? t.ends, submit: (value) => send({ op: "place", ...t.key ? { id: t.key, expr: t.expr } : {}, trace: t.trace, value, label: t.label }) }); }));
+    return li;
+  });
+}
+
+function mineItems(list) {
+  if (!list.length) return [el("li", "empty", "Aucune cote. Pose-en une sur le plan, ou mesure une cote de « À mesurer ».")];
+  const off = hiddenNow(), status = scene().status ?? {};
+  return list.map((r) => {
+    const st = status[r.id], li = el("li", `row ${st?.conflict ? "bad" : ""} ${r.wait ? "wait" : ""} ${r.id === focus ? "focus" : ""}`), shown = !off.has(r.id);
+    const eye = btn("", `icon ${shown ? "" : "off"}`, `${shown ? "Masquer" : "Afficher"} la cote ${r.label} sur le plan`, () => send({ op: "hide", id: r.id, shown: !shown }));
+    eye.innerHTML = `<svg width="22" height="14" viewBox="0 0 22 14" aria-hidden="true"><path d="M1 7C4 2 7.5 1 11 1s7 1 10 6c-3 5-6.5 6-10 6S4 12 1 7Z" fill="none" stroke="currentColor" stroke-width="1.6"/>${shown ? '<circle cx="11" cy="7" r="2.6" fill="currentColor"/>' : '<path d="M3 13L19 1" stroke="currentColor" stroke-width="1.6"/>'}</svg>`;
+    const name = btn(r.label || r.id, "name", "", () => { focus = focus === r.id ? "" : r.id; render(); });
+    const pts = ends(r.trace);
+    const value = r.unit === "cm" ? Object.assign(el("input"), { inputMode: "decimal", value: String(r.value).replace(".", ","), ariaLabel: `${r.label} en cm`, enterKeyHint: "done" }) : el("span", "unit", `${fmt(r.value)} ${r.unit}`);
+    if (r.unit === "cm") value.onchange = () => { const v = decimal(value.value), error = check(v, pts && planCm(pts)); if (error) { toast(error); value.value = String(r.value).replace(".", ","); return; } send({ op: "place", id: r.id, ...r.trace ? { trace: r.trace } : {}, value: v, label: r.label }); };
+    const x = btn("×", "icon x", `Retirer la cote ${r.label}`, () => { if (confirm(`Retirer « ${r.label} » ?`)) send({ op: "remove", id: r.id }); });
+    li.append(eye, name, value, x, el("small", "", [r.wait ? "en attente d'envoi" : st?.text, shown ? "" : "masquée sur le plan"].filter(Boolean).join(" · ")));
+    return li;
+  });
+}
+
+function check(value, plan) {
+  if (!(value > 0)) return "Indique la longueur en centimètres, par exemple 132.";
+  if (plan && (value / plan < 0.5 || value / plan > 2)) return `Le plan donne environ ${fmt(plan, 0)} cm : vérifie que la longueur est en centimètres.`;
+  return "";
+}
+
+function open(spec) {
+  ask = spec;
+  $("#skick").textContent = spec.kicker;
+  $("#stitle").textContent = spec.title;
+  $("#splan").textContent = spec.plan ? `Le plan dit ≈ ${fmt(spec.plan, 0)} cm. Tape ta mesure au mètre.` : "Tape ta mesure au mètre.";
+  $("#sok").textContent = spec.kicker === "Nouvelle cote" ? "Ajouter" : "Valider";
+  $("#svalue").value = "";
+  $("#serror").hidden = true;
+  $("#sheet").hidden = false;
+  render();
+  $("#svalue").focus();
+}
+
+function close() { ask = null; first = null; $("#sheet").hidden = true; render(); }
+
+function submit() {
+  const value = decimal($("#svalue").value), error = check(value, ask.plan);
+  if (error) { $("#serror").textContent = error; $("#serror").hidden = false; return; }
+  const task = ask.submit;
+  close();
+  task(value);
+}
+
+$("#sok").onclick = submit;
+$("#scancel").onclick = close;
+$("#svalue").onkeydown = (e) => { if (e.key === "Enter") submit(); };
+$("#svalue").oninput = () => { $("#serror").hidden = true; };
+
+function toast(text) {
+  $("#toast").textContent = text;
+  $("#toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $("#toast").hidden = true; }, 5000);
+}
+
+const storeKey = () => data && `plans3d.queue.${data.key}`;
+function keep() { try { if (storeKey()) localStorage.setItem(storeKey(), JSON.stringify(queue)); } catch {} }
+
+function send(op) {
+  queue.push({ ...op, at: Date.now() });
+  keep();
+  render();
+  flush();
+}
+
+async function flush() {
+  if (flushing || closed) return;
+  flushing = true;
+  while (queue.length) {
+    let reply;
+    try { reply = await fetch(`${BASE}api`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(queue[0]), cache: "no-store" }); }
+    catch { online = false; break; }
+    if (reply.status === 404) { closed = true; break; }
+    const answer = await reply.json().catch(() => ({}));
+    if (!reply.ok) toast(answer.error || "Saisie refusée par le PC.");
+    else if (answer.row?.id && queue[0].op === "place") focus = answer.row.id;
+    queue.shift();
+    keep();
+  }
+  flushing = false;
+  render();
+}
+
+function connect() {
+  source?.close();
+  source = new EventSource(`${BASE}events`);
+  source.onopen = () => { seen = Date.now(); online = true; render(); flush(); };
+  source.addEventListener("ping", () => { seen = Date.now(); if (!online) { online = true; render(); flush(); } });
+  source.onmessage = (e) => {
+    const fresh = JSON.parse(e.data), shape = (d) => (d?.scene?.segs ?? []).map((s) => s.wall + s.kind).join(), changed = shape(fresh) !== shape(data);
+    if (!data) { try { queue = [...JSON.parse(localStorage.getItem(`plans3d.queue.${fresh.key}`) || "[]"), ...queue]; } catch {} }
+    data = fresh;
+    seen = Date.now();
+    if (changed) view = null;
+    online = true;
+    render();
+    flush();
+  };
+  source.onerror = () => {
+    online = false;
+    render();
+    if (source.readyState === EventSource.CLOSED) fetch(BASE, { cache: "no-store" }).then((r) => { if (r.status === 404) { closed = true; render(); } else setTimeout(connect, 3000); }).catch(() => setTimeout(connect, 3000));
+  };
+}
+
+const pointers = new Map();
+let gesture = null;
+const start = () => { const pts = [...pointers.values()]; gesture = { m: svg.getScreenCTM().inverse(), box: view.slice(), pts: pts.map((p) => p.slice()), moved: gesture?.moved ?? false }; };
+const middle = (pts) => [(pts[0][0] + pts.at(-1)[0]) / 2, (pts[0][1] + pts.at(-1)[1]) / 2];
+const spread = (pts) => pts.length > 1 ? gap(pts[0], pts[1]) : 1;
+
+svg.addEventListener("pointerdown", (e) => { svg.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); if (pointers.size === 1) gesture = null; start(); });
+svg.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId) || !gesture) return;
+  pointers.set(e.pointerId, [e.clientX, e.clientY]);
+  const now = [...pointers.values()];
+  if (now.length !== gesture.pts.length) return start();
+  if (!gesture.moved && gap(now[0], gesture.pts[0]) < 8 && now.length === 1) return;
+  gesture.moved = true;
+  const f = spread(gesture.pts) / spread(now), anchor = toPlan(...middle(gesture.pts), gesture.m), here = toPlan(...middle(now), gesture.m), b = gesture.box;
+  view = [anchor[0] - (here[0] - b[0]) * f, anchor[1] - (here[1] - b[1]) * f, b[2] * f, b[3] * f];
+  draw();
+});
+const lift = (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  const tap = gesture && !gesture.moved && pointers.size === 1 && e.type === "pointerup";
+  pointers.delete(e.pointerId);
+  if (pointers.size) start(); else if (tap) pick(e.clientX, e.clientY);
+};
+svg.addEventListener("pointerup", lift);
+svg.addEventListener("pointercancel", lift);
+svg.addEventListener("wheel", (e) => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.2 : 1 / 1.2, toPlan(e.clientX, e.clientY)); }, { passive: false });
+
+function zoom(f, at) {
+  const [x, y, w, h] = view;
+  at ??= [x + w / 2, y + h / 2];
+  view = [at[0] - (at[0] - x) * f, at[1] - (at[1] - y) * f, w * f, h * f];
+  draw();
+}
+$("#zin").onclick = () => zoom(0.7);
+$("#zout").onclick = () => zoom(1 / 0.7);
+$("#zall").onclick = () => { view = null; draw(); };
+
+function pick(x, y) {
+  if (!data || ask) return;
+  const tol = 26 * perPx(), hit = snap(toPlan(x, y), tol);
+  if (!hit) { if (navigator.vibrate) navigator.vibrate(30); return; }
+  if (!first) { first = hit; return render(); }
+  if (gap(hit.at, first.at) < tol) return;
+  const trace = pair(first, hit), pts = ends(trace);
+  first = null;
+  open({ kicker: "Nouvelle cote", title: title(trace), plan: pts && planCm(pts), pts, submit: (value) => send({ op: "place", trace, value, label: title(trace) }) });
+}
+
+window.addEventListener("resize", () => draw());
+setInterval(() => { if (online && !closed && Date.now() - seen > 12000) { online = false; render(); connect(); } }, 3000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !closed && source?.readyState === EventSource.CLOSED) connect(); });
+render();
+connect();
+</script>
+</body>
+</html>

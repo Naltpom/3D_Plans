@@ -5,6 +5,7 @@ import { drawPlan, metres, shapeOf, type Corner, type DrawnWall, type Fit, type 
 import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previewPose, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
 import { setView, showWalls } from "./view3d";
+import { phoneButton, phonePanel } from "./telephone";
 
 type Applied = { walls: string[]; openings: string[]; stairs: string[]; clicks: number; pairs: string[][] | null; kept?: string[]; dropped?: { id: string; label: string; reason: string }[] };
 export type Helpers = {
@@ -635,19 +636,24 @@ function cotesStep() {
   const pts = draft && spots(p, draft), svg = drawPlan(p, { fitted: true, cloud: points(p) });
   const zoom = coteLayer(svg, tool, segs, drawn, pts, pts ? `≈ ${number(planCm(p, pts), 0)}` : "", pickPoint), bar = el("div", "cote-tools"), box = el("section");
   bar.append(choice("Mode de cote", MODES.map(([id, label]) => [id, label]), tool.mode, (id) => { tool.mode = id as Tool["mode"]; [tool.first, draft] = [null, null]; h.render(); }),
-    el("span", "m", `${MODES.find(([id]) => id === tool.mode)![1]} : ${MODES.find(([id]) => id === tool.mode)![2]}`), el("span", "spacer"), ...zoom);
+    el("span", "m", `${MODES.find(([id]) => id === tool.mode)![1]} : ${MODES.find(([id]) => id === tool.mode)![2]}`), el("span", "spacer"), phoneButton(h.render), ...zoom);
   box.append(bar, svg, ...backdrop(p));
   show(false, box);
   const conflicts = list.filter((r) => fresh(r) && solved.get(r.id)!.conflict), stale = list.filter((r) => !fresh(r) && spots(p, r.trace!));
+  const detail = (r: CoteRow) => { const c = fresh(r) ? solved.get(r.id) : undefined, at = spots(p, r.trace!);
+    return !at ? "ses murs ne sont plus sur le plan" : c ? `plan ${number(c.plan * 100, 0)} cm${c.conflict ? ` · le reste du plan donne ≈ ${number((c.value + c.ecart) * 100, 0)} cm · conflit` : " ✓"}` : `plan ≈ ${number(planCm(p, at), 0)} cm · à recalculer`; };
+  const seen = seenOn(p), phone = phonePanel({ title: "Étape 4.2", k: scale(p), segs, ring: ring(p), hidden: [...hidden],
+    status: Object.fromEntries(list.map((r) => [r.id, { text: detail(r), conflict: fresh(r) && solved.get(r.id)!.conflict }])),
+    todo: [...p.walls, ...kept(p)].filter((w) => !seen.has(w.name)).map((w) => { const trace = [{ wall: w.name, s: 0 }, { wall: w.name, s: 1 }]; return { key: "", label: title(trace, segs, ring(p)), hint: "pas vu sur les photos", plan: size(p, w) * 100, trace }; }) },
+  { changed: (id) => run(async () => { picked = id; await loadRows(); }), hide: (id, shown) => run(async () => { await h.save({ hidden: shown ? [...hidden].filter((x) => x !== id) : [...hidden, id] }); h.render(); }) }, h.render);
   const items = list.map((r) => {
-    const c = fresh(r) ? solved.get(r.id) : undefined, at = spots(p, r.trace!), line = el("div", `tagged ${r.id === picked ? "selected" : ""}`), text = el("span", "fill", r.label);
+    const c = fresh(r) ? solved.get(r.id) : undefined, line = el("div", `tagged ${r.id === picked ? "selected" : ""}`), text = el("span", "fill", r.label);
     const shown = Object.assign(el("input"), { type: "checkbox", checked: !hidden.has(r.id), ariaLabel: `Afficher la cote ${r.label}` });
     shown.onchange = () => run(async () => { await h.save({ hidden: shown.checked ? [...hidden].filter((x) => x !== r.id) : [...hidden, r.id] }); h.render(); });
     const value = Object.assign(el("input"), { inputMode: "decimal", value: String(r.value).replace(".", ","), ariaLabel: `${r.label} en cm` });
     value.onchange = () => run(() => placeCote(value.value, r.trace!, r.id, r.label));
-    const detail = !at ? "ses murs ne sont plus sur le plan" : c ? `plan ${number(c.plan * 100, 0)} cm${c.conflict ? ` · le reste du plan donne ≈ ${number((c.value + c.ecart) * 100, 0)} cm · conflit` : " ✓"}` : `plan ≈ ${number(planCm(p, at), 0)} cm · à recalculer`;
     line.append(shown, text, value, el("span", "", "cm"), button("×", "remove", `Retirer la cote ${r.label}`, () => run(async () => { await call("cotes.remove", { id: r.id }); await loadRows(); })),
-      el("small", `grow ${c?.conflict ? "warn" : ""}`, detail));
+      el("small", `grow ${c?.conflict ? "warn" : ""}`, detail(r)));
     line.onclick = (event) => { if (event.target === line || event.target === text) { picked = picked === r.id ? "" : r.id; h.render(); } };
     return line;
   });
@@ -662,6 +668,7 @@ function cotesStep() {
     : tool.first ? [el("div", "note", "Clique le 2e point de la cote."), cancel] : [];
   return [tabs(), h.intro(before ? `Plan recalculé avec ${list.length} cote${list.length > 1 ? "s" : ""}` : "Cotes au mètre",
     "Pose une cote sur le plan (2 clics), tape sa longueur mesurée, puis recalcule. Les murs vus sur les photos bougent peu ; ceux qu'on voit mal suivent tes cotes."),
+  ...phone,
   ...before ? [h.card("Ce qui a bougé", changes(p, before))] : [],
   ...conflicts.map((r) => { const c = solved.get(r.id)!, box = el("div", "alert"); box.append(el("b", "", "Cote en conflit"), el("span", "", `« ${r.label} » (${number(r.value)} cm) ne colle pas avec les murs vus sur les photos et tes autres cotes : sans elle, le plan donne ≈ ${number((c.value + c.ecart) * 100, 0)} cm (écart ${number(Math.abs(c.ecart) * 100, 0)} cm). Vérifie-la au mètre, ou retire-la.`)); return box; }),
   ...pending, ...list.length ? [el("span", "kicker", `Mes cotes · ${list.length}${stale.length ? ` · ${stale.length} à recalculer` : ""}`), listBox] : [],

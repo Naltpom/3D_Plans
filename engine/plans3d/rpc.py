@@ -29,6 +29,7 @@ class Ctx:
         self.project, self.result = project, None
         self.send = send or (lambda message: None)
         self.update_lock = threading.Lock()
+        self.lock, self.phone = threading.RLock(), None
         self.current = threading.local()
         self.history = {'undo': [], 'redo': []}
 

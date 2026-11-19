@@ -2,7 +2,7 @@ import importlib, json, math, os, sys, threading, traceback
 import numpy as np
 from .rpc import LONG_METHODS, Ctx, RpcError, call
 
-PLUGINS = ['plans3d.components', 'plans3d.photos', 'plans3d.cadastre', 'plans3d.terrain', 'plans3d.furniture', 'plans3d.layout', 'plans3d.ai', 'plans3d.lumiere', 'plans3d.walls', 'plans3d.plan', 'plans3d.lecture', 'plans3d.groupes', 'plans3d.mesures']
+PLUGINS = ['plans3d.components', 'plans3d.photos', 'plans3d.cadastre', 'plans3d.terrain', 'plans3d.furniture', 'plans3d.layout', 'plans3d.ai', 'plans3d.lumiere', 'plans3d.walls', 'plans3d.plan', 'plans3d.lecture', 'plans3d.groupes', 'plans3d.mesures', 'plans3d.telephone']
 INVALID_REQUEST = 'requête invalide : {"id", "method", "params"} attendu'
 
 
@@ -74,7 +74,8 @@ def main():
         except Exception:
             send({'id': request.get('id') if isinstance(request, dict) else None, 'error': INVALID_REQUEST}); continue
         if method in LONG_METHODS: threading.Thread(target=run, args=(request.get('id'), method, params), name=method).start()
-        else: run(request.get('id'), method, params)
+        else:
+            with ctx.lock: run(request.get('id'), method, params)
 
 
 if __name__ == '__main__':

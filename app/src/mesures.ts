@@ -4,6 +4,7 @@ import { update } from "./projects";
 import { highlight, setView } from "./view3d";
 import type { Plan } from "./plan2d";
 import { choice, coteLayer, MODES, pair, title, type End, type Pick, type Seg, type Tool } from "./coter";
+import { phoneButton, phonePanel } from "./telephone";
 
 type Item = { key: string; group: string; label: string; hint: string; expr: string; ends: number[][]; on: string[]; covers: string[]; value: number; sigma: number | null; conflict: boolean; twin: string | null; trace: End[] | null };
 type Measure = { id: string; label: string; value: number; unit: string; resid: number | null; conflict: boolean; key: string | null; ends: number[][] | null; trace: End[] | null };
@@ -12,7 +13,7 @@ type Part = { id: string; type: string; label: string; noun: string; xy: number[
 type State = { candidates: Item[]; measures: Measure[]; groups: Group[]; scales: { axis: string; value: number; sigma: number | null }[]; conflicts: { text: string; cotes: string[] }[];
   threshold: number; supposed: boolean; precise: boolean; elements: Part[] };
 export type Helpers = {
-  guide: () => { refused?: string[]; plan?: Plan | null }; save: (change: Record<string, unknown>) => Promise<void>; active: () => boolean;
+  guide: () => { refused?: string[]; plan?: Plan | null; hidden?: string[] }; save: (change: Record<string, unknown>) => Promise<void>; active: () => boolean;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
   footer: (...actions: HTMLButtonElement[]) => HTMLElement; primary: (text: string, action: () => unknown) => HTMLButtonElement; back: () => HTMLButtonElement; render: () => void;
   next: () => Promise<void>; skip: () => Promise<void>;
@@ -156,7 +157,7 @@ function mine() {
 }
 
 function custom() {
-  if (!adding) return [button("Ajouter ma mesure", "", "Choisir un ou deux éléments, ou poser une cote sur le plan", () => { [adding, picks, extra] = [true, [], null]; h.render(); })];
+  if (!adding) return [h.row(button("Ajouter ma mesure", "", "Choisir un ou deux éléments, ou poser une cote sur le plan", () => { [adding, picks, extra] = [true, [], null]; h.render(); }), phoneButton(h.render))];
   const s = state!, names = picks.map((id) => s.elements.find((e) => e.id === id)!);
   const box = el("div", "alert"), mode = MODES.find(([id]) => id === how);
   box.append(el("b", "", "Ma mesure"), choice("Comment choisir", [["elements", "Éléments"], ...MODES.map(([id, label]) => [id, label] as [string, string])], how, (id) => {
@@ -195,11 +196,20 @@ export function scaleStep(helpers: Helpers): Node[] {
   drawPlan();
   const toggle = button(flat ? "Voir en 3D" : "Voir le plan 2D", "link start", "Changer d'affichage", () => { flat = !flat; if (!flat) setView("3d"); h.render(); });
   return [h.intro("Des mesures au mètre", "Les photos donnent la forme, pas la taille. Chaque mesure fixe l'échelle et corrige le plan là où elle est prise. Mesure ce que tu peux, dans l'ordre que tu veux."),
-    toggle, ...known, ...effect(), ...s.precise ? [precision()] : [],
+    ...phone(list), toggle, ...known, ...effect(), ...s.precise ? [precision()] : [],
     el("span", "kicker", "Mesures proposées · la plus utile d'abord"), ...list.map((c, i) => entry(c, i + 1)), ...list.length ? [] : [el("p", "", "Plus rien à proposer.")],
     ...custom(), ...s.precise ? [] : [precision()], ...s.conflicts.length ? [conflicts()] : [], ...mine(), ...gone ? [button(`${gone} mesure${gone > 1 ? "s" : ""} écartée${gone > 1 ? "s" : ""} · les reproposer`, "link start", "Remettre les mesures écartées", () => run(async () => { await h.save({ refused: [] }); h.render(); }))] : [],
     h.footer(h.back(), ...s.measures.length ? [] : [button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(h.skip))],
       ...s.measures.length ? [s.precise ? h.primary("Étape suivante", h.next) : button("Passer à Vérifier", "", "Étape suivante", () => run(h.next))] : [])];
+}
+
+function phone(list: Item[]) {
+  const s = state!, at = turn(s.elements), hidden = new Set(h.guide().hidden ?? []), shown = (p: number[][] | null) => p?.map(at) ?? null;
+  return phonePanel({ title: "Étape 5", k: 1, segs: segments(s.elements, at), ring: (h.guide().plan?.walls ?? []).map((w) => w.name), hidden: [...hidden],
+    status: Object.fromEntries(s.measures.map((m) => [m.id, { text: m.resid == null ? "à intégrer" : `écart avec le reste du plan : ${cm(Math.abs(m.resid))}${m.conflict ? " · contradiction" : ""}`, conflict: m.conflict, ends: shown(m.ends) }])),
+    todo: list.map((c) => ({ key: c.key, label: c.label, hint: c.hint, plan: c.value * 100, trace: c.trace, expr: c.expr, ends: shown(c.ends) })) },
+  { changed: (id, label) => run(async () => { [before, last] = [state, `« ${label} »`]; await refresh(); focus = state?.measures.find((m) => m.id === id)?.key ?? ""; h.render(); }),
+    hide: (id, on) => run(async () => { await h.save({ hidden: on ? [...hidden].filter((x) => x !== id) : [...hidden, id] }); h.render(); }) }, h.render);
 }
 
 function svg(tag: string, attributes: Record<string, string | number>, className = "", text = "") {
@@ -252,7 +262,8 @@ function drawPlan() {
   }
   const group = svg("g", {});
   proposals().forEach((c, i) => cote(group, c.key, c.ends, `${i + 1}`, `todo ${c.key === focus ? "focus" : ""}`, font, at, centre));
-  for (const mm of s.measures) if (mm.ends) cote(group, mm.key, mm.ends, `${number(mm.value)}`, `${mm.conflict ? "bad" : "done"} ${mm.key === focus ? "focus" : ""}`, font, at, centre);
+  const hidden = new Set(h.guide().hidden ?? []);
+  for (const mm of s.measures) if (mm.ends && !hidden.has(mm.id)) cote(group, mm.key, mm.ends, `${number(mm.value)}`, `${mm.conflict ? "bad" : "done"} ${mm.key === focus ? "focus" : ""}`, font, at, centre);
   if (extra) cote(group, extra.key, extra.ends, `≈ ${number(extra.value * 100, 0)}`, "todo focus", font, at, centre);
   plan.append(group);
   const section = el("section"), segs = segments(s.elements, at), coting = adding && how !== "elements";
