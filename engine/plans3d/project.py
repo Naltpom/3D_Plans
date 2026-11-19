@@ -26,6 +26,7 @@ def cotes_csv(path, sid):
     out = []
     with open(path, encoding='utf-8') as f:
         for r in csv.DictReader(f, delimiter=';'):
+            if not r['expr']: continue
             k = UNITS[r['unit']]
             out.append(Obs(f"{sid}:{r['id']}", r['expr'], float(r['value']) * k, float(r['sigma']) * k, sid, r['status'] or 'mesuré', r['label']))
     return out

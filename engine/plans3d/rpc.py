@@ -65,7 +65,7 @@ def call(ctx, name, params):
 HISTORY, HISTORY_FILES = 50, ('model.json', 'project.json', os.path.join('sources', 'cotes.csv'))
 UNDOABLE = set('components.add components.remove furniture.add furniture.move furniture.rotate furniture.options furniture.remove layout.apply cadastre.add terrain.add '
                'photos.add photos.set_gap photos.set_group photos.associate photos.unassociate photos.axes photos.click photos.unclick photos.create_walls photos.fit_walls photos.snap_walls '
-               'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove'.split())
+               'plan.trace plan.place plan.apply plan.roof plan.settle plan.vehicle params.add params.remove sources.add sources.add_auto sources.remove cotes.add cotes.remove cotes.place'.split())
 
 
 def undoable(name, params):
@@ -237,12 +237,13 @@ def cotes_path(project): return os.path.join(project.folder, 'sources', 'cotes.c
 def read_cotes(project):
     if not os.path.exists(cotes_path(project)): return []
     with open(cotes_path(project), encoding='utf-8', newline='') as fh:
-        return [{**row, 'value': float(row['value']), 'sigma': float(row['sigma'])} for row in csv.DictReader(fh, delimiter=';')]
+        return [{**row, 'value': float(row['value']), 'sigma': float(row['sigma']), 'trace': json.loads(row.get('trace') or 'null')} for row in csv.DictReader(fh, delimiter=';')]
 
 
 def write_cotes(project, rows):
     with open(cotes_path(project), 'w', encoding='utf-8', newline='') as fh:
-        writer = csv.DictWriter(fh, COTES_COLUMNS, delimiter=';', extrasaction='ignore'); writer.writeheader(); writer.writerows(rows)
+        writer = csv.DictWriter(fh, COTES_COLUMNS + ['trace'], delimiter=';', extrasaction='ignore'); writer.writeheader()
+        writer.writerows({**r, 'trace': json.dumps(r['trace']) if r.get('trace') else ''} for r in rows)
     if not project.db.execute("select 1 from sources where id='cotes'").fetchone(): project.add_source('cotes', cotes_path(project), 'cotes_csv')
 
 
@@ -251,7 +252,7 @@ def cotes_list(ctx): return read_cotes(ctx.require_project())
 
 
 @rpc('cotes.add')
-def cotes_add(ctx, id, expr, value, sigma=1.0, unit='cm', label='', status='mesuré'):
+def cotes_add(ctx, id, expr, value, sigma=1.0, unit='cm', label='', status='mesuré', trace=None):
     project = ctx.require_project(); id = str(id)
     if not ID_PATTERN.fullmatch(id): raise RpcError(f'identifiant de cote invalide : {id!r}')
     if unit not in UNITS: raise RpcError(f'unité inconnue : {unit} (disponibles : {", ".join(UNITS)})')
@@ -260,9 +261,9 @@ def cotes_add(ctx, id, expr, value, sigma=1.0, unit='cm', label='', status='mesu
     try: compile_expr(expr, {n: i for i, n in enumerate(project.params())})
     except KeyError as e: raise RpcError(e.args[0]) from None
     except (ValueError, SyntaxError) as e: raise RpcError(f'expression invalide {expr!r} : {e}') from None
-    row = {'id': id, 'expr': expr, 'value': float(value), 'sigma': float(sigma), 'unit': unit, 'status': status, 'label': label}
     rows = read_cotes(project)
     position = next((i for i, r in enumerate(rows) if r['id'] == id), len(rows))
+    row = {'id': id, 'expr': expr, 'value': float(value), 'sigma': float(sigma), 'unit': unit, 'status': status, 'label': label, 'trace': trace or (rows[position:] or [{}])[0].get('trace')}
     rows[position:position + 1] = [row]
     write_cotes(project, rows)
     return row

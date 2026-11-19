@@ -1,5 +1,6 @@
 import { call, host } from "./host";
 import { $, button, el, number, run } from "./ui";
+import { choice, coteLayer, locate, MODES, pair, title, type End, type Pick, type Seg, type Tool } from "./coter";
 import { drawPlan, metres, shapeOf, type Corner, type DrawnWall, type Fit, type Opening, type Plan, type Rule } from "./plan2d";
 import { closeGuided, crop, guidedImage, openGuided, photoRatio, photoUrl, previewPose, refreshGuided, showGuided } from "./photos";
 import { update } from "./projects";
@@ -7,7 +8,7 @@ import { setView, showWalls } from "./view3d";
 
 type Applied = { walls: string[]; openings: string[]; stairs: string[]; clicks: number; pairs: string[][] | null; kept?: string[]; dropped?: { id: string; label: string; reason: string }[] };
 export type Helpers = {
-  guide: () => { plan?: Plan | null; sub?: number; done?: number[] }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
+  guide: () => { plan?: Plan | null; sub?: number; done?: number[]; hidden?: string[] }; save: (change: Record<string, unknown>, undo?: boolean) => Promise<void>; act: (text: string, task: () => Promise<unknown>) => Promise<void>;
   intro: (title: string, text: string) => HTMLElement; card: (title: string, text: string, ...actions: HTMLButtonElement[]) => HTMLElement; row: (...nodes: Node[]) => HTMLElement;
   footer: (...actions: HTMLButtonElement[]) => HTMLElement; primary: (text: string, action: () => unknown) => HTMLButtonElement; back: () => HTMLButtonElement; render: () => void; paint: () => void;
   sketch: () => { path: string } | null; source: () => string | null; walls: () => { a: number[]; b: number[]; height: number; label: string }[]; finish: () => Promise<void>; classic: () => Promise<void>; next: () => Promise<void>;
@@ -31,11 +32,18 @@ let preparing = false;
 let cloud: { key: string; points: number[][] } | null = null;
 let background = true;
 let gallery: { corner: number; items: { name: string; visible: boolean; inside: boolean; hidden: number | null; sees: Record<string, boolean> }[]; only: Set<string> } | null = null;
+type CoteRow = { id: string; label: string; value: number; unit: string; trace: End[] | null };
+let tab = "calage";
+let rows: CoteRow[] | null = null;
+let tool: Tool = { mode: "point", first: null, view: null };
+let draft: End[] | null = null;
+let picked = "";
+let before: Fit | null = null;
 
 const plan = () => h.guide().plan!;
 const sub = () => h.guide().sub ?? 1;
 const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n > 1 ? many : word}`;
-const scale = (p: Plan) => p.fit?.k ?? 6 / Math.max(1, ...[0, 1].map((i) => Math.max(...p.walls.map((w) => w.a[i])) - Math.min(...p.walls.map((w) => w.a[i]))));
+const scale = (p: Plan) => p.fit ? p.fit.k * (p.fit.unit ?? 1) : 6 / Math.max(1, ...[0, 1].map((i) => Math.max(...p.walls.map((w) => w.a[i])) - Math.min(...p.walls.map((w) => w.a[i]))));
 const placed = (p: Plan, w: DrawnWall) => { const { walls, extra } = shapeOf(p); return ([...walls, ...extra].find((x) => x.name === w.name) ?? w) as DrawnWall; };
 const size = (p: Plan, w: DrawnWall) => { const f = placed(p, w); return Math.hypot(f.b[0] - f.a[0], f.b[1] - f.a[1]) * scale(p); };
 const seenOn = (p: Plan) => new Set([...Object.keys(p.fit?.pairs ?? {}), ...Object.keys(p.fit?.seen ?? {})]);
@@ -191,7 +199,7 @@ async function read(legend?: Plan["legend"]) {
 async function fit(turn: number | null = null) {
   const result = await call<Fit>("plan.fit", { plan: { ...plan(), fit: null }, turn });
   [questions, checks] = [null, new Map()];
-  await h.save({ plan: { ...plan(), fit: result } }, true);
+  await h.save({ plan: { ...plan(), fit: result, openings: result.openings ?? plan().openings } }, true);
 }
 
 async function refit(next: Plan) {
@@ -430,6 +438,7 @@ function readStep() {
 
 function fitStep() {
   const p = plan(), f = p.fit, choose = (name: string) => { selected = selected === name ? "" : name; h.render(); };
+  if (f && tab === "cotes") return cotesStep();
   show(false, section("Calage · bleu : mur posé sur ses points, gris : pas vu, suit ses voisins, vert : surfaces photo, pointillés : non appariées, orange : meubles écartés", drawPlan(p, { photo: true, fitted: true, cloud: points(p), selected, onWall: choose })));
   overlay.lastElementChild!.append(...backdrop(p));
   if (!h.source()) return [h.intro("Pas de photos", "La forme du dessin est gardée telle quelle. Une mesure au mètre (étape 5) fixera la taille."), h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Portes et fenêtres", () => goSub(4)))];
@@ -448,7 +457,7 @@ function fitStep() {
   ...p.stairs.flatMap((s, i) => f.stairs?.[i] ? [tagged("≡", `Escalier : largeur ${number(f.stairs[i]! * 100, 0)} cm d'après la rampe vue en photo`, s.flights ? `dessin ${number(Math.min(s.flights[0][2] - s.flights[0][0], s.flights[0][3] - s.flights[0][1]) * f.k * 100, 0)} cm` : "")] : []));
   const turn = (q: number) => () => run(() => h.act("Calage sur les photos", () => fit(((f.turn ?? 0) + q) % 4)));
   const count = all.filter((w) => seen.has(w.name)).length;
-  return [h.intro(f.walls ? `Calé mur par mur : ${count} murs vus sur ${all.length}` : `Calé sur ${plural(count, "mur")} vu${count > 1 ? "s" : ""} en photo`,
+  return [tabs(), h.intro(f.walls ? `Calé mur par mur : ${count} murs vus sur ${all.length}` : `Calé sur ${plural(count, "mur")} vu${count > 1 ? "s" : ""} en photo`,
     `Pièce d'environ ${number(extent[0], 1)} × ${number(extent[1], 1)} m. Chaque mur vu est posé sur ses points ; les autres suivent leurs voisins et les proportions du dessin.${worst ? ` Plus grand écart entre ton dessin et la pièce : ${number(worst[1], 0)} cm (mur ${worst[0]}).` : ""}${f.photo.some((q) => q.meuble) ? " Les meubles (la pièce se voit au-dessus, ou ils ont bougé entre deux séances) sont écartés." : ""}`),
   list, h.card("Le sens ne colle pas ?", "Si la pièce est presque symétrique, le calage peut se tromper de sens.", button("Tourner de 90°", "", "Autre sens", turn(1)), button("Tourner de 180°", "", "Autre sens", turn(2))),
   h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), h.primary("Points à préciser", () => goSub(3)))];
@@ -570,6 +579,97 @@ async function validate() {
   setView("3d");
 }
 
+const UNIT: Record<string, number> = { m: 100, cm: 1, mm: 0.1 };
+const decimal = (text: string) => Number(text.trim().replace(",", "."));
+const ring = (p: Plan) => p.walls.map((w) => w.name);
+const planCm = (p: Plan, [a, b]: number[][]) => Math.hypot(b[0] - a[0], b[1] - a[1]) * scale(p) * 100;
+
+function segments(p: Plan): Seg[] {
+  const { walls, extra } = shapeOf(p);
+  return [...walls.map((w) => ({ wall: w.name, a: w.a, b: w.b, kind: "mur" })), ...(extra.filter((e) => e.name) as DrawnWall[]).map((e) => ({ wall: e.name, a: e.a, b: e.b, kind: "cloison" })),
+    ...p.openings.flatMap((o) => { const w = walls.find((x) => x.name === o.wall); return w ? [{ wall: o.wall, a: at(w, o.t0), b: at(w, o.t1), kind: o.type }] : []; })];
+}
+
+function spots(p: Plan, ends: End[]) {
+  const segs = segments(p), found = ends.map((e) => locate(e, segs));
+  return found.every(Boolean) ? found as number[][] : null;
+}
+
+async function loadRows() {
+  rows = (await call<CoteRow[]>("cotes.list")).filter((r) => r.trace);
+  h.render();
+}
+
+function tabs() {
+  if (!rows) { rows = []; run(loadRows); }
+  return choice("Panneau", [["calage", "Calage"], ["cotes", `Cotes${rows.length ? ` · ${rows.length}` : ""}`]], tab, (id) => { tab = id; [tool.first, draft] = [null, null]; h.render(); });
+}
+
+function pickPoint(hit: Pick) {
+  if (tool.first) [draft, tool.first] = [pair(tool.first, hit), null];
+  else [tool.first, draft] = [hit, null];
+  h.render();
+}
+
+async function placeCote(text: string, ends: End[], id?: string, label?: string) {
+  const p = plan(), pts = spots(p, ends), value = decimal(text), model = pts ? planCm(p, pts) : 0;
+  if (!(value > 0)) throw new Error("Indique la longueur en centimètres, par exemple 132.");
+  if (model && (value / model < 0.5 || value / model > 2)) throw new Error(`Le plan donne environ ${number(model, 0)} cm : vérifie que la longueur est en centimètres.`);
+  picked = (await call<CoteRow>("cotes.place", { trace: ends, value, label: label ?? title(ends, segments(p), ring(p)), ...id ? { id } : {} })).id;
+  draft = null;
+  await loadRows();
+}
+
+function changes(p: Plan, old: Fit) {
+  const was = { ...p, fit: old }, found = [...p.walls, ...kept(p)].map((w) => [w, size(was, w), size(p, w)] as const).filter(([, a, b]) => Math.abs(a - b) > 0.01)
+    .sort((x, y) => Math.abs(y[2] - y[1]) - Math.abs(x[2] - x[1])).slice(0, 3);
+  const unit = (p.fit?.unit ?? 1) / (old.unit ?? 1) - 1;
+  return [found.length ? `${found.map(([w, a, b]) => `${p.walls.includes(w) ? "mur" : "cloison"} ${w.name} ${number(a * 100, 0)} → ${number(b * 100, 0)} cm`).join(" · ")}.` : "Aucun mur n'a bougé de plus d'1 cm.",
+    ...Math.abs(unit) > 0.002 ? [`Échelle des photos : ${unit > 0 ? "+" : "−"}${number(Math.abs(unit) * 100)} %.`] : []].join(" ");
+}
+
+function cotesStep() {
+  const p = plan(), f = p.fit!, segs = segments(p), hidden = new Set(h.guide().hidden ?? []), solved = new Map((f.cotes ?? []).map((c) => [c.id, c])), list = rows ?? [];
+  const fresh = (r: CoteRow) => Math.abs((solved.get(r.id)?.value ?? -1) * 100 - r.value * (UNIT[r.unit] ?? 1)) < 0.05;
+  const drawn = list.flatMap((r) => { const pts = spots(p, r.trace!); return pts && !hidden.has(r.id) ? [{ id: r.id, ends: pts, text: number(r.value), cls: `${fresh(r) && solved.get(r.id)!.conflict ? "bad" : "done"} ${r.id === picked ? "focus" : ""}` }] : []; });
+  const pts = draft && spots(p, draft), svg = drawPlan(p, { fitted: true, cloud: points(p) });
+  const zoom = coteLayer(svg, tool, segs, drawn, pts, pts ? `≈ ${number(planCm(p, pts), 0)}` : "", pickPoint), bar = el("div", "cote-tools"), box = el("section");
+  bar.append(choice("Mode de cote", MODES.map(([id, label]) => [id, label]), tool.mode, (id) => { tool.mode = id as Tool["mode"]; [tool.first, draft] = [null, null]; h.render(); }),
+    el("span", "m", `${MODES.find(([id]) => id === tool.mode)![1]} : ${MODES.find(([id]) => id === tool.mode)![2]}`), el("span", "spacer"), ...zoom);
+  box.append(bar, svg, ...backdrop(p));
+  show(false, box);
+  const conflicts = list.filter((r) => fresh(r) && solved.get(r.id)!.conflict), stale = list.filter((r) => !fresh(r) && spots(p, r.trace!));
+  const items = list.map((r) => {
+    const c = fresh(r) ? solved.get(r.id) : undefined, at = spots(p, r.trace!), line = el("div", `tagged ${r.id === picked ? "selected" : ""}`), text = el("span", "fill", r.label);
+    const shown = Object.assign(el("input"), { type: "checkbox", checked: !hidden.has(r.id), ariaLabel: `Afficher la cote ${r.label}` });
+    shown.onchange = () => run(async () => { await h.save({ hidden: shown.checked ? [...hidden].filter((x) => x !== r.id) : [...hidden, r.id] }); h.render(); });
+    const value = Object.assign(el("input"), { inputMode: "decimal", value: String(r.value).replace(".", ","), ariaLabel: `${r.label} en cm` });
+    value.onchange = () => run(() => placeCote(value.value, r.trace!, r.id, r.label));
+    const detail = !at ? "ses murs ne sont plus sur le plan" : c ? `plan ${number(c.plan * 100, 0)} cm${c.conflict ? ` · le reste du plan donne ≈ ${number((c.value + c.ecart) * 100, 0)} cm · conflit` : " ✓"}` : `plan ≈ ${number(planCm(p, at), 0)} cm · à recalculer`;
+    line.append(shown, text, value, el("span", "", "cm"), button("×", "remove", `Retirer la cote ${r.label}`, () => run(async () => { await call("cotes.remove", { id: r.id }); await loadRows(); })),
+      el("small", `grow ${c?.conflict ? "warn" : ""}`, detail));
+    line.onclick = (event) => { if (event.target === line || event.target === text) { picked = picked === r.id ? "" : r.id; h.render(); } };
+    return line;
+  });
+  const input = Object.assign(el("input", "measure"), { inputMode: "decimal", placeholder: "cm", autocomplete: "off", ariaLabel: "Longueur mesurée en cm" });
+  const add = h.primary("Ajouter", () => placeCote(input.value, draft!));
+  input.onkeydown = (event) => { if (event.key === "Enter") add.click(); };
+  if (pts) setTimeout(() => input.focus());
+  const cancel = button("Annuler", "link", "Annuler cette cote", () => { [tool.first, draft] = [null, null]; h.render(); });
+  const listBox = el("div", "walls"), recalc = () => h.act("Recalcul du plan avec les cotes", async () => { before = p.fit ?? null; await fit(f.turn); });
+  listBox.append(...items);
+  const pending = pts ? [h.card(`Nouvelle cote · ${title(draft!, segs, ring(p))}`, `Le plan dit ≈ ${number(planCm(p, pts), 0)} cm. Tape la longueur mesurée au mètre.`), h.row(input, el("span", "", "cm"), add, cancel)]
+    : tool.first ? [el("div", "note", "Clique le 2e point de la cote."), cancel] : [];
+  return [tabs(), h.intro(before ? `Plan recalculé avec ${list.length} cote${list.length > 1 ? "s" : ""}` : "Cotes au mètre",
+    "Pose une cote sur le plan (2 clics), tape sa longueur mesurée, puis recalcule. Les murs vus sur les photos bougent peu ; ceux qu'on voit mal suivent tes cotes."),
+  ...before ? [h.card("Ce qui a bougé", changes(p, before))] : [],
+  ...conflicts.map((r) => { const c = solved.get(r.id)!, box = el("div", "alert"); box.append(el("b", "", "Cote en conflit"), el("span", "", `« ${r.label} » (${number(r.value)} cm) ne colle pas avec les murs vus sur les photos et tes autres cotes : sans elle, le plan donne ≈ ${number((c.value + c.ecart) * 100, 0)} cm (écart ${number(Math.abs(c.ecart) * 100, 0)} cm). Vérifie-la au mètre, ou retire-la.`)); return box; }),
+  ...pending, ...list.length ? [el("span", "kicker", `Mes cotes · ${list.length}${stale.length ? ` · ${stale.length} à recalculer` : ""}`), listBox] : [],
+  el("div", "note", "Une cote vaut ± 1 cm. Elle est gardée pour l'étape 5 : tu n'auras pas à la reprendre. Molette : zoom, glisser : déplacer le plan. Ctrl+Z annule."),
+  h.footer(button("Retour", "", "4.1", () => run(() => goSub(1))), stale.length ? h.primary("Recalculer le plan", recalc) : button("Recalculer le plan", "", "Refaire le calage avec les cotes", () => run(recalc)),
+    stale.length ? button("Points à préciser", "", "4.3", () => run(() => goSub(3))) : h.primary("Points à préciser", () => goSub(3)))];
+}
+
 export function fourStep(helpers: Helpers): Node[] {
   h = helpers;
   if (!h.guide().plan) return readFirst();
@@ -586,7 +686,8 @@ export function fourPaint() {
 }
 
 export function resetFour() {
-  [selected, chosen, renaming, questions, current, applied, cloud] = ["", -1, false, null, 0, null, null];
+  [selected, chosen, renaming, questions, current, applied, cloud, rows, draft, picked, before, tab] = ["", -1, false, null, 0, null, null, null, null, "", null, "calage"];
+  tool = { mode: tool.mode, first: null, view: null };
   checks = new Map();
   closeGuided();
 }

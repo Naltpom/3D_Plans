@@ -3,11 +3,12 @@ import { $, button, cm, el, number, run } from "./ui";
 import { update } from "./projects";
 import { highlight, setView } from "./view3d";
 import type { Plan } from "./plan2d";
+import { choice, coteLayer, MODES, pair, title, type End, type Pick, type Seg, type Tool } from "./coter";
 
-type Item = { key: string; group: string; label: string; hint: string; expr: string; ends: number[][]; on: string[]; covers: string[]; value: number; sigma: number | null; conflict: boolean; twin: string | null };
-type Measure = { id: string; label: string; value: number; unit: string; resid: number | null; conflict: boolean; key: string | null; ends: number[][] | null };
+type Item = { key: string; group: string; label: string; hint: string; expr: string; ends: number[][]; on: string[]; covers: string[]; value: number; sigma: number | null; conflict: boolean; twin: string | null; trace: End[] | null };
+type Measure = { id: string; label: string; value: number; unit: string; resid: number | null; conflict: boolean; key: string | null; ends: number[][] | null; trace: End[] | null };
 type Group = { group: string; name: string; worst: number; label: string; unknown: number; ok: number; n: number };
-type Part = { id: string; type: string; label: string; noun: string; xy: number[][] };
+type Part = { id: string; type: string; label: string; noun: string; xy: number[][]; name: string | null; wall: string | null };
 type State = { candidates: Item[]; measures: Measure[]; groups: Group[]; scales: { axis: string; value: number; sigma: number | null }[]; conflicts: { text: string; cotes: string[] }[];
   threshold: number; supposed: boolean; precise: boolean; elements: Part[] };
 export type Helpers = {
@@ -28,6 +29,8 @@ let adding = false;
 let picks: string[] = [];
 let extra: Item | null = null;
 let flat = true;
+let how = "elements";
+let tool: Tool = { mode: "point", first: null, view: null };
 
 const decimal = (text: string) => Number(text.trim().replace(",", "."));
 const refused = () => new Set(h.guide().refused ?? []);
@@ -53,7 +56,8 @@ async function refresh() {
 
 export async function scaleEnter(helpers: Helpers) {
   h = helpers;
-  [before, last, focus, adding, state] = [null, "", "", false, null];
+  [before, last, focus, adding, state, how] = [null, "", "", false, null, "elements"];
+  tool = { mode: tool.mode, first: null, view: null };
   await refresh();
 }
 
@@ -61,7 +65,7 @@ async function submit(item: Item, text: string) {
   const value = decimal(text), model = item.value * 100;
   if (!(value > 0)) throw new Error("Indique la mesure en centimètres, par exemple 531.");
   if (value / model < 0.5 || value / model > 2) throw new Error(`Le plan donne environ ${number(model, 0)} cm : vérifie que la mesure est en centimètres.`);
-  await call("cotes.add", { id: item.key, expr: item.expr, value, sigma: 1, unit: "cm", label: item.label });
+  await call("cotes.place", { ...item.key ? { id: item.key, expr: item.expr } : {}, trace: item.trace, value, label: item.label });
   [before, last, focus, adding] = [state, `« ${item.label} »`, "", false];
   await refresh();
 }
@@ -142,7 +146,9 @@ function mine() {
     const text = el("span", "grow");
     text.append(el("b", "", m.label), el("br"), el("small", m.conflict ? "warn" : "", m.resid == null ? "à intégrer" : `écart avec le reste du plan : ${cm(Math.abs(m.resid))}${m.conflict ? " · contradiction" : ""}`));
     if (covers.length) text.append(el("br"), el("span", "chip ok", `vaut aussi pour ${covers.join(", ")}`));
-    box.append(text, el("span", "m", `${number(m.value)} ${m.unit}`), button("Retirer", "link", `Retirer la mesure ${m.label}`, () => run(() => remove(m))));
+    const value = Object.assign(el("input"), { inputMode: "decimal", value: String(m.value).replace(".", ","), ariaLabel: `Corriger ${m.label} en cm` });
+    value.onchange = () => run(async () => { await call("cotes.place", { id: m.id, value: decimal(value.value) }); [before, last] = [state, `« ${m.label} »`]; await refresh(); });
+    box.append(text, ...m.unit === "cm" ? [value, el("span", "", "cm")] : [el("span", "m", `${number(m.value)} ${m.unit}`)], button("Retirer", "link", `Retirer la mesure ${m.label}`, () => run(() => remove(m))));
     box.onmouseenter = () => { focus = m.key ?? ""; drawPlan(); };
     return box;
   });
@@ -150,12 +156,34 @@ function mine() {
 }
 
 function custom() {
-  if (!adding) return [button("Ajouter ma mesure", "", "Choisir un ou deux éléments sur le plan ou dans la vue 3D", () => { [adding, picks, extra] = [true, [], null]; h.render(); })];
+  if (!adding) return [button("Ajouter ma mesure", "", "Choisir un ou deux éléments, ou poser une cote sur le plan", () => { [adding, picks, extra] = [true, [], null]; h.render(); })];
   const s = state!, names = picks.map((id) => s.elements.find((e) => e.id === id)!);
-  const box = el("div", "alert");
-  box.append(el("b", "", "Ma mesure"), el("span", "", names.length ? names.map((e, i) => `${i + 1} · ${e.label}`).join("   ") : "Clique un mur, une porte, une fenêtre ou l'escalier sur le plan, ou dans la vue 3D. Un 2e élément : la distance entre les deux."));
+  const box = el("div", "alert"), mode = MODES.find(([id]) => id === how);
+  box.append(el("b", "", "Ma mesure"), choice("Comment choisir", [["elements", "Éléments"], ...MODES.map(([id, label]) => [id, label] as [string, string])], how, (id) => {
+    [how, picks, extra, tool.first] = [id, [], null, null];
+    if (id !== "elements") { tool.mode = id as Tool["mode"]; flat = true; }
+    h.render();
+  }), el("span", "", mode ? `${mode[1]} : ${mode[2]}. 2 clics sur le plan, puis la longueur.` : names.length ? names.map((e, i) => `${i + 1} · ${e.label}`).join("   ")
+    : "Clique un mur, une porte, une fenêtre ou l'escalier sur le plan, ou dans la vue 3D. Un 2e élément : la distance entre les deux."));
+  if (mode && tool.first) box.append(el("span", "", "Clique le 2e point de la cote."));
   const single = names.length === 1 ? s.candidates.filter((c) => c.on[0] === picks[0] && !c.key.startsWith("entre.")) : [];
-  return [box, ...extra ? [entry(extra, 0)] : single.map((c) => entry(c, 0)), button("Annuler", "link", "Fermer Ma mesure", () => { [adding, picks, extra] = [false, [], null]; h.render(); })];
+  return [box, ...extra ? [entry(extra, 0)] : single.map((c) => entry(c, 0)), button("Annuler", "link", "Fermer Ma mesure", () => { [adding, picks, extra, how, tool.first] = [false, [], null, "elements", null]; h.render(); })];
+}
+
+function segments(parts: Part[], at: (p: number[]) => number[]): Seg[] {
+  const kept = new Set((h.guide().plan?.extra ?? []).map((e) => e.name));
+  return parts.flatMap((e) => e.type === "mur" && e.name ? [{ wall: e.name, a: at(e.xy[0]), b: at(e.xy[1]), kind: kept.has(e.name) ? "cloison" : "mur" }]
+    : e.wall && e.type !== "escalier" && e.type !== "mur" ? [{ wall: e.wall, a: at(e.xy[0]), b: at(e.xy[1]), kind: e.type }] : []);
+}
+
+async function pickPoint(hit: Pick, segs: Seg[]) {
+  if (!tool.first) { [tool.first, extra] = [hit, null]; return h.render(); }
+  const trace = pair(tool.first, hit), found = await call<{ expr: string; value: number; sigma: number | null; ends: number[][] }>("cotes.preview", { trace });
+  tool.first = null;
+  extra = { key: "", group: "", label: title(trace, segs, (h.guide().plan?.walls ?? []).map((w) => w.name)), hint: "ta cote", expr: found.expr, ends: found.ends, on: [], covers: [], value: found.value,
+    sigma: found.sigma, conflict: false, twin: null, trace };
+  focus = "";
+  h.render();
 }
 
 export function scaleStep(helpers: Helpers): Node[] {
@@ -163,10 +191,11 @@ export function scaleStep(helpers: Helpers): Node[] {
   if (!state) return [h.intro("Des mesures au mètre", "Calcul du plan en cours."), h.footer(h.back())];
   const list = proposals(), s = state, gone = refused().size;
   if (!focus && list.length && !adding) focus = list[0].key;
+  const known = !before && s.measures.length ? [h.card(`${s.measures.length} mesure${s.measures.length > 1 ? "s" : ""} déjà saisie${s.measures.length > 1 ? "s" : ""}`, "Les cotes posées à l'étape 4 en font partie : elles comptent déjà, je ne te les redemande pas.")] : [];
   drawPlan();
   const toggle = button(flat ? "Voir en 3D" : "Voir le plan 2D", "link start", "Changer d'affichage", () => { flat = !flat; if (!flat) setView("3d"); h.render(); });
   return [h.intro("Des mesures au mètre", "Les photos donnent la forme, pas la taille. Chaque mesure fixe l'échelle et corrige le plan là où elle est prise. Mesure ce que tu peux, dans l'ordre que tu veux."),
-    toggle, ...effect(), ...s.precise ? [precision()] : [],
+    toggle, ...known, ...effect(), ...s.precise ? [precision()] : [],
     el("span", "kicker", "Mesures proposées · la plus utile d'abord"), ...list.map((c, i) => entry(c, i + 1)), ...list.length ? [] : [el("p", "", "Plus rien à proposer.")],
     ...custom(), ...s.precise ? [] : [precision()], ...s.conflicts.length ? [conflicts()] : [], ...mine(), ...gone ? [button(`${gone} mesure${gone > 1 ? "s" : ""} écartée${gone > 1 ? "s" : ""} · les reproposer`, "link start", "Remettre les mesures écartées", () => run(async () => { await h.save({ refused: [] }); h.render(); }))] : [],
     h.footer(h.back(), ...s.measures.length ? [] : [button("Je n'ai pas de mètre", "", "Continuer avec une échelle supposée", () => run(h.skip))],
@@ -215,7 +244,7 @@ function drawPlan() {
       : svg("line", { x1: xy[0][0], y1: xy[0][1], x2: xy[1][0], y2: xy[1][1] }, `${e.type === "mur" ? "wall" : `opening ${e.type}`} ${chosen}`);
     shape.append(svg("title", {}, "", e.label));
     shape.setAttribute("data-id", e.id);
-    shape.addEventListener("click", () => run(() => { if (!adding) [adding, picks] = [true, []]; return pick(e.id); }));
+    if (how === "elements") shape.addEventListener("click", () => run(() => { if (!adding) [adding, picks] = [true, []]; return pick(e.id); }));
     plan.append(shape);
     if (e.type !== "mur") continue;
     const mid = [(xy[0][0] + xy[1][0]) / 2, (xy[0][1] + xy[1][1]) / 2], away = Math.hypot(mid[0] - centre[0], mid[1] - centre[1]) || 1;
@@ -226,8 +255,11 @@ function drawPlan() {
   for (const mm of s.measures) if (mm.ends) cote(group, mm.key, mm.ends, `${number(mm.value)}`, `${mm.conflict ? "bad" : "done"} ${mm.key === focus ? "focus" : ""}`, font, at, centre);
   if (extra) cote(group, extra.key, extra.ends, `≈ ${number(extra.value * 100, 0)}`, "todo focus", font, at, centre);
   plan.append(group);
-  const section = el("section");
-  section.append(el("span", "caption", adding ? "Ma mesure · clique 1 ou 2 éléments" : "Plan · cotes saisies en bleu, proposées en jaune (numéro = ordre d'utilité), contradictions en orange"), plan);
+  const section = el("section"), segs = segments(s.elements, at), coting = adding && how !== "elements";
+  const zoom = coting ? coteLayer(plan as SVGSVGElement, tool, segs, [], null, "", (hit) => run(() => pickPoint(hit, segs))) : [];
+  const caption = el("div", "cote-tools");
+  caption.append(adding ? coting ? "Ma cote · 2 clics sur le plan" : "Ma mesure · clique 1 ou 2 éléments" : "Plan · cotes saisies en bleu, proposées en jaune (numéro = ordre d'utilité), contradictions en orange", el("span", "spacer"), ...zoom);
+  section.append(caption, plan);
   overlay.replaceChildren(section);
 }
 

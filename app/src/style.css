@@ -441,6 +441,20 @@ body.page #step .actions { margin-top: 0; }
 .plan .cote-label { fill: var(--point); font-family: var(--mono); font-weight: 600; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: var(--view); stroke-width: 0.25em; pointer-events: none; }
 .plan .cote-label.done { fill: var(--accent-text); }
 .plan .cote-label.bad { fill: var(--warn-text); }
+.plan .cote.glow { stroke: var(--point); stroke-width: 12; stroke-opacity: 0.25; stroke-dasharray: none; }
+.plan .cote-label.focus { fill: var(--point); }
+.plan .snap { fill: var(--point); stroke: var(--view); stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
+.seg { flex: none; display: flex; align-items: stretch; width: max-content; border: 1px solid var(--strong); border-radius: 8px; overflow: hidden; background: var(--panel); font-size: 13px; }
+.seg label { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 6px 12px; color: var(--soft); cursor: pointer; }
+.seg label.sel { background: var(--accent-bg); color: var(--text); }
+.seg input { min-height: 0; margin: 0; accent-color: var(--accent); }
+#plan2d .cote-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+#plan2d .cote-tools button { min-height: 32px; padding: 4px 10px; }
+#plan2d .cote-tools .zoom { display: flex; align-items: center; gap: 4px; }
+#step .tagged .fill { flex: 1 1 0; min-width: 0; }
+.plan .cote.ext { stroke-width: 1; stroke-dasharray: none; }
+#plan2d .cote-tools .zoom-value { min-width: 44px; font-family: var(--mono); text-align: center; color: var(--soft); }
+#plan2d .cote-tools + svg { cursor: crosshair; }
 #step .start { align-self: flex-start; }
 #step .tagged .grow { flex: 1 1 200px; min-width: 0; }
 #step .tagged small { color: var(--muted); }
@@ -458,6 +472,8 @@ body.page #step .actions { margin-top: 0; }
 #step .tagged select { flex: 0 0 132px; width: 132px; }
 #step .tagged input { flex: 0 0 64px; width: 64px; }
 #step div.tagged { flex-wrap: wrap; }
+#step .tagged input[type="checkbox"] { flex: none; width: auto; min-height: 0 !important; margin: 0; accent-color: var(--accent); }
+#step .tagged small.grow { flex-basis: 100%; padding-left: 26px; }
 #step div.tagged .m { flex: 1 1 auto; white-space: normal; text-align: right; }
 #step .note { padding: 10px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; color: var(--muted); }
 #step .alert { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px; border: 1px solid var(--warn-border); border-radius: 10px; background: var(--warn-bg); font-size: 13px; color: var(--soft); }

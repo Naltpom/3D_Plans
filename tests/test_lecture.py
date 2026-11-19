@@ -228,7 +228,7 @@ def test_wall_by_wall_solve_and_symmetry():
     forward = lecture.frame(drawn, 0.01)[0]; ring = lecture.ring_model(drawn, forward)
     seen = {'C': (np.array([4.0, 5.2]), np.array([1.0, 5.2])), 'G': (np.array([-0.3, 4.0]), np.array([-0.3, 0.0])), 'A': (np.array([0.0, 0.0]), np.array([5.0, 0.0])),
             'B': (np.array([5.0, 0.0]), np.array([5.0, 5.0]))}
-    offsets, evidence = lecture.adjust(ring, seen, np.zeros((0, 3)), 2.5, [], [])
+    offsets, evidence, _ = lecture.adjust(ring, seen, np.zeros((0, 3)), 2.5, [], [])
     ends = dict(zip(ring['names'], lecture.ring_ends(ring, offsets)))
     assert ends['C'][0][1] == pytest.approx(5.2, abs=0.01) and ends['G'][0][0] == pytest.approx(-0.3, abs=0.01) and max(gap for _, gap in evidence.values()) < 0.01
     rules = [{'kind': 'symetrie', 'walls': ['D', 'E', 'F'], 'ok': True}]; ring = lecture.ring_model(drawn, forward, rules)

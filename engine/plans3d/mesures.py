@@ -2,11 +2,11 @@ import math, re
 from dataclasses import replace
 import numpy as np
 from . import components as C
-from .core import batch, jacobian, next_best
+from .core import R_GAP, batch, compile_expr, jacobian, next_best
 from .plan import PLAN_SCALE, drawing_scale
-from .rpc import RpcError, read_cotes, require_result, rpc, update
+from .rpc import ID_PATTERN, RpcError, read_cotes, require_result, rpc, update, write_cotes
 
-SIGMA, PRECIS, UNKNOWN, NEAR, PARALLEL = 0.01, 0.02, 0.3, 0.05, math.sin(math.radians(5))
+SIGMA, PRECIS, UNKNOWN, NEAR, PARALLEL, TOUCH = 0.01, 0.02, 0.3, 0.05, math.sin(math.radians(5)), 0.02
 PLACED, TWIN = ('x', 'z', 'dim', 'escalier'), 0.98
 OPENINGS = ('porte', 'fenetre', 'porte_fenetre')
 NOUNS = {'mur': 'le mur', 'porte': 'la porte', 'fenetre': 'la fenêtre', 'porte_fenetre': 'la porte-fenêtre', 'escalier': "l'escalier"}
@@ -23,8 +23,8 @@ def title(noun): text = noun[2:] if noun.startswith("l'") else noun.split(' ', 1
 
 
 def elements(project, values):
-    found = {}
-    for c in C.load(project).values():
+    found, loaded = {}, C.load(project)
+    for c in loaded.values():
         a, t = C.anchors(c), c['type']
         if t == 'mur' and c['options'].get('nature') != 'contremarche': pts = [a['a'], a['b']]
         elif t in OPENINGS: pts = [a['g'], a['d']]
@@ -32,7 +32,8 @@ def elements(project, values):
         else: continue
         suffix = c['label'].removeprefix('Mur ') if t == 'mur' else re.sub(r'^\D*', '', c['id'])
         noun = NOUNS[t] + (f' {suffix}' if t != 'escalier' and suffix else '')
-        found[c['id']] = {'id': c['id'], 'type': t, 'comp': c, 'noun': noun, 'label': title(noun), 'pts': pts,
+        host = loaded.get(c['options'].get('mur'), {}).get('label', '').removeprefix('Mur ')
+        found[c['id']] = {'id': c['id'], 'type': t, 'comp': c, 'noun': noun, 'label': title(noun), 'pts': pts, 'name': suffix if t == 'mur' else None, 'wall': host or None,
                           'xy': [[C.evaluate(p['x'], values), C.evaluate(p['z'], values)] for p in pts]}
     return found
 
@@ -91,7 +92,66 @@ def candidates(els):
     for w in walls: heights.setdefault(str(w['comp']['expressions']['h']), []).append(w)
     out += [item(f"plafond.{g[0]['id']}", 'plafond', 'Hauteur sous plafond' if len(heights) == 1 else f"Hauteur {de(g[0]['noun'])}", 'du sol au plafond, contre le mur', e,
                  [centre(g[0]['xy'])] * 2, [w['id'] for w in g]) for e, g in heights.items()]
-    return [c for c in out if c and C.NAME.search(c['expr'])]
+    out = [c for c in out if c and C.NAME.search(c['expr'])]
+    for c in out: c['trace'] = traced(els, c['ends'], c['on']) if c['group'] in ('murs', 'ouvertures') else None
+    return out
+
+
+def fraction(wall, p): (ax, az), (bx, bz) = wall['xy']; return ((p[0] - ax) * (bx - ax) + (p[1] - az) * (bz - az)) / max((bx - ax) ** 2 + (bz - az) ** 2, 1e-12)
+
+
+def attach(els, p, on=()):
+    for e in sorted(els.values(), key=lambda e: e['id'] not in on):
+        host = els.get(e['comp']['options'].get('mur')) if e['type'] in OPENINGS else e if e['type'] == 'mur' else None
+        if not host or not host['name']: continue
+        t = fraction(host, p); (ax, az), (bx, bz) = host['xy']
+        if e['type'] in OPENINGS:
+            if min(math.dist(p, q) for q in e['xy']) < TOUCH: return {'wall': host['name'], 's': round(t, 4), 'edge': 1}
+        elif -0.02 < t < 1.02 and math.dist(p, (ax + t * (bx - ax), az + t * (bz - az))) < TOUCH:
+            return {'wall': e['name'], 's': 0.0 if math.dist(p, (ax, az)) < TOUCH else 1.0 if math.dist(p, (bx, bz)) < TOUCH else round(t, 4)}
+    return None
+
+
+def traced(els, ends, on=()):
+    if len(ends) != 2 or math.dist(*ends) < NEAR: return None
+    found = [attach(els, p, on) for p in ends]
+    return found if all(found) else None
+
+
+def same(a, b):
+    close = lambda e, f: e['wall'] == f['wall'] and bool(e.get('edge')) == bool(f.get('edge')) and abs(e['s'] - f['s']) < 0.01 and abs(e.get('r', 0) - f.get('r', 0)) < 0.01
+    return bool(a and b) and any(all(map(close, a, o)) for o in (b, b[::-1]))
+
+
+def spot(els, end):
+    w = next((e for e in els.values() if e['type'] == 'mur' and e['name'] == end['wall']), None)
+    if not w: return None
+    A, B = w['pts']
+    if end.get('edge'):
+        gap, P = min(((abs(fraction(w, q) - end['s']), P) for o in els.values() if o['type'] in OPENINGS and o['comp']['options'].get('mur') == w['id'] for P, q in zip(o['pts'], o['xy'])),
+                     default=(1, None), key=lambda g: g[0])
+        return P if gap < 0.2 else None
+    s, r = end['s'], end.get('r', 0.0); dx, dz = C.Expr.of(B['x']) - A['x'], C.Expr.of(B['z']) - A['z']
+    return {'x': C.Expr.of(A['x']) + s * dx - r * dz, 'z': C.Expr.of(A['z']) + s * dz + r * dx}
+
+
+def trace_expr(els, trace):
+    p, q = (spot(els, e) for e in trace)
+    if p is None or q is None: return None
+    try: return C.measure_expr(p, q)
+    except ValueError: return None
+
+
+def located(els, trace, values):
+    pts = [spot(els, e) for e in trace or []]
+    return [[C.evaluate(p['x'], values), C.evaluate(p['z'], values)] for p in pts] if len(pts) == 2 and all(pts) else None
+
+
+def rebind(els, row, cands):
+    expr = trace_expr(els, row['trace'])
+    if not expr: return None
+    c = next((c for c in cands if same(c.get('trace'), row['trace'])), None)
+    return {**row, 'id': c['key'], 'expr': c['expr'], 'label': c['label']} if c else {**row, 'expr': expr}
 
 
 def assess(res, items, values, P):
@@ -126,9 +186,9 @@ def status(res, items, P):
 
 
 def conflicts(res, els, P):
-    resid, out = {o.id: r for o, r in zip(res.obs, res.resid)}, []
+    resid, out = {o.id: r / q if q > R_GAP else r for o, r, q in zip(res.obs, res.resid, res.redundancy)}, []
     scale = float(res.x[res._idx[PLAN_SCALE]]) if PLAN_SCALE in res._idx else 1.0
-    for g in res.conflicts():
+    for g in res.disputed():
         mine, (top, _) = [o for o, _ in g if o.source == 'cotes'], g[0]
         used = {n for o, _ in g for n in C.NAME.findall(o.expr)}
         nouns = [e['noun'] for e in els.values() if used & {n for n in e['comp']['params'] if e['type'] != 'mur' or P[n][1] in ('x', 'z')}][:3]; where = ' et '.join(', '.join(nouns).rsplit(', ', 1)) or 'une partie du plan'
@@ -140,11 +200,12 @@ def conflicts(res, els, P):
     return list({c['text']: c for c in out}.values())
 
 
-def measured(project, res, items):
-    obs = {o.id: (r, w) for o, r, w in zip(res.obs, res.resid, res.w)}; flagged = {o.id for g in res.conflicts() for o, _ in g}
+def measured(project, res, items, els, values):
+    obs = {o.id: (r / q if q > R_GAP else r, w) for o, r, w, q in zip(res.obs, res.resid, res.w, res.redundancy)}; flagged = {o.id for g in res.disputed() for o, _ in g}
     by = {**{c['expr']: c for c in items}, **{c['key']: c for c in items}}
     return [{'id': r['id'], 'label': r['label'] or r['id'], 'value': r['value'], 'unit': r['unit'], 'resid': obs.get(f"cotes:{r['id']}", (None,))[0],
-             'conflict': f"cotes:{r['id']}" in flagged, 'key': (by.get(r['id']) or by.get(r['expr']) or {}).get('key'), 'ends': (by.get(r['id']) or by.get(r['expr']) or {}).get('ends')}
+             'conflict': f"cotes:{r['id']}" in flagged, 'key': (by.get(r['id']) or by.get(r['expr']) or {}).get('key'), 'trace': r['trace'],
+             'ends': (by.get(r['id']) or by.get(r['expr']) or {}).get('ends') or located(els, r['trace'], values)}
             for r in read_cotes(project) if r['status'] == 'mesuré']
 
 
@@ -159,11 +220,11 @@ def context(ctx):
 def rpc_list(ctx):
     res, project, values, els = context(ctx)
     P = project.params(); items = assess(res, candidates(els), values, P)
-    groups, scales = status(res, items, P); found = conflicts(res, els, P); mine = measured(project, res, items)
+    groups, scales = status(res, items, P); found = conflicts(res, els, P); mine = measured(project, res, items, els, values)
     return {'candidates': items, 'measures': mine, 'groups': groups, 'scales': scales, 'conflicts': found, 'threshold': PRECIS,
             'supposed': any(w['code'] == 'echelle_supposee' for w in getattr(res, 'warnings', [])) or PLAN_SCALE in P and not mine,
             'precise': not found and all(g['unknown'] == 0 and g['worst'] <= PRECIS for g in groups),
-            'elements': [{k: e[k] for k in ('id', 'type', 'label', 'noun', 'xy')} for e in els.values()]}
+            'elements': [{k: e[k] for k in ('id', 'type', 'label', 'noun', 'xy', 'name', 'wall')} for e in els.values()]}
 
 
 @rpc('mesures.between')
@@ -172,4 +233,29 @@ def rpc_between(ctx, a, b):
     if a not in els or b not in els or a == b: raise RpcError('choisis deux éléments différents : murs, portes, fenêtres ou escalier')
     found = pair(els[a], els[b])
     if not found: raise RpcError(f"{els[a]['label']} et {els[b]['label']} se touchent : choisis un autre élément")
-    return assess(res, [found], values, project.params())[0]
+    return assess(res, [{**found, 'trace': traced(els, found['ends'], found['on'])}], values, project.params())[0]
+
+
+@rpc('cotes.place')
+def place(ctx, value, trace=None, expr='', id=None, label=''):
+    project = ctx.require_project(); rows = read_cotes(project); values = {n: v for n, (v, _) in C.param_values(project).items()}; els = elements(project, values)
+    old = next((r for r in rows if r['id'] == id), None) or next((r for r in rows if trace and same(r['trace'], trace)), None) or {}
+    trace = trace or old.get('trace'); cand = next((c for c in candidates(els) if same(c['trace'], trace)), {}) if trace and not expr else {}
+    used = [int(r['id'][5:]) for r in rows if re.fullmatch(r'cote\.\d+', r['id'])]
+    row = {'id': id or old.get('id') or cand.get('key') or f'cote.{max(used, default=0) + 1}', 'expr': expr or cand.get('expr') or trace and trace_expr(els, trace) or old.get('expr') or '',
+           'value': float(value), 'sigma': 1.0, 'unit': 'cm', 'status': 'mesuré', 'label': label or old.get('label') or cand.get('label') or 'Cote', 'trace': trace}
+    if not ID_PATTERN.fullmatch(row['id']) or not (row['expr'] or trace): raise RpcError('cote sans extrémités sur le plan')
+    if row['expr']:
+        try: compile_expr(row['expr'], {n: i for i, n in enumerate(project.params())})
+        except KeyError as e: raise RpcError(e.args[0]) from None
+    at = next((i for i, r in enumerate(rows) if r['id'] in (row['id'], old.get('id'))), len(rows))
+    write_cotes(project, rows[:at] + [row] + [r for r in rows[at:] if r['id'] not in (row['id'], old.get('id'))])
+    return row
+
+
+@rpc('cotes.preview')
+def preview(ctx, trace):
+    res, project, values, els = context(ctx); expr = trace_expr(els, trace)
+    if not expr: raise RpcError('ces deux points ne touchent aucun mur du plan')
+    value, sigma = res.predict(expr)
+    return {'expr': expr, 'value': value, 'sigma': sigma, 'ends': located(els, trace, values)}

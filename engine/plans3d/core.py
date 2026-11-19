@@ -13,7 +13,7 @@ STATUS = ('mesuré', 'lu', 'photo', 'déduit', 'supposé', 'ia')
 ENV = {'__builtins__': {}, **FUNCS}
 NAME = re.compile(r'(?<![\w.])[^\W\d]\w*')
 MAX_NFEV = 200
-W_MAX, R_MIN, W_NEAR = 3.0, 0.1, 2.0
+W_MAX, R_MIN, W_NEAR, R_LOW, R_GAP = 3.0, 0.1, 2.0, 0.001, 0.01
 
 
 @dataclass
@@ -101,6 +101,11 @@ class Result:
         near = np.flatnonzero((aw >= W_NEAR) & (aw <= W_MAX) & ok)
         groups = [g + [p for p in near if any(loc[p] & loc[k] for k in g)] for g in groups]
         return [sorted([(self.obs[i], float(self.w[i])) for i in g], key=lambda t: -abs(t[1])) for g in groups]
+
+    def disputed(self, source='cotes'):
+        mine = [(o, float(w), q) for o, w, q in zip(self.obs, self.w, self.redundancy) if o.source == source]; worst = max((abs(w) for _, w, _ in mine), default=0.0)
+        groups = self.conflicts(); grouped = {o.id for g in groups for o, _ in g}
+        return groups + [[(o, w)] for o, w, q in mine if abs(w) > max(W_MAX, worst / 2) and q > R_LOW and o.id not in grouped]
 
     def grad(self, expr):
         groups = batch([expr], self._idx)[0]

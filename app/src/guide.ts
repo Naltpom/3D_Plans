@@ -10,7 +10,7 @@ import { sessions } from "./seances";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { calibrate, controls, mode as drawing, opacity, place, placeHint, placeSketch, stop as stopDrawing, trace, type Sketch } from "./drawing";
 
-type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean };
+type Guide = { type: string; step: number; done: number[]; measures?: number; refused?: string[]; manual?: boolean; plan?: Plan | null; sub?: number; classic?: boolean; hidden?: string[] };
 type Info = { name: string; path: string; guide?: Guide };
 type Source = { id: string; path: string; kind: string; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type End = "a" | "b";

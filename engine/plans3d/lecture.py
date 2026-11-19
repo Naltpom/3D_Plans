@@ -2,7 +2,8 @@ import io, json, os, re
 import numpy as np
 from scipy import ndimage
 from . import cadastre, components, photos, walls
-from .core import FUNCS
+from .core import FUNCS, R_GAP, R_LOW, W_MAX
+from .project import UNITS
 from .plan import current_values, drawing_scale, free_ids, place, sketch, trace, wall_ends
 from .rpc import read_cotes, rpc, write_cotes
 
@@ -23,7 +24,8 @@ KIND_WORDS = {'door': 'porte', 'window': 'fenetre', 'french window': 'porte_fene
 STEP_TOL_M, STEP_POINTS, CONTACT_PX, CONTACT_SIGMA_M = 0.02, 40, 0.04, 0.01
 FULL_SHARE, SLAB_M, RISE_M, STAIR_EDGE_M, SLOPES, SLOPE_TOL_M, SLOPE_POINTS, TIE_M, TOUCH_M, SAME_M, GOING_SIGMA_M = 0.85, 0.2, 0.175, 0.1, (0.45, 1.2), 0.06, 40, 1.5, 0.05, 0.6, 0.01
 CLICK_GAP_M, PLANE_GAP_M, FAR_M, MIN_ANGLE_DEG, TUBE_M, TUBE_END_M, HIDDEN_POINTS, CORNER_HEIGHTS = 0.12, 0.10, 1.0, 10.0, 0.12, 0.35, 4, (0.15, 1.0, 1.6)
-AXIS_TOL = np.tan(np.radians(2))
+AXIS_TOL, COTE_SIGMA_M, SCALE_SIGMA, EDGE_GAP = np.tan(np.radians(2)), 0.01, 0.1, 0.2
+ROT = np.array([[0.0, -1.0], [1.0, 0.0]])
 STRUCTURE, OPENINGS = ('mur', 'porte', 'fenetre', 'porte_fenetre'), ('porte', 'fenetre', 'porte_fenetre')
 SQUARE = np.ones((3, 3), bool)
 NEIGHBOURS = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
@@ -422,7 +424,7 @@ def ring_model(plan, forward, rules=()):
             e, f, g = (names.index(w) for w in rule['walls']); u[f] = (u[e] + u[g]) / np.hypot(*(u[e] + u[g]))
     normal = [np.array([-d[1], d[0]]) for d in u]; line = list(range(len(segments)))
     for i in range(1, n): line[i] = line[i - 1] if abs(cross(u[i - 1], u[i])) < np.sin(np.radians(3)) and u[i - 1] @ u[i] > 0 else line[i]
-    rank = {l: r for r, l in enumerate(dict.fromkeys(line))}; line = [rank[l] for l in line]; m = len(rank)
+    rank = {l: r for r, l in enumerate(dict.fromkeys(line))}; line = [rank[l] for l in line]; lines = len(rank); m = lines + len(extras)
     size = max(np.ptp(np.array([p for s in segments for p in s]), 0).max(), 1e-6)
 
     def meet(i, j):
@@ -442,8 +444,9 @@ def ring_model(plan, forward, rules=()):
             gap, i = wall_at(p)
             if gap < CONTACT_PX * size and abs(cross(u[q], u[i])) > 0.5: ends[q][k] = meet(q, i); attached.append((q, i, p))
         for k, p in enumerate((a, b)):
-            if ends[q][k] is None:
-                other = ends[q][1 - k]; ends[q][k] = (other[0], other[1] + p - (a, b)[1 - k]) if other is not None else slide(q, p)
+            other = ends[q][1 - k]
+            if ends[q][k] is None and other is None: ends[q][k] = slide(q, p)
+            elif ends[q][k] is None: M = other[0].copy(); M[:, lines + q - n] += (1 if k else -1) * u[q]; ends[q][k] = (M, other[1])
     corners = []
     for i in range(n):
         p = segments[i][0]
@@ -451,10 +454,10 @@ def ring_model(plan, forward, rules=()):
         near = min(((np.hypot(*(p - at)), q) for q, w, at in attached if line[w] == line[i]), default=(np.inf, None))
         corners.append(meet(i, near[1]) if near[0] < CONTACT_PX * size else slide(i, p))
     ends[:n] = [[corners[i], corners[(i + 1) % n]] for i in range(n)]
-    d0, count = np.zeros(m), np.zeros(m)
+    d0, count, L0 = np.zeros(lines), np.zeros(lines), [float(np.hypot(*(b - a))) for a, b in segments]
     for i, (a, _) in enumerate(segments): d0[line[i]] += normal[i] @ a; count[line[i]] += 1
-    return {'names': [w['name'] for w in plan['walls']] + [e['name'] for e in extras], 'u': u, 'normal': normal, 'line': line, 'm': m, 'ends': ends,
-            'd0': d0 / count, 'L0': [float(np.hypot(*(b - a))) for a, b in segments], 'out': [-1.0] * n + [0.0] * len(extras)}
+    return {'names': [w['name'] for w in plan['walls']] + [e['name'] for e in extras], 'u': u, 'normal': normal, 'line': line, 'm': m, 'lines': lines, 'ends': ends,
+            'd0': np.concatenate([d0 / count, L0[n:]]), 'L0': L0, 'out': [-1.0] * n + [0.0] * len(extras)}
 
 
 def ring_ends(ring, d): return [(Ma @ d + ca, Mb @ d + cb) for (Ma, ca), (Mb, cb) in ring['ends']]
@@ -479,32 +482,71 @@ def wall_points(cloud, a, b, n, out, top, meubles, explained):
     return float(np.median(near)), int(len(near))
 
 
-def adjust(ring, seen, cloud, top, meubles, rules):
+def adjust(ring, seen, cloud, top, meubles, rules, cotes=()):
     m, names, extra = ring['m'], ring['names'], {}
     index = {name: i for i, name in enumerate(names)}
-    line = lambda name: np.eye(m)[ring['line'][index[name]]]
+    hint = {e['open']: e for c in cotes for e in c['ends'] if 'open' in e}; edges = list(hint); n = m + len(edges) + 1
+    unit, pad = lambda k: np.eye(n)[k], lambda row: np.concatenate([row, np.zeros(n - len(row))])
+    line = lambda name: unit(ring['line'][index[name]])
 
-    def solve():
-        rows = [(np.eye(m)[l], ring['d0'][l], PLACE_SIGMA_M) for l in range(m)]
+    def spot(end):
+        (Ma, ca), (Mb, cb) = ring['ends'][end['i']]; M = np.zeros((2, n))
+        if 'open' in end: M[:, :m] = Ma; M[:, m + edges.index(end['open'])] = ring['u'][end['i']]; return M, ca
+        K = end['s'] * np.eye(2) + end['r'] * ROT; M[:, :m] = (np.eye(2) - K) @ Ma + K @ Mb
+        return M, (np.eye(2) - K) @ ca + K @ cb
+
+    def solve(x=None):
+        rows = [(unit(l), ring['d0'][l], PLACE_SIGMA_M) for l in range(m)] + [(unit(n - 1), 1.0, SCALE_SIGMA)]
         for i in range(len(names)):
-            row, c = length_row(ring, i); rows.append((row, ring['L0'][i] - c, LENGTH_SIGMA_M + LENGTH_SHARE * ring['L0'][i]))
+            row, c = length_row(ring, i); rows.append((pad(row), ring['L0'][i] - c, LENGTH_SIGMA_M + LENGTH_SHARE * ring['L0'][i]))
         rows += [(line(name), float(ring['normal'][index[name]] @ (a + b) / 2), WALL_SIGMA_M) for name, (a, b) in seen.items() if name in index]
         rows += [(line(name), value, POINT_SIGMA_M) for name, (value, _) in extra.items()]
         for rule in rules:
             if all(w in index for w in rule['walls']):
-                (r1, c1), (r2, c2) = (length_row(ring, index[w]) for w in rule['walls'][::2]); rows.append((r1 - r2, c2 - c1, RULE_SIGMA_M))
-        A, b, w = (np.array(x, float) for x in zip(*rows))
-        return np.linalg.lstsq(A / w[:, None], b / w, rcond=None)[0]
-    d = solve(); ends = ring_ends(ring, d); explained = [ends[index[name]] for name in seen if name in index]
-    for l in range(m):
+                (r1, c1), (r2, c2) = (length_row(ring, index[w]) for w in rule['walls'][::2]); rows.append((pad(r1 - r2), c2 - c1, RULE_SIGMA_M))
+        for k, key in enumerate(edges):
+            row, c = length_row(ring, hint[key]['i']); rows.append((unit(m + k) - pad(hint[key]['t'] * row), hint[key]['t'] * c, hint[key]['sigma']))
+        for cote in cotes if x is not None else ():
+            (M1, c1), (M2, c2) = (spot(e) for e in cote['ends']); v = (M2 - M1) @ x + c2 - c1; u = v / max(np.hypot(*v), 1e-9)
+            rows.append((u @ (M2 - M1) - cote['value'] * unit(n - 1), float(u @ (c1 - c2)), COTE_SIGMA_M))
+        A, b, w = (np.array(col, float) for col in zip(*rows)); A, b = A / w[:, None], b / w
+        return np.linalg.lstsq(A, b, rcond=None)[0], A, b
+
+    def settle():
+        found = solve()
+        for _ in range(4 * bool(cotes)): found = solve(found[0])
+        return found
+    x, A, b = settle(); d = x[:m]; ends = ring_ends(ring, d); explained = [ends[index[name]] for name in seen if name in index]
+    for l in range(ring['lines']):
         group = [i for i in range(len(names)) if ring['line'][i] == l]
         if any(names[i] in seen for i in group) or not ring['out'][group[0]]: continue
         found = wall_points(cloud, ends[group[0]][0], ends[group[-1]][1], ring['normal'][group[0]], ring['out'][group[0]], top, meubles, explained)
         if found: extra.update({names[i]: (float(d[l] + found[0]), found[1]) for i in group})
-    d = solve() if extra else d
+    x, A, b = settle() if extra else (x, A, b); d = x[:m]
     evidence = {name: ('photo', abs(float(ring['normal'][index[name]] @ (a + b) / 2) - d[ring['line'][index[name]]])) for name, (a, b) in seen.items() if name in index}
     evidence.update({name: ('points', abs(value - d[ring['line'][index[name]]])) for name, (value, _) in extra.items()})
-    return d, evidence
+    v = A @ x - b; red = 1 - np.einsum('ij,jk,ik->i', A, np.linalg.pinv(A.T @ A), A); w = v / np.sqrt(np.clip(red, 1e-9, None)); first = len(A) - len(cotes)
+    gap = lambda k: float(v[k] * COTE_SIGMA_M / (red[k] if red[k] > R_GAP else 1))
+    length = lambda cote: float(np.hypot(*np.subtract(*[M @ x + c for M, c in map(spot, cote['ends'])])) / x[-1])
+    worst = max(np.abs(w[first:]), default=0.0)
+    found = [{'id': c['id'], 'value': c['value'], 'plan': round(length(c), 4), 'ecart': round(gap(first + j), 4), 'w': round(float(w[first + j]), 2), 'conflict': bool(abs(w[first + j]) > max(W_MAX, worst / 2) and red[first + j] > R_LOW)} for j, c in enumerate(cotes)]
+    moved = {key: float(x[m + k] / max(length_row(ring, hint[key]['i'])[0] @ d + length_row(ring, hint[key]['i'])[1], 1e-9)) for k, key in enumerate(edges)}
+    return d, evidence, {'cotes': found, 'unit': float(1 / x[-1]), 'edges': moved}
+
+
+def cote_ends(plan, ring, rows):
+    index, found = {name: i for i, name in enumerate(ring['names'])}, []
+    for row in rows:
+        ends = []
+        for e in row.get('trace') or []:
+            if e['wall'] not in index: break
+            if not e.get('edge'): ends.append({'i': index[e['wall']], 's': float(e['s']), 'r': float(e.get('r', 0.0))}); continue
+            gap, j, side, o = min(((abs(t - e['s']), j, side, o) for j, o in enumerate(plan.get('openings', [])) if o['wall'] == e['wall'] for side, t in enumerate((o['t0'], o['t1']))),
+                                  default=(1, None, None, None), key=lambda g: g[0])
+            if gap >= EDGE_GAP: break
+            ends.append({'i': index[e['wall']], 'open': (j, side), 't': o[('t0', 't1')[side]], 'sigma': 0.1 if o.get('seen') else PRIOR_M})
+        if len(ends) == 2: found.append({'id': row['id'], 'value': row['value'] * UNITS[row['unit']], 'ends': ends})
+    return found
 
 @rpc('plan.fit', long=True)
 def fit(ctx, plan, turn=None):
@@ -528,10 +570,11 @@ def fit(ctx, plan, turn=None):
     rules = [r for r in plan.get('rules', []) if r.get('ok')]; ring, outs = ring_model(plan, forward, rules), {d['name']: d['out'] for d in drawn}; meubles = [(placed(q['a']), placed(q['b'])) for q in planes if q['meuble']]
     seen = {drawn[i]['name']: photo[j]['plane'] for i, (_, j) in paired.items()}
     on_photo = lambda: {name: (placed(q['a']), placed(q['b'])) for name, q in seen.items()}
-    offsets, _ = adjust(ring, on_photo(), cloud, height, meubles, rules)
+    cotes = cote_ends(plan, ring, read_cotes(project)); offsets = adjust(ring, on_photo(), cloud, height, meubles, rules, cotes)[0]
     again = [x for name, (a, b) in zip(ring['names'], ring_ends(ring, offsets)) if (x := lined(f * a, f * b, name=name, out=outs.get(name, 0.0))) is not None]
     seen = {again[i]['name']: photo[j]['plane'] for i, (_, j) in match(again, photo, f, shift, SNAP_M).items()}
-    offsets, evidence = adjust(ring, on_photo(), cloud, height, meubles, rules)
+    offsets, evidence, solved = adjust(ring, on_photo(), cloud, height, meubles, rules, cotes)
+    openings = [{**o, **{key: float(np.clip(solved['edges'][(j, side)], 0, 1)) for side, key in enumerate(('t0', 't1')) if (j, side) in solved['edges']}} for j, o in enumerate(plan.get('openings', []))]
     pairs, planes_of = {name: [q['id']] for name, q in seen.items()}, {name: list(q['planes']) for name, q in seen.items()}
     owner = {plane: name for name, ids in pairs.items() for plane in ids}; ends = ring_ends(ring, offsets)
     fitted = [{'name': name, 'a': back(a).round(1).tolist(), 'b': back(b).round(1).tolist()} for name, (a, b) in zip(ring['names'], ends)]
@@ -555,6 +598,7 @@ def fit(ctx, plan, turn=None):
     return {'k': k, 'turn': quarter, 'angle': angle, 'shift': moved.tolist(), 'pose': pose, 'pairs': pairs, 'planes': planes_of, 'height': height,
             'walls': fitted[:n], 'extra': fitted[n:], 'gaps': {name: round(gap * 100, 1) for name, (_, gap) in evidence.items()}, 'seen': {name: kind for name, (kind, _) in evidence.items()},
             'moved': {name: round(abs(offsets[l] - ring['d0'][l]) * 100, 1) for name, l in zip(ring['names'], ring['line'])}, 'stairs': [stair_width(st) for st in plan.get('stairs', [])],
+            'cotes': solved['cotes'], 'unit': solved['unit'], 'openings': openings,
             'photo': [{'id': q['id'], 'sure': q['n'] >= walls.SURE_POINTS, 'meuble': q['meuble'], 'front': front(q), 'wall': owner.get(q['id']), 'a': back(placed(q['a'])).round(1).tolist(), 'b': back(placed(q['b'])).round(1).tolist()} for q in planes]}
 
 @rpc('plan.cloud')
@@ -849,18 +893,24 @@ def reattached(project, measured, before):
     for _, old, new in sorted((abs(p - q), a, b) for t, h, p, a in hosted for u, g, q, b in now_hosted if (t, h) == (u, g) and abs(p - q) < SAME_M):
         if old not in moved and new not in moved.values(): moved[old] = new
     replaced, names, taken = {a for *_, a in hosted} | set(named.values()), set(project.params()), {row['id'] for row in read_cotes(project)}
-    fresh = {c['key']: c for c in mesures.candidates(mesures.elements(project, current_values(project)))}
+    els = mesures.elements(project, current_values(project)); fresh = {c['key']: c for c in mesures.candidates(els)}
     owner = lambda name: max((cid for cid in labels if name.startswith(f'{cid}_')), key=len, default=None)
     lost = lambda cids: sorted({labels[c] for c in cids if c and c not in moved and (c in replaced or c not in present)})
     kept, dropped = [], []
-    for row in (r for r in measured if r['id'] not in taken):
+    for row in measured:
+        if row['trace']:
+            again, missing = mesures.rebind(els, row, fresh.values()), sorted({e['wall'] for e in row['trace']} - {e['name'] for e in els.values()})
+            if again: kept.append(again); continue
+            if not row['expr'] or row['id'].startswith('cote.'):
+                dropped.append({'id': row['id'], 'label': row['label'] or row['id'], 'reason': f"le mur {', '.join(missing)} n'existe plus" if missing else "ses points ne touchent plus le plan"}); continue
+        elif row['id'] in taken: continue
         kind, _, rest = row['id'].partition('.'); parts = [moved.get(p, p) for p in rest.split('.')]; key = f"{kind}.{'.'.join(sorted(parts) if kind == 'entre' else parts)}"
         expr = components.NAME.sub(lambda m: moved[cid] + m[0][len(cid):] if (cid := owner(m[0])) in moved else m[0], row['expr'])
         gone = lost(p for p in rest.split('.') if p in labels) if key in fresh else lost(owner(n) for n in components.NAME.findall(row['expr']))
-        if key in fresh and not gone: kept.append({**row, 'id': key, 'expr': fresh[key]['expr'], 'label': fresh[key]['label']})
+        if key in fresh and not gone: kept.append({**row, 'id': key, 'expr': fresh[key]['expr'], 'label': fresh[key]['label'], 'trace': fresh[key]['trace']})
         elif not gone and set(components.NAME.findall(expr)) - set(FUNCS) <= names: kept.append({**row, 'expr': expr})
         else: dropped.append({'id': row['id'], 'label': row.get('label') or row['id'], 'reason': f"{', '.join(gone)} n'existe plus" if gone else "ses éléments n'existent plus"})
-    if kept: write_cotes(project, read_cotes(project) + kept)
+    if kept or dropped: write_cotes(project, list(({r['id']: r for r in read_cotes(project) if not r['trace']} | {r['id']: r for r in kept}).values()))
     return kept, dropped
 
 
