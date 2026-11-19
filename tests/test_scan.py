@@ -164,11 +164,11 @@ def test_simple_shape_becomes_stacked_boxes():
 def test_scan_source_opens_positions_step(tmp_path):
     from plans3d import parcours
     route = parcours.parcours('piece', {'scan'}); useful = {s['id']: s['useful'] for s in route['steps']}
-    assert route['ready'] and useful['positions'] and useful['murs'] and 'scan' not in parcours.OFFERED['maison']
+    assert route['ready'] and useful['positions'] and useful['murs'] and all('scan' in parcours.OFFERED[t] for t in parcours.FLOWS)
     ctx = Ctx(lambda event: None); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
     assert 'scan' not in parcours.detect(ctx.project, 'piece')
     (tmp_path / 'p' / 'sources' / 'scan' / '20261119_210000' / 'passage-1').mkdir(parents=True)
-    assert 'scan' in parcours.detect(ctx.project, 'piece')
+    assert 'scan' in parcours.detect(ctx.project, 'piece') and 'scan' in parcours.detect(ctx.project, 'maison')
 
 
 def test_recompute_survives_undeletable_folders_and_errors(tmp_path, monkeypatch):
@@ -219,3 +219,18 @@ def test_emptied_waits_then_refuses_a_stale_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, 'rmtree', lambda path, ignore_errors=False: os.remove(os.path.join(path, 'meta.json')) if os.path.exists(os.path.join(path, 'meta.json')) else None)
     assert photos.emptied(str(lingering)) == str(lingering) and photos.emptied(str(spare), ['images']) == str(spare) and not (spare / 'meta.json').exists()
     with pytest.raises(ValueError, match='bloqué'): photos.emptied(str(stale))
+
+
+def test_house_scan_films_the_facades_into_the_photo_source(tmp_path):
+    ctx = Ctx(lambda event: None); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    meta = tmp_path / 'p' / 'project.json'; json.dump({**json.load(open(meta, encoding='utf-8')), 'guide': {'type': 'maison'}}, open(meta, 'w', encoding='utf-8'))
+    live = scan.Scan(ctx, 'photos', 'piece')
+    assert live.public()['modes'] == ('facades', 'objet') and live.mode == 'facades' and live.command({'op': 'mode', 'mode': 'piece'})['mode'] == 'facades'
+    assert live.command({'op': 'mode', 'mode': 'objet'})['mode'] == 'objet' and live.command({'op': 'mode', 'mode': 'facades'})['mode'] == 'facades'
+    live.add(jpeg(), 1, 1, 1.7e12)
+    assert live.command({'op': 'mode', 'mode': 'objet'})['mode'] == 'facades' and len(photos.read_manifest(os.path.join(ctx.project.folder, 'sources', 'photos.photos.txt'))) == 1
+    assert scan.Scan(ctx, 'photos', 'objet').modes == ('facades', 'objet')
+    angles = np.radians(np.arange(0, 241, 20)); house = np.array([4.0, 2.0, 0.0])
+    model = model_of([house + 9 * np.array([np.cos(a), np.sin(a), 0.17]) for a in angles], [house + 0.3 * np.array([np.sin(3 * a), np.cos(3 * a), 1.0]) for a in angles])
+    found = scan.coverage(model, 'facades')
+    assert 250 <= found['turn'] <= 290 and found['gaps'].startswith('continue vers la') and 'plus haut' not in found['gaps'] and 'plafond' not in found['gaps']

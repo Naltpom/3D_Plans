@@ -18,6 +18,7 @@ def test_every_combination(type, chosen):
     for q in QUESTIONS: assert set(r['answers'][q]) == {s for s in chosen if q in SOURCES[s][1]}
     assert r['missing'] == [q for q in QUESTIONS if not r['answers'][q]] and r['ready'] == bool(r['answers']['forme'])
     assert ('positions' in on or 'facades' in on) == bool(chosen & set(PHOTOS))
+    if type == 'maison': assert ('scan' in next(s['hint'] for s in r['steps'] if s['id'] == 'facades').lower()) == ('scan' in chosen)
     for step in ('cadastre', 'gabarit', 'relief'):
         if step in steps: assert (step in on) == (step in chosen)
     if r['ready']: assert {'murs', 'cadastre', 'gabarit', 'facades'} & set(on)
@@ -60,6 +61,15 @@ def test_cadastre_gives_the_outer_outline():
     assert useful(r) == ['projet', 'sources', 'cadastre', 'toit', 'verifier', 'meubler'] and r['answers']['forme'] == ['cadastre']
     assert r['todo'] == ['La hauteur des murs', 'Les portes et fenêtres : place, largeur et hauteur']
     assert 'murs' in useful(parcours('piece', {'cadastre'}))
+
+
+def test_house_scan_goes_to_the_facades():
+    r = parcours('maison', {'cadastre', 'scan'})
+    assert useful(r) == ['projet', 'sources', 'cadastre', 'toit', 'facades', 'verifier', 'meubler'] and r['todo'] == []
+    assert r['steps'][6]['hint'] == 'Scan au téléphone, recalé' and parcours('maison', {'scan', 'photos'})['steps'][6]['hint'] == 'Photos et scan recalés'
+    alone = parcours('maison', {'scan'})
+    assert alone['ready'] and 'facades' in useful(alone) and 'echelle' in useful(alone) and alone['todo'] == ["Une seule mesure au mètre pour l'échelle"]
+    assert 'murs' in useful(parcours('maison', {'scan', 'croquis'})) and parcours('maison', {'cadastre'})['steps'][6]['hint'] == 'Photos recalées'
 
 
 def test_written_plan_is_copied_not_measured():

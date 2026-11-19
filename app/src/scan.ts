@@ -28,7 +28,7 @@ export const scanFinal = () => state?.final === "calcul";
 
 export function scanTitle() {
   const passage = state?.phone.passage;
-  return !state?.received ? "Scanner au téléphone" : scanFinal() ? state.mode === "objet" ? "Calcul de l'objet" : "Calcul final des positions" : `${state.mode === "objet" ? "Scan d'un objet" : "Scan au téléphone"}${passage ? ` · passage ${passage}` : ""}`;
+  return !state?.received ? "Scanner au téléphone" : scanFinal() ? state.mode === "objet" ? "Calcul de l'objet" : "Calcul final des positions" : `${state.mode === "objet" ? "Scan d'un objet" : state.mode === "facades" ? "Scan des façades" : "Scan au téléphone"}${passage ? ` · passage ${passage}` : ""}`;
 }
 
 function qrBox() {
@@ -61,14 +61,14 @@ export function scanPanel(): Node[] {
   }
   const lines = el("div", "lines");
   const passages = Object.entries(s?.passages ?? {}).map(([k, n]) => `passage ${k} : ${number(n, 0)}`).join(" · ");
-  lines.append(el("span", "", `${phone.paused ? "En pause sur le téléphone · " : ""}${s?.mode === "objet" ? "Objet" : "Pièce"}${phone.freq ? ` · ${phone.freq} img/s au plus` : ""}${phone.resolution ? ` · ${phone.resolution.replace("Caméra arrière · ", "")}` : ""}`));
+  lines.append(el("span", "", `${phone.paused ? "En pause sur le téléphone · " : ""}${({ objet: "Objet", facades: "Façades" } as Record<string, string>)[s?.mode ?? ""] ?? "Pièce"}${phone.freq ? ` · ${phone.freq} img/s au plus` : ""}${phone.resolution ? ` · ${phone.resolution.replace("Caméra arrière · ", "")}` : ""}`));
   if (passages) lines.append(el("span", "", passages.charAt(0).toUpperCase() + passages.slice(1)));
   if (thrown) lines.append(el("span", "", `Jetées : ${plural(phone.floues ?? 0, "floue")}, ${number(phone.doublons ?? 0, 0)} trop proches de la précédente.`));
   if (phone.attente) lines.append(el("span", "", `${plural(phone.attente, "image")} en attente d'envoi sur le téléphone.`));
   lines.append(el("span", "", s?.computing ? "Calcul en cours…" : s?.ago_s == null ? "Premier calcul dès 5 images reçues." :
     `Dernier calcul : il y a ${s.ago_s} s · ${number(s.duration_s ?? 0, 0)} s · mémoire ${go(s.colmap_mb)} (COLMAP), ${go(s.engine_mb)} (appli).`));
   if (!s?.computing && !scanFinal()) lines.append(el("span", "", "Prochain : toutes les 30 s, ou dès 20 nouvelles images."));
-  if (s?.gaps) lines.append(el("span", "warn", s.mode === "objet" ? `Tour : ${s.turn ?? 0}° · ${s.gaps}` : `Peu vu : ${s.gaps}`));
+  if (s?.gaps) lines.append(el("span", "warn", s.mode !== "piece" ? `Tour : ${s.turn ?? 0}° · ${s.gaps}` : `Peu vu : ${s.gaps}`));
   const found = s?.object, size = (v: number[]) => v.map((x) => number(x, 0)).join(" × ");
   if (found?.added) lines.append(el("span", "", `Ajouté à la galerie : ${found.added.label} · ${size(found.added.dims_cm)} cm${found.simple ? ` (${found.blocs} boîtes empilées)` : " (une boîte)"}.`));
   else if (found) lines.append(el("span", "", `Objet isolé (${plural(found.points, "point")}) : en attente de la cote saisie sur le téléphone. Forme : ${found.simple ? `${found.blocs} boîtes empilées` : "une boîte, la forme réelle est trop complexe"}.`));

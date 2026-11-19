@@ -12,7 +12,7 @@ SOURCES = {
     'gabarit': ('Fiche constructeur', set(QUESTIONS)),
     'relief': ("Relevé d'altitudes", set()),
 }
-OFFERED = {'piece': ['photos', 'scan', 'croquis', 'plan', 'manuel', 'cadastre'], 'maison': ['cadastre', 'photos', 'croquis', 'plan', 'manuel', 'relief'],
+OFFERED = {'piece': ['photos', 'scan', 'croquis', 'plan', 'manuel', 'cadastre'], 'maison': ['cadastre', 'photos', 'scan', 'croquis', 'plan', 'manuel', 'relief'],
            'vehicule': ['gabarit', 'photos', 'scan', 'croquis', 'plan', 'manuel']}
 PHOTOS, DRAWN, COPIED = ['photos', 'scan'], ['croquis', 'plan', 'manuel'], {'plan'}
 FLOWS = {'piece': ('projet', 'sources', 'positions', 'murs', 'echelle', 'verifier', 'meubler'),
@@ -45,7 +45,8 @@ def parcours(type, sources, walls=()):
     elif has('manuel') and not has(*PHOTOS): labels['murs'] = ('Construire', 'Murs, portes, fenêtres, angles')
     elif type == 'vehicule' and has('gabarit'): labels['murs'] = ('Le recalage', 'Photos sur le gabarit')
     labels['echelle'] = ('Les longueurs', 'Chaque mur au mètre') if 'longueurs' in missing else ('Les cotes du plan', 'Recopier les cotes écrites') if copied else STEPS['echelle']
-    if type == 'maison': labels.update(verifier=('Vérifier', 'Débordements, mesure utile'), meubler=('Meubler', 'Optionnel'))
+    if type == 'maison': labels.update(verifier=('Vérifier', 'Débordements, mesure utile'), meubler=('Meubler', 'Optionnel'),
+                                       facades=('Les façades', 'Photos et scan recalés' if has('photos') else 'Scan au téléphone, recalé') if has('scan') else STEPS['facades'])
     if type == 'vehicule': labels.update(positions=('Les photos', 'Positions des photos'), verifier=('Cotes au mètre', 'Vérifier, mesure utile'), meubler=('Aménager', 'Galerie et agencement'))
     todo = ([f"La longueur de chaque mur : {listed(list(walls))}" if walls else 'La longueur de chaque mur, au mètre'] if 'longueurs' in missing
             else ["Une seule mesure au mètre pour l'échelle"] if 'echelle' in missing else ['Rien au mètre : recopie les cotes écrites sur le plan'] if copied else [])

@@ -92,7 +92,7 @@ a.link { color: var(--accent-text); }
 </div>
 <section id="setup" class="panel" hidden>
   <span class="k" id="modelabel">Que scannes-tu ?</span>
-  <div class="seg" id="modes" role="group" aria-label="Mode de scan"><button type="button" data-mode="piece">Pièce</button><button type="button" data-mode="objet">Objet</button></div>
+  <div class="seg" id="modes" role="group" aria-label="Mode de scan"><button type="button" data-mode="piece">Pièce</button><button type="button" data-mode="facades">Façades</button><button type="button" data-mode="objet">Objet</button></div>
   <span class="help" id="modehelp"></span>
   <label for="freq" class="sw"><span class="k">Images par seconde, au plus</span><span class="m" id="freqval">2</span></label>
   <input id="freq" type="range" min="1" max="3" step="1" value="2">
@@ -125,7 +125,8 @@ a.link { color: var(--accent-text); }
 <script>
 "use strict";
 const $ = (s) => document.querySelector(s), BASE = "/", MAX = 2400, TICK = 125, POLL = 2000, NS = "http://www.w3.org/2000/svg";
-const HELP = { piece: "Place-toi au milieu de la pièce. Filme chaque mur en tournant lentement, puis le plafond et le sol.", objet: "Pose l'objet bien dégagé. Tourne autour en le gardant au centre, à hauteur des yeux, puis un tour plus haut." };
+const NAMES = { piece: "Pièce", facades: "Façades", objet: "Objet" };
+const HELP = { piece: "Place-toi au milieu de la pièce. Filme chaque mur en tournant lentement, puis le plafond et le sol.", facades: "Fais le tour de la maison à quelques pas des murs, le téléphone à hauteur des yeux : chaque façade, chaque angle.", objet: "Pose l'objet bien dégagé. Tourne autour en le gardant au centre, à hauteur des yeux, puis un tour plus haut." };
 const TIPS = { lumiere: "Plus de lumière", bouge: "Avance ou tourne doucement", ralentis: "Ralentis : l'image est floue", vite: "Ralentis : tu tournes trop vite" };
 const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -297,7 +298,7 @@ function ring(values) {
   const hub = document.createElementNS(NS, "circle"); hub.setAttribute("r", "12"); hub.setAttribute("fill", "#14171c");
   const arrow = document.createElementNS(NS, "path"); arrow.setAttribute("d", "M0 -9 L5 3 L0 0 L-5 3 Z"); arrow.setAttribute("fill", "#e6e8eb");
   svg.append(hub, arrow);
-  svg.setAttribute("aria-label", mode === "objet" ? "Tour de l'objet : côtés vus en bleu, manquants en orange" : "Couverture autour de toi : bien vu en bleu, peu vu en orange");
+  svg.setAttribute("aria-label", mode !== "piece" ? `Tour ${mode === "objet" ? "de l'objet" : "de la maison"} : côtés vus en bleu, manquants en orange` : "Couverture autour de toi : bien vu en bleu, peu vu en orange");
 }
 
 function render() {
@@ -307,7 +308,7 @@ function render() {
   $("#live").className = `pill ${online && !closed ? "on" : "off"}`;
   $("#live").textContent = closed ? "Fermé" : online ? "Connecté" : "Hors ligne";
   const banner = closed ? "Accès fermé : rouvre « Scanner au téléphone » sur le PC et scanne le nouveau QR." : !online && pc ? `Hors ligne : ${plural(waiting, "image")} en attente sur le téléphone, envoyées au retour du réseau.`
-    : pc && !active && etat === "pret" ? "Le PC n'attend pas de scan : ouvre « Scanner au téléphone » sur le PC (étape Positions des photos)." : etat === "pause" ? "En pause · rien n'est filmé" : "";
+    : pc && !active && etat === "pret" ? "Le PC n'attend pas de scan : ouvre « Scanner au téléphone » sur le PC (étape Positions des photos, ou Les façades pour une maison)." : etat === "pause" ? "En pause · rien n'est filmé" : "";
   $("#banner").textContent = banner; $("#banner").hidden = !banner; $("#banner").classList.toggle("info", etat === "pause" && online);
   $("#view").hidden = !cam;
   $("#view").classList.toggle("full", etat !== "pret");
@@ -321,21 +322,21 @@ function render() {
   $("#dims").textContent = size ? `${size.map((v) => Math.round(v)).join(" × ")} cm` : "Longueur × largeur × hauteur : tape une cote";
   $("#forme").textContent = !pc?.object ? "" : pc.object.simple ? `Forme simple : ${pc.object.blocs} boîtes empilées.` : "Forme : une boîte à ces dimensions. La forme réelle est trop complexe pour être sûre.";
   $("#ajouter").disabled = !size;
-  for (const b of document.querySelectorAll("#modes button")) { b.ariaPressed = String(b.dataset.mode === mode); b.disabled = Boolean(pc?.received); }
+  for (const b of document.querySelectorAll("#modes button")) { b.ariaPressed = String(b.dataset.mode === mode); b.disabled = Boolean(pc?.received); b.hidden = Boolean(pc?.modes) && !pc.modes.includes(b.dataset.mode); }
   $("#modehelp").textContent = HELP[mode];
   $("#modelabel").hidden = $("#modes").hidden = (pc?.modes?.length ?? 1) < 2;
   $("#freqval").textContent = String(freq);
   $("#go").disabled = !active || closed;
   $("#rec").hidden = etat !== "scan" && etat !== "pause";
   $("#rec").textContent = `Passage ${passage}${etat === "pause" ? " · en pause" : ""}`;
-  $("#modechip").hidden = etat === "pret"; $("#modechip").textContent = mode === "objet" ? "Objet" : "Pièce";
+  $("#modechip").hidden = etat === "pret"; $("#modechip").textContent = NAMES[mode] ?? "Pièce";
   $("#freqchip").hidden = etat !== "scan"; $("#freqchip").textContent = `${freq} img/s`;
   $("#res").hidden = etat !== "pret";
   $("#count").hidden = etat === "pret";
   $("#kept").textContent = String(filtre?.gardees ?? 0); $("#thrown").textContent = String((filtre?.floues ?? 0) + (filtre?.doublons ?? 0));
   const sectors = pc?.sectors ?? [];
   $("#cover").hidden = etat === "pret" || !sectors.length;
-  if (sectors.length) { ring(sectors); $("#cover span").textContent = mode === "objet" ? `Tour : ${pc.turn ?? 0}°${pc.gaps ? ` · ${pc.gaps}` : ""}` : pc.gaps ? `Peu vu : ${pc.gaps}` : "Bien couvert"; }
+  if (sectors.length) { ring(sectors); $("#cover span").textContent = mode !== "piece" ? `Tour : ${pc.turn ?? 0}°${pc.gaps ? ` · ${pc.gaps}` : ""}` : pc.gaps ? `Peu vu : ${pc.gaps}` : "Bien couvert"; }
   const ago = pc?.ago_s == null ? "" : ` · calcul il y a ${pc.ago_s} s`;
   $("#pcline").textContent = !pc ? "" : pc.computing ? `PC : calcul en cours · ${placed} placées sur ${pc.received} reçues` : `PC : ${placed} placées sur ${pc.received} reçues${ago}${pc.error ? ` · ${pc.error}` : ""}`;
   $("#sendline").textContent = `Envoyées ${sent} · en attente ${waiting}`;

@@ -6,13 +6,13 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from . import photos
-from .rpc import RpcError, rpc
+from .rpc import RpcError, project_meta, rpc
 
 HERE = os.path.dirname(__file__)
 EVERY_S, EVERY_N, MIN_S, MIN_IMAGES, PHONE_POINTS, MAX_BYTES, PRE = 30, 20, 5, 5, 3000, 30 << 20, 1024
 CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:"
 SIDES = ('devant toi', 'à droite', 'derrière toi', 'à gauche')
-MODES, AXES, LAYERS = ('piece', 'objet'), ('longueur', 'largeur', 'hauteur'), 6
+AXES, LAYERS = ('longueur', 'largeur', 'hauteur'), 6
 FAST = ['--Mapper.ba_global_frames_ratio', '1.5', '--Mapper.ba_global_points_ratio', '1.5', '--Mapper.ba_global_max_refinements', '1', '--Mapper.ba_global_max_num_iterations', '30',
         '--Mapper.ba_global_ignore_redundant_points3D', '1', '--Mapper.multiple_models', '0']
 PHONE_KEYS = {'passage', 'paused', 'gardees', 'floues', 'doublons', 'freq', 'attente', 'resolution'}
@@ -54,14 +54,14 @@ def coverage(model, mode):
     up = photos.unit(photos.image_ups({**model, 'orientation': np.ones(len(model['q']))}).sum(0))
     last = int(np.argmax([int(str(name)[:5]) for name in model['names']]))
     forward, right = flat(rotations[:, 2], up), flat(rotations[:, 0], up)
-    if mode == 'objet':
+    if mode != 'piece':
         axes = np.eye(3) - np.einsum('ni,nj->nij', rotations[:, 2], rotations[:, 2])
         middle = np.linalg.lstsq(axes.sum(0), np.einsum('nij,nj->i', axes, centers), rcond=None)[0]
         around = flat(centers - middle, up); angle = np.arctan2(around @ right[last], around @ around[last])
         seen = np.sort(np.degrees(angle) % 360); gaps = np.diff(np.r_[seen, seen[0] + 360]); widest = int(np.argmax(gaps)); missing = np.clip(gaps - 40, 0, None).sum()
         far = (np.arange(12)[:, None] * 30 - seen[None] + 180) % 360 - 180
         high = np.degrees(np.arcsin(np.clip(photos.unit_rows(centers - middle) @ up, -1, 1))).max()
-        gaps = ([f"continue vers la {'droite' if (seen[widest] + gaps[widest] / 2 + 180) % 360 - 180 > 0 else 'gauche'}"] if missing else []) + (['puis un tour plus haut'] if high < 20 else [])
+        gaps = ([f"continue vers la {'droite' if (seen[widest] + gaps[widest] / 2 + 180) % 360 - 180 > 0 else 'gauche'}"] if missing else []) + (['puis un tour plus haut'] if high < 20 and mode == 'objet' else [])
         return {'sectors': (np.abs(far).min(1) <= 20).astype(float).tolist(), 'turn': int(round((360 - missing) / 10) * 10), 'gaps': ', '.join(gaps), 'center': middle}
     angle = np.arctan2(forward @ right[last], forward @ forward[last]); bins = np.bincount(np.round(angle / (np.pi / 4)).astype(int) % 8, minlength=8)
     pitch = rotations[:, 2] @ up; share = lambda mask: np.count_nonzero(mask) / len(pitch)
@@ -146,7 +146,8 @@ def link(path, target):
 class Scan:
     def __init__(self, ctx, source, mode):
         self.ctx, self.project, self.source, self.mode = ctx, ctx.require_project(), source, mode
-        self.id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.id, self.modes = datetime.now().strftime('%Y%m%d_%H%M%S'), ('facades' if (project_meta(self.project).get('guide') or {}).get('type') == 'maison' else 'piece', 'objet')
+        self.mode = mode if mode in self.modes else self.modes[0]
         self.folder, self.work = (os.path.join(self.project.folder, part, 'scan', self.id) for part in ('sources', 'cache'))
         self.lock, self.wake = threading.Lock(), threading.Condition()
         self.paths, self.seen, self.done, self.stopped, self.now, self.want, self.processed = [], set(), False, False, False, False, 0
@@ -155,7 +156,7 @@ class Scan:
         os.makedirs(os.path.join(self.work, 'images'), exist_ok=True)
 
     def public(self):
-        return {'id': self.id, 'project': os.path.basename(os.path.normpath(self.project.folder)), 'mode': self.mode, 'modes': MODES, 'active': not self.done, 'passages': dict(Counter(str(p) for p, _ in self.seen)), 'final': self.final, 'received': len(self.paths), 'phone': self.phone, 'cloud': self.cloud.get('version', 0),
+        return {'id': self.id, 'project': os.path.basename(os.path.normpath(self.project.folder)), 'mode': self.mode, 'modes': self.modes, 'active': not self.done, 'passages': dict(Counter(str(p) for p, _ in self.seen)), 'final': self.final, 'received': len(self.paths), 'phone': self.phone, 'cloud': self.cloud.get('version', 0),
                 **self.info, 'ago_s': None if self.info['at'] is None else round(time.time() - self.info['at']), 'object': self.object and {**{k: v for k, v in self.object.items() if k != 'boxes'}, 'blocs': len(self.object['boxes'])}}
 
     def changed(self): self.ctx.send({'event': 'scan', **self.public()})
@@ -173,7 +174,7 @@ class Scan:
                 path = os.path.join(self.folder, f'passage-{passage}', f'{index:05d}.jpg'); os.makedirs(os.path.dirname(path), exist_ok=True)
                 open(path, 'wb').write(data); self.seen.add((passage, index)); self.paths.append(path)
                 if self.mode == 'objet' and self.final in ('objet', 'échec'): self.final, self.object = '', None
-                if self.mode == 'piece':
+                if self.mode != 'objet':
                     with self.ctx.lock: photos.add(self.ctx, [path], self.source)
             count = len(self.paths)
         self.signal(); self.changed()
@@ -181,7 +182,7 @@ class Scan:
 
     def command(self, op):
         kind = op.get('op')
-        if kind == 'mode' and not self.paths and op.get('mode') in MODES: self.mode = op['mode']
+        if kind == 'mode' and not self.paths and op.get('mode') in self.modes: self.mode = op['mode']
         elif kind == 'finish': self.signal(**{'want': True} if self.mode == 'objet' else {'done': True})
         elif kind == 'objet': return self.keep(op)
         elif kind == 'now': self.signal(now=True)

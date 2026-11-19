@@ -40,7 +40,7 @@ const TIPS: Record<string, string> = {
 };
 const OLD: Record<string, string> = { maison: "projet cadastre relief toit facades verifier meubler", vehicule: "projet gabarit positions murs verifier meubler" };
 const QUESTIONS: Record<string, [string, string]> = { forme: ["Forme", "à choisir"], longueurs: ["Longueurs", "à mesurer"], echelle: ["Échelle", "à mesurer"], ouvertures: ["Portes et fenêtres", "à poser"], hauteur: ["Hauteur", "à mesurer"] };
-const SKIPPED: Record<string, string> = { positions: "Ni photos ni scan au téléphone ne sont cochés.", facades: "Aucune source de photos n'est cochée.", cadastre: "Le plan cadastral n'est pas coché.",
+const SKIPPED: Record<string, string> = { positions: "Ni photos ni scan au téléphone ne sont cochés.", facades: "Ni photos ni scan au téléphone ne sont cochés.", cadastre: "Le plan cadastral n'est pas coché.",
   gabarit: "La fiche constructeur n'est pas cochée.", relief: "Le relevé d'altitudes n'est pas coché.", murs: "Tes sources donnent les murs à une autre étape.", echelle: "Tes sources donnent déjà les longueurs et l'échelle." };
 const KIND_SOURCE: Record<string, string> = { photos_colmap: "photos", cadastre_pdf: "cadastre", cadastre_geojson: "cadastre", grille_alti: "relief" };
 const BODY: [string, string, string][] = [["longueur", "Longueur utile", "330"], ["largeur", "Largeur utile", "170"], ["hauteur", "Hauteur utile", "180"],
@@ -99,6 +99,7 @@ let known = "";
 const flow = () => route.steps;
 const key = (step = guide.step) => flow()[Math.min(Math.max(step, 1), flow().length) - 1].id;
 const position = (name: string) => flow().findIndex((s) => s.id === name) + 1;
+const filmed = () => ({ maison: "les façades en faisant le tour de la maison", vehicule: "l'intérieur du véhicule" } as Record<string, string>)[guide.type] ?? "la pièce";
 const has = (...ids: string[]) => ids.some((id) => route.sources.includes(id));
 const ahead = (step: number, by: number) => { for (let n = step + by; n >= 1 && n <= flow().length; n += by) if (flow()[n - 1].useful) return n; return by > 0 ? flow().length : 1; };
 const plural = (n: number, word: string) => `${number(n, 0)} ${word}${n > 1 ? "s" : ""}`;
@@ -275,8 +276,8 @@ function offer(id: string, label: string, gives: string[]) {
     cadastre: ["PDF du cadastre ou fichier GeoJSON : contour extérieur du bâtiment, parcelle.", cadastral ? "importé" : "",
       [add(cadastral ? "Choisir un autre fichier" : "Choisir un fichier", "PDF ou GeoJSON du cadastre", async () => (await host.pickFiles("Plan cadastral")) ?? [])], cadastral ? mapped() : []],
     manuel: ["Rien à importer : tu poses les murs point par point, longueurs et angles au clavier.", "", [], []],
-    scan: ["Filme la pièce avec le téléphone (Tailscale, HTTPS) : les images arrivent dans les photos et se placent en direct.", "",
-      [button("Scanner maintenant", "", "Ouvrir le QR de la page Scanner à l'étape des positions", () => run(async () => { await choose(id, true); await go(position("positions")); await startScan(); }))], []],
+    scan: [`Filme ${filmed()} avec le téléphone (Tailscale, HTTPS) : les images arrivent dans les photos et se placent en direct.`, "",
+      [button("Scanner maintenant", "", "Ouvrir le QR de la page Scanner à l'étape des photos", () => run(async () => { await choose(id, true); await go(position("positions") || position("facades")); await startScan(); }))], []],
     gabarit: ["Les cotes utiles de la fiche constructeur : caisse, passages de roue, portes.", built.length ? "créé" : "", [], []],
     relief: ["Grille d'altitudes (ASC, GeoTIFF ou JSON) : la maison et le jardin sur le vrai terrain.", ground ? "importé" : "",
       [add("Choisir une grille", "ASC, GeoTIFF ou JSON", async () => (await host.pickFiles("Grille d'altitudes")) ?? [])], []],
@@ -364,13 +365,13 @@ function alert(title: string, text: string) {
   return box;
 }
 
-async function startScan(mode = "piece") {
+async function startScan(mode = guide.type === "maison" ? "facades" : "piece") {
   if (!photoInfo().installed) await photoTask("tools.install");
   await openScan(render);
   await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
 }
 
-const scanCta = (main = false) => row(cta("Scanner au téléphone", "Filmer la pièce : les images arrivent et se placent en direct", main ? "primary" : "", () => startScan()));
+const scanCta = (main = false) => row(cta("Scanner au téléphone", `Filmer ${filmed()} : les images arrivent et se placent en direct`, main ? "primary" : "", () => startScan()));
 
 async function restart() {
   restarting = true;
@@ -388,8 +389,8 @@ function positionsStep() {
   if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
     : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
     ...progress(restarting ? "photos.restart" : photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
-  if (!source) return has("scan") ? [intro("Scanner au téléphone", "Ouvre le QR avec le téléphone, puis filme la pièce : les images arrivent et se placent en direct."), scanCta(true), footer(back())]
-    : [intro("Pas de photos", "Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre. Tu peux aussi filmer la pièce au téléphone."), scanCta(), footer(back(), onward())];
+  if (!source) return has("scan") ? [intro("Scanner au téléphone", `Ouvre le QR avec le téléphone, puis filme ${filmed()} : les images arrivent et se placent en direct.`), scanCta(true), footer(back())]
+    : [intro("Pas de photos", `Rien à calculer ici : les murs viendront du tracé, du croquis ou du cadastre. Tu peux aussi filmer ${filmed()} au téléphone.`), scanCta(), footer(back(), onward())];
   if (!photo.installed) return [intro("Il faut les outils photo", "COLMAP calcule la position des photos. Il s'installe une seule fois (≈ 400 Mo)."),
     footer(back(), primary("Installer les outils photo", autoPositions))];
   if (photo.count) {
@@ -763,7 +764,8 @@ function roofStep() {
 }
 
 function facadeStep() {
-  if (photoSource() && has("photos")) return photoInfo().count ? wallsStep() : positionsStep();
+  const photo = photoInfo();
+  if (photo.busy === "scan.live" || has("photos", "scan") && (photoSource() || has("scan"))) return photo.count && photo.busy !== "scan.live" ? wallsStep() : positionsStep();
   return [intro("Les façades", "Ajoute les photos prises en faisant le tour de la maison : elles se recalent ensuite sur les murs du cadastre."),
     card("Photos des façades", "Un dossier de photos, avec du recouvrement entre deux photos.", button("Choisir un dossier", "primary", "Dossier de photos", () => run(async () => {
       const path = await host.pickFolder("Photos des façades");
