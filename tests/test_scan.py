@@ -169,3 +169,53 @@ def test_scan_source_opens_positions_step(tmp_path):
     assert 'scan' not in parcours.detect(ctx.project, 'piece')
     (tmp_path / 'p' / 'sources' / 'scan' / '20261119_210000' / 'passage-1').mkdir(parents=True)
     assert 'scan' in parcours.detect(ctx.project, 'piece')
+
+
+def test_recompute_survives_undeletable_folders_and_errors(tmp_path, monkeypatch):
+    import sqlite3
+    ctx = Ctx(lambda event: None); call(ctx, 'project.create', {'path': str(tmp_path / 'p'), 'name': 'p'})
+    live = scan.Scan(ctx, 'photos', 'piece'); runs, fail = [], {}
+    for name in ('next', 'sparse', 'model', 'objet'): os.makedirs(os.path.join(live.work, name, '0')); open(os.path.join(live.work, name, '0', 'images.txt'), 'w').write('périmé')
+    monkeypatch.setattr(shutil, 'rmtree', lambda *args, **kwargs: None)
+
+    def colmap(arguments, log, *rest, **kwargs):
+        a = dict(zip(arguments[1::2], arguments[2::2]))
+        if fail.pop(arguments[0], None): raise FileExistsError(183, 'Impossible de créer un fichier déjà existant', a.get('--output_path', ''))
+        if arguments[0] == 'feature_extractor':
+            db = sqlite3.connect(a['--database_path']); db.execute('create table if not exists cameras (camera_id, width, height)'); db.execute('create table if not exists images (name unique)')
+            db.executemany('insert or ignore into images values (?)', [(n,) for n in open(a['--image_list_path']).read().split()]); db.commit(); db.close()
+        if arguments[0] == 'mapper':
+            target = a['--output_path'] if '--input_path' in a else os.path.join(a['--output_path'], '0'); os.makedirs(target, exist_ok=True)
+            db = sqlite3.connect(a['--database_path']); names = [n for (n,) in db.execute('select name from images')]; db.close()
+            json.dump(names, open(os.path.join(target, 'images.txt'), 'w')); runs.append(a.get('--input_path'))
+    monkeypatch.setattr(photos, 'run_colmap', colmap); monkeypatch.setattr(photos, 'verified_pairs', lambda *args: set())
+    monkeypatch.setattr(photos, 'read_text_model', lambda folder: ({'names': json.load(open(os.path.join(folder, 'images.txt')))}, 0.0))
+    monkeypatch.setattr(scan.Scan, 'show', lambda self, model, names, live: self.info.update(placed=len(model['names'])))
+
+    def grow(n):
+        for _ in range(n):
+            path = tmp_path / f'{len(live.paths):05d}.jpg'; path.write_bytes(jpeg()); live.paths.append(str(path))
+    grow(6); live.compute(ctx.emit, photos.no_progress)
+    assert live.info['error'] == '' and live.info['placed'] == 6 and live.processed == 6 and runs == [None] and 'poses-' in live.model
+    first = live.model; grow(4); fail['matches_importer'] = True; live.compute(ctx.emit, photos.no_progress)
+    assert live.info['error'].startswith('Calcul sauté, le suivant repart') and live.processed == 6 and live.model == first
+    live.compute(ctx.emit, photos.no_progress)
+    assert live.info['error'] == '' and live.info['placed'] == 10 and live.processed == 10 and runs[-1] == first and live.model != first
+    grow(2); fail['mapper'] = True; live.compute(ctx.emit, photos.no_progress)
+    assert 'Calcul sauté' in live.info['error'] and live.model == '' and live.processed == 10
+    live.compute(ctx.emit, photos.no_progress)
+    assert live.info['error'] == '' and live.info['placed'] == 12 and runs[-1] is None
+    grow(3); fail['matches_importer'] = True; live.compute(ctx.emit, photos.no_progress)
+    seeds = []
+    monkeypatch.setattr(photos, 'photo_state', lambda *args, seed=None, **kwargs: (seeds.append(seed), ({'registered': 15, 'photos': 15}, {'s_est': 1.0}, ''))[1])
+    live.done = True; result = live.finish(ctx.emit, photos.no_progress)
+    assert result['registered'] == 15 and live.final == 'terminé' and len(seeds[0][1]) == 15 and set(seeds[0][1].values()) == {f'{i:05d}.jpg' for i in range(15)}
+
+
+def test_emptied_waits_then_refuses_a_stale_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(photos.time, 'sleep', lambda s: None)
+    lingering, stale, spare = tmp_path / 'vide', tmp_path / 'sparse', tmp_path / 'fresh'
+    lingering.mkdir(); (stale / '0').mkdir(parents=True); (spare / 'images').mkdir(parents=True); (spare / 'meta.json').write_text('{}')
+    monkeypatch.setattr(shutil, 'rmtree', lambda path, ignore_errors=False: os.remove(os.path.join(path, 'meta.json')) if os.path.exists(os.path.join(path, 'meta.json')) else None)
+    assert photos.emptied(str(lingering)) == str(lingering) and photos.emptied(str(spare), ['images']) == str(spare) and not (spare / 'meta.json').exists()
+    with pytest.raises(ValueError, match='bloqué'): photos.emptied(str(stale))

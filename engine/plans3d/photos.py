@@ -149,6 +149,17 @@ def read_text_model(folder):
     return model, float((errors * tracks).sum() / max(tracks.sum(), 1))
 
 
+def emptied(path, spare=()):
+    for _ in range(20):
+        shutil.rmtree(path, ignore_errors=True)
+        try:
+            os.makedirs(path, exist_ok=True)
+            if set(os.listdir(path)) <= set(spare): return path
+        except OSError: pass
+        time.sleep(.25)
+    raise ValueError(f'dossier bloqué par un autre programme (OneDrive, antivirus ?), réessaie : {path}')
+
+
 def link_images(paths, image_dir):
     os.makedirs(image_dir, exist_ok=True); names = [f'{i:05d}{os.path.splitext(path)[1].lower()}' for i, path in enumerate(paths)]
     for stale in set(os.listdir(image_dir)) - set(names): os.remove(os.path.join(image_dir, stale))
@@ -178,7 +189,7 @@ def reconstruct(paths, cache, progress=no_progress, emit=None, seed=None):
     for stale in (database, database + '-wal', database + '-shm'):
         if os.path.exists(stale): os.remove(stale)
     if seed: seeded(seed, database, dict(zip(paths, names)))
-    shutil.rmtree(in_cache('sparse'), ignore_errors=True); os.makedirs(in_cache('sparse'), exist_ok=True); write_lines(in_cache('images.txt'), names)
+    emptied(in_cache('sparse')); write_lines(in_cache('images.txt'), names)
     sizes = {exif[path]['size'] for path in paths}; camera = []
     if len(sizes) == 1 and None not in sizes:
         (width, height), = sizes; focal = (exif[paths[0]]['focal35'] or 26.0) * np.hypot(width, height) / 43.267
@@ -491,7 +502,7 @@ def rebuild(project, source, progress=no_progress, emit=None):
     manifest, cache = source_cache(project, source); fresh, key = cache + FRESH, (os.path.abspath(project.folder), source)
     if not os.path.exists(os.path.join(cache, 'meta.json')): return {}
     images, linked = os.path.join(cache, 'images'), os.path.join(fresh, 'images')
-    shutil.rmtree(fresh, ignore_errors=True); os.makedirs(fresh, exist_ok=True); STOPPED.discard(fresh); RUNNING.add(key)
+    emptied(fresh, ['images']); STOPPED.discard(fresh); RUNNING.add(key)
     # liens physiques vers des photos souvent en lecture seule : impossibles à supprimer, donc déplacés
     if os.path.isdir(images) and not os.path.exists(linked): os.replace(images, linked)
     try:

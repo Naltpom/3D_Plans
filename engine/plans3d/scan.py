@@ -1,4 +1,4 @@
-import json, os, shutil, sqlite3, threading, time
+import json, os, shutil, sqlite3, tempfile, threading, time
 from collections import Counter
 from datetime import datetime
 import numpy as np
@@ -123,6 +123,20 @@ def rotation2(degrees):
     a = np.radians(degrees); return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
 
 
+def folders(path): return [os.path.join(path, name) for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
+
+
+def tidy(work, prefix, keep=''):
+    for folder in folders(work):
+        if os.path.basename(folder).startswith(prefix) and not (keep + os.sep).startswith(folder + os.sep): shutil.rmtree(folder, ignore_errors=True)
+
+
+def known(database):
+    if not os.path.exists(database): return set()
+    db = sqlite3.connect(database); names = {name for (name,) in db.execute('select name from images')}; db.close()
+    return names
+
+
 def link(path, target):
     if os.path.exists(target): return
     try: os.link(path, target)
@@ -136,7 +150,7 @@ class Scan:
         self.folder, self.work = (os.path.join(self.project.folder, part, 'scan', self.id) for part in ('sources', 'cache'))
         self.lock, self.wake = threading.Lock(), threading.Condition()
         self.paths, self.seen, self.done, self.stopped, self.now, self.want, self.processed = [], set(), False, False, False, False, 0
-        self.phone, self.cloud, self.object, self.final = {}, {}, None, ''
+        self.phone, self.cloud, self.object, self.final, self.model = {}, {}, None, '', ''
         self.info = {'placed': 0, 'sectors': [], 'gaps': '', 'computing': False, 'at': None, 'duration_s': None, 'colmap_mb': 0, 'engine_mb': 0, 'error': ''}
         os.makedirs(os.path.join(self.work, 'images'), exist_ok=True)
 
@@ -203,7 +217,7 @@ class Scan:
     def compute(self, emit, progress):
         work = lambda *parts: os.path.join(self.work, *parts)
         with self.lock: paths = self.paths[:]
-        names, fresh, started = [f'{i:05d}.jpg' for i in range(len(paths))], range(self.processed, len(paths)), time.perf_counter()
+        names, before, extend, started = [f'{i:05d}.jpg' for i in range(len(paths))], self.processed, False, time.perf_counter(); fresh = range(before, len(paths))
         live = lambda **event: emit({'event': 'photos.live', 'total': len(paths), **event})
         steps, lap = {}, lambda key: steps.__setitem__(key, round(time.perf_counter() - started - sum(steps.values()), 1))
         self.now = False; self.info.update(computing=True, error=''); self.changed()
@@ -226,21 +240,22 @@ class Scan:
             photos.write_lines(work('pairs.txt'), [f'{names[i]} {names[j]}' for i, j in pairs]); live(pairs=len(pairs))
             photos.run_colmap(['matches_importer', '--database_path', work('database.db'), '--match_list_path', work('pairs.txt'), '--match_type', 'pairs', '--FeatureMatching.use_gpu', '1'],
                               work('matching.log'), progress, .3, .5, 'appariement')
-            lap('appariement_s'); before, self.processed = self.processed, len(paths)
-            mapper = ['mapper', '--database_path', work('database.db'), '--image_path', work('images'), *FAST]
-            extend = os.path.isdir(work('model')) and self.info['placed'] >= 0.4 * before
-            for folder in ('next', 'sparse'): shutil.rmtree(work(folder), ignore_errors=True); os.makedirs(work(folder))
-            photos.run_colmap([*mapper, '--input_path', work('model'), '--output_path', work('next')] if extend else [*mapper, '--output_path', work('sparse')], work('mapper.log'), progress, .5, .95, 'poses')
+            lap('appariement_s')
+            mapper, out = ['mapper', '--database_path', work('database.db'), '--image_path', work('images'), *FAST], tempfile.mkdtemp(prefix='poses-', dir=self.work)
+            extend = bool(self.model) and self.info['placed'] >= 0.4 * before
+            photos.run_colmap([*mapper, '--input_path', self.model, '--output_path', out] if extend else [*mapper, '--output_path', out], work('mapper.log'), progress, .5, .95, 'poses')
             lap('placement_s')
-            models = [work('next')] if extend else [work('sparse', name) for name in os.listdir(work('sparse')) if os.path.isdir(work('sparse', name))]
+            models = [out] if extend else folders(out)
             for folder in models: photos.run_colmap(['model_converter', '--input_path', folder, '--output_path', folder, '--output_type', 'TXT'], work('convert.log'), progress, .95, .95, 'lecture')
             read = [(photos.read_text_model(folder)[0], folder) for folder in models if os.path.exists(os.path.join(folder, 'images.txt'))]
             if read:
-                model, folder = max(read, key=lambda item: len(item[0]['names']))
-                shutil.rmtree(work('model'), ignore_errors=True); os.replace(folder, work('model')); self.show(model, names, live)
+                model, self.model = max(read, key=lambda item: len(item[0]['names'])); self.show(model, names, live)
+            self.processed = len(paths)
         except photos.Stopped: return
-        except ValueError as error: self.info['error'] = str(error)
+        except Exception as error:
+            self.info['error'], self.model = f'Calcul sauté, le suivant repart : {error}', '' if extend else self.model
         finally:
+            tidy(self.work, 'poses-', self.model)
             self.info.update(computing=False, at=time.time(), steps=steps, images=len(fresh), duration_s=round(time.perf_counter() - started, 1), colmap_mb=round(photos.PEAKS.get(self.work, 0)), engine_mb=round(photos.peak_mb()))
             self.changed()
 
@@ -249,19 +264,18 @@ class Scan:
         self.want, self.final = False, 'calcul'; self.changed()
         try:
             if len(self.paths) > self.processed: self.compute(emit, progress)
-            shutil.rmtree(work('objet'), ignore_errors=True); os.makedirs(work('objet'))
-            photos.run_colmap(['global_mapper', '--database_path', work('database.db'), '--image_path', work('images'), '--output_path', work('objet')], work('objet.log'), progress, .5, .9, 'poses')
-            folders = [work('objet', name) for name in os.listdir(work('objet')) if os.path.isdir(work('objet', name))]
-            for folder in folders:
+            tidy(self.work, 'objet-'); out = tempfile.mkdtemp(prefix='objet-', dir=self.work)
+            photos.run_colmap(['global_mapper', '--database_path', work('database.db'), '--image_path', work('images'), '--output_path', out], work('objet.log'), progress, .5, .9, 'poses')
+            for folder in folders(out):
                 photos.run_colmap(['point_filtering', '--input_path', folder, '--output_path', folder], work('filter.log'), progress, .9, .92, 'lecture')
                 photos.run_colmap(['model_converter', '--input_path', folder, '--output_path', folder, '--output_type', 'TXT'], work('convert.log'), progress, .92, .95, 'lecture')
-            model = max((photos.read_text_model(folder)[0] for folder in folders), key=lambda m: len(m['names']), default=None)
+            model = max((photos.read_text_model(folder)[0] for folder in folders(out)), key=lambda m: len(m['names']), default=None)
             if model is None or len(model['names']) < 8: raise ValueError("trop peu d'images placées pour l'objet : fais un tour de plus")
             self.object, shown = isolate(model); self.info.update(placed=len(model['names']), **{k: v for k, v in coverage(model, 'objet').items() if k != 'center'})
             self.cloud = {'version': self.cloud.get('version', 0) + 1, 'points': shown.round(4).ravel().tolist(), 'colors': [], 'box': [self.object['dims'][0], self.object['dims'][2], self.object['dims'][1]]}
             self.final = 'objet'
         except photos.Stopped: pass
-        except ValueError as error: self.final, self.info['error'] = 'échec', str(error)
+        except Exception as error: self.final, self.info['error'] = 'échec', str(error)
         self.changed()
 
     def show(self, model, names, live):
@@ -277,8 +291,8 @@ class Scan:
         if self.stopped or len(self.paths) < MIN_IMAGES or self.mode == 'objet': return {**result, 'objet': self.object and self.object.get('added')}
         self.final = 'calcul'; self.changed()
         try:
-            seed = (self.work, {path: f'{i:05d}.jpg' for i, path in enumerate(self.paths[:self.processed])})
-            meta, frame, _ = photos.photo_state(self.project, self.source, progress, emit=emit, seed=seed)
+            names = known(os.path.join(self.work, 'database.db')); seed = {path: f'{i:05d}.jpg' for i, path in enumerate(self.paths) if f'{i:05d}.jpg' in names}
+            meta, frame, _ = photos.photo_state(self.project, self.source, progress, emit=emit, seed=(self.work, seed) if seed else None)
             self.project.db.execute('update params set init=? where name=?', (frame['s_est'], f'{self.source}_s')); self.project.db.commit()
             self.info['placed'], self.final = meta['registered'], 'terminé'
             return {**result, 'registered': meta['registered'], 'photos': meta['photos']}
@@ -326,7 +340,9 @@ def live(ctx, source='photos', mode='piece', progress=photos.no_progress):
     old = getattr(ctx, 'scan', None)
     if old and not old.done: raise RpcError('un scan est déjà en cours')
     scan = ctx.scan = Scan(ctx, source, mode); photos.STOPPED.discard(scan.work)
-    scan.changed(); scan.run(ctx.emit, progress)
+    scan.changed()
+    try: scan.run(ctx.emit, progress)
+    finally: scan.done = True
     return scan.finish(ctx.emit, progress)
 
 
