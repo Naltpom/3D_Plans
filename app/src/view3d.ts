@@ -247,6 +247,8 @@ function aim(event: PointerEvent) {
   return raycaster.ray.intersectPlane(floor, new THREE.Vector3());
 }
 
+export const cloudPick: { on: ((point: number[], event: PointerEvent) => void) | null; when: () => boolean } = { on: null, when: () => false };
+
 export const pointer: { move: ((x: number, z: number) => void) | null; click: ((x: number, z: number) => void) | null } = { move: null, click: null };
 
 export function setPointer(move: typeof pointer.move, click: typeof pointer.click) {
@@ -295,6 +297,9 @@ canvas.addEventListener("pointerup", (event) => {
   }
   if (event.button !== 0 || moved) return;
   aim(event);
+  raycaster.params.Points.threshold = 0.04;
+  const spot = cloudPick.on && cloudPick.when() && raycaster.intersectObjects(cloud.children, false)[0]?.point;
+  if (spot) return cloudPick.on!([spot.x, spot.y, spot.z], event);
   const hit = (raycaster.intersectObjects(photos.children, false)[0] ?? raycaster.intersectObjects(model.children, false).find((h) => (h.object as THREE.Mesh).material === h.object.userData.material))?.object.userData;
   document.dispatchEvent(hit?.photo ? new CustomEvent("plans3d:photo", { detail: hit.photo }) : new CustomEvent("plans3d:pick", { detail: hit?.id ?? null }));
 });

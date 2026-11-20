@@ -4,15 +4,25 @@ import { refreshSources } from "./projects";
 
 type Group = { id: string; name: string; start: string; end: string; count: number; excluded: boolean; color: string; thumbs: string[] };
 type Groups = { gap_min: number; groups: Group[] };
-type Mode = "photo" | "groupe" | "mobilite";
+type Mode = "photo" | "groupe" | "mobilite" | "semantique";
+type Kind = { id: number; key: string; label: string; color: string };
 
 const loaded = new Map<string, Groups>();
 const DAYS = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
 const hour = (iso: string) => iso.slice(11, 16);
 const day = (iso: string) => `${DAYS[new Date(iso).getDay()]} ${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
-let mode: Mode = "photo", source = "";
+let mode: Mode = "photo", source = "", kinds: Kind[] = [], counts: number[] = [];
+const hidden = new Set<number>();
 
 export const cloudMode = () => mode;
+export const hiddenLabels = () => mode === "semantique" ? hidden : new Set<number>();
+export const classes = async () => kinds.length ? kinds : (kinds = await call<Kind[]>("semantique.classes"));
+
+export function setCounts(labels: number[] | null) {
+  counts = [];
+  for (const l of labels ?? []) counts[l] = (counts[l] ?? 0) + 1;
+  void run(legend);
+}
 
 function changed(id: string, group: string, excluded: boolean) {
   return run(async () => {
@@ -75,6 +85,18 @@ async function legend() {
   box.hidden = mode === "photo" || $("#cloud-colors").hidden;
   if (box.hidden) return;
   const key = (color: string, text: string) => { const item = el("span", "", text); item.style.setProperty("--key", color); return item; };
+  if (mode === "semantique") {
+    const all = await classes(), present = all.filter((k) => counts[k.id]).sort((a, b) => counts[b.id] - counts[a.id]);
+    if (!present.length) return box.replaceChildren(el("small", "", "Pas encore d'analyse : « Comprendre la pièce » à l'étape des murs."));
+    return box.replaceChildren(...present.map((k) => {
+      const check = Object.assign(el("input"), { type: "checkbox", checked: !hidden.has(k.id), ariaLabel: `Afficher : ${k.label}` });
+      check.onchange = () => { if (check.checked) hidden.delete(k.id); else hidden.add(k.id); document.dispatchEvent(new CustomEvent("plans3d:cloud-filter")); };
+      const line = el("label", "kind");
+      line.style.setProperty("--key", k.color);
+      line.append(check, el("i"), k.label, el("small", "", number(counts[k.id], 0)));
+      return line;
+    }), el("small", "", "Clic sur un point : corriger son groupe."));
+  }
   if (mode === "groupe") return box.replaceChildren(...groups.filter((g) => !g.excluded).map((g) => key(g.color, g.name)), key("#eceef1", "plusieurs séances"));
   const stats = await call<{ mobile_share: number }>("photos.mobility", { source }).catch(() => null);
   box.replaceChildren(key("#8b95a3", "fixe : vu pareil par toutes les séances"), key("#e8953a", `mobile${stats ? ` (${number(stats.mobile_share * 100, 0)} %)` : ""} : présent dans une séance, vu vide dans une autre`));
@@ -90,7 +112,7 @@ function paint() {
   for (const b of document.querySelectorAll<HTMLButtonElement>("#cloud-colors button")) b.ariaPressed = String(b.dataset.color === mode);
 }
 
-for (const [value, text] of [["photo", "Photo"], ["groupe", "Séance"], ["mobilite", "Fixe / mobile"]] as const) {
+for (const [value, text] of [["photo", "Photo"], ["groupe", "Séance"], ["mobilite", "Fixe / mobile"], ["semantique", "Objets"]] as const) {
   const b = button(text, "small", `Couleur du nuage : ${text.toLowerCase()}`, () => { mode = value; paint(); document.dispatchEvent(new CustomEvent("plans3d:cloud")); });
   b.dataset.color = value;
   $("#cloud-colors").append(b);

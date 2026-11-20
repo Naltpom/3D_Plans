@@ -8,6 +8,7 @@ import { closeDrawing, drawingOpen, drawingStep, openDrawing, type Helpers as Dr
 import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
+import { loadUnderstanding, understandCard } from "./comprendre";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { phoneCheck } from "./telephone";
 import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
@@ -20,8 +21,8 @@ type Route = { type: string; sources: string[]; ready: boolean; answers: Record<
 type Info = { name: string; path: string; guide?: Guide };
 type Source = { id: string; path: string; kind: string; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type End = "a" | "b";
-type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; meuble?: boolean; component: string | null; angles: Record<End, string | null> };
-type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number };
+type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; meuble?: boolean; closure?: boolean; component: string | null; angles: Record<End, string | null> };
+type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number; room?: { closed: boolean; missing: string[] } | null };
 type Candidate = { label: string; expr: string; sigma: number };
 type Reading = { walls: { points: number[][]; closed: boolean; length: number }[]; openings: { type: string; point: number[] }[];
   cotes: { texte: string; value_cm: number; drawn_m: number | null; ok: boolean; message: string; wall: number | null; edge: number | null }[] } | null;
@@ -54,6 +55,8 @@ const PHASES: Record<string, [string, string][]> = {
     ["fusion", "Fusion en un nuage dense"], ["plans", "Recherche des murs"]],
   "tools.install": [["", "Téléchargement et installation de COLMAP"]],
 };
+PHASES["semantique.analyse"] = [["téléchargement", "Téléchargement du modèle (une seule fois)"], ["photo", "Reconnaissance des objets sur chaque photo"],
+  ["profondeurs", "Nuage dense"], ["étiquettes", "Étiquettes des points, murs et ouvertures"]];
 PHASES["photos.restart"] = [...PHASES["photos.extract"].slice(0, 3), ["recalage", "Recalage sur l'ancien calcul"], PHASES["photos.extract"][3]];
 const KINDS: Record<string, string> = { cotes_csv: "Cotes", photos_colmap: "Photos", cadastre_pdf: "Cadastre", cadastre_geojson: "Cadastre", grille_alti: "Relief" };
 const MODE = "plans3d.mode";
@@ -368,7 +371,8 @@ function alert(title: string, text: string) {
 async function startScan(mode = guide.type === "maison" ? "facades" : "piece") {
   if (!photoInfo().installed) await photoTask("tools.install");
   await openScan(render);
-  await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
+  const done = await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
+  if (mode === "piece" && done?.registered && guide.type === "piece") await photoTask("semantique.analyse", { dense: true }).finally(render);
 }
 
 const scanCta = (main = false) => row(cta("Scanner au téléphone", `Filmer ${filmed()} : les images arrivent et se placent en direct`, main ? "primary" : "", () => startScan()));
@@ -386,6 +390,8 @@ function positionsStep() {
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
   if (photo.busy === "scan.live") return [intro(scanTitle(), scanFinal() ? "Le téléphone a fini : toutes les images sont recalculées ensemble, comme des photos." : "Les images du téléphone arrivent au fil du scan et se placent en direct dans la vue."),
     ...scanPanel(), ...scanFinal() ? progress("photos.extract", photo.fraction, photo.message, photo.started) : [], footer(...scanButtons())];
+  if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", "Le scan est placé. L'IA reconnaît murs, sol, plafond, meubles et lampes sur chaque image, puis le nuage dense remplit les murs. Tu peux l'arrêter : l'étape des murs reprendra ce qui est fait."),
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
     : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
     ...progress(restarting ? "photos.restart" : photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
@@ -440,6 +446,7 @@ function photoWalls() {
   const densify = button(`Densifier (≈ ${proposal.densify_min} min)`, "", "Optionnel : nuage dense, plus de murs trouvés", () => run(densifyCloud));
   const angles = missing();
   return [
+    ...understandCard(async () => { await loadProposal(true); render(); paint(); }),
     list,
     ...walls().length && axes.size < 2 ? [el("p", "warn", "Coche au moins un mur dans chaque direction.")] : [],
     row(validate),
@@ -454,6 +461,8 @@ function photoWalls() {
 
 function wallsStep() {
   const photo = photoInfo(), tool = drawing();
+  if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", "Chaque photo est découpée en murs, sol, plafond, portes, fenêtres, meubles et lampes, sur ce PC. Les murs viennent ensuite des seuls points « mur »."),
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "photos.densify") return [intro("Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (tool === "trace") return [intro("Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
@@ -463,8 +472,9 @@ function wallsStep() {
   const fromPhotos = photo.count > 0 && has("photos"), count = walls().length;
   const house = has("cadastre") ? land?.house : null, parcel = has("cadastre") ? land?.parcel : null;
   const parts = [
-    intro(fromPhotos && count ? `J'ai trouvé ${count} mur${count > 1 ? "s probables" : " probable"}` : "Les murs", fromPhotos
-      ? "Ils viennent des surfaces planes vues sur tes photos. Décoche ceux qui sont faux. Tu peux aussi tracer des murs ou les reprendre du cadastre."
+    intro(fromPhotos && count ? proposal?.room ? `Pièce fermée : ${count} murs` : `J'ai trouvé ${count} mur${count > 1 ? "s probables" : " probable"}` : "Les murs", fromPhotos
+      ? proposal?.room ? `L'IA a reconnu les murs, le sol, le plafond et les meubles sur chaque photo ; les murs forment un polygone fermé${proposal.room.closed ? "" : `, ${proposal.room.missing.join(", ")} en pointillés : pas vu, fermeture la plus probable`}. Décoche ceux qui sont faux.`
+      : "Ils viennent des surfaces planes vues sur tes photos. Décoche ceux qui sont faux. Tu peux aussi tracer des murs ou les reprendre du cadastre."
       : "Trace les murs, décalque ton croquis ou reprends-les du cadastre. Une cote au mètre les précisera ensuite."),
     ...guide.type === "piece" ? [sketch && has("croquis", "plan") ? card("Plan dessiné", "Lis ton dessin pas à pas : murs nommés, calage sur les photos, points à préciser, portes et fenêtres.",
       button("Lire le dessin", "", "Revenir à la lecture du plan dessiné", () => run(async () => { await save({ classic: false }); render(); paint(); })))
@@ -600,8 +610,8 @@ async function loadPlan() {
 
 async function loadProposal(reset = false) {
   const source = photoInfo().source;
-  proposal = source ? await call<Proposal>("photos.propose_walls", { source }).catch(() => null) : null;
-  if (reset || !checked.size) checked = new Set(walls().filter((w) => (created().length ? w.component : w.sure)).map((w) => w.id));
+  [proposal] = source ? await Promise.all([call<Proposal>("photos.propose_walls", { source }).catch(() => null), loadUnderstanding()]) : [null];
+  if (reset || !checked.size) checked = new Set(walls().filter((w) => (created().length ? w.component : w.sure || w.closure)).map((w) => w.id));
   paint();
 }
 
@@ -970,6 +980,11 @@ document.addEventListener("plans3d:clicked", () => run(async () => {
   render();
 }));
 document.addEventListener("plans3d:scene", () => setTimeout(paint));
+document.addEventListener("plans3d:understood", () => run(async () => {
+  if (!["murs", "echelle"].includes(key())) return;
+  await loadProposal(true);
+  render();
+}));
 onEvent((event) => {
   if (!pending || event.event !== "progress" || !["ai.pull", "plan.read_sketch"].includes(String(event.method))) return;
   detail = String(event.message ?? "");

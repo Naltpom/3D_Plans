@@ -564,6 +564,10 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 .sessions.compact .session .thumbs img { height: 22px; }
 #cloud-colors { gap: 6px; padding: 4px 6px 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; color: var(--muted); }
 #cloud-legend { display: flex; flex-direction: column; gap: 4px; max-width: 360px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); font-size: 12px; color: var(--soft); }
+#cloud-legend label.kind { flex-direction: row; align-items: center; gap: 6px; min-height: 22px; min-width: 190px; }
+#cloud-legend label.kind input { min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
+#cloud-legend label.kind i { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--key); }
+#cloud-legend label.kind small { margin-left: auto; color: var(--muted); font-family: var(--mono, monospace); }
 #cloud-legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; vertical-align: -1px; background: var(--key); }
 #step .cta { display: flex; flex: 1 1 100%; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 64px; padding: 12px 16px; text-align: left; }
 #step .cta b { font-size: 15px; font-weight: 600; }
@@ -617,3 +621,9 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 #plan2d .dessin-status .hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 #plan2d .dessin-status .m { font-family: var(--mono); color: var(--text); }
 #plan2d .dessin-text { position: absolute; z-index: 3; width: 140px; min-height: 34px; font-size: 16px; }
+
+.ia-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.ia-tag { font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); color: var(--soft); }
+.popover { position: fixed; z-index: 50; width: 260px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 13px; }
+.popover label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+#cloud-legend { max-height: 50vh; overflow: auto; }

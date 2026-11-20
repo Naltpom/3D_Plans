@@ -15,7 +15,7 @@ IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.heic', '.png')
 IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 RUNNING, STOPPED, PROCESSES, PEAKS = set(), set(), {}, {}
 LIVE_POINTS, FEATURES, IMAGE_SIZE, PAIR_INLIERS = 50000, 8192, 2400, 15
-ALIGN_M, FRESH = 0.05, '.new'
+ALIGN_M, FRESH, DENSE_CACHE_GB = 0.05, '.new', '1.5'
 PROCESSED = re.compile(r'Name:\s+(\S+)')
 STAGES = ('rotation averaging', 'track establishment', 'global positioning', 'iterative bundle adjustment', 'iterative retriangulation')
 LINE = 'ligne:'
@@ -670,7 +670,8 @@ def photos_colmap(path, source):
     project = Project(os.path.dirname(os.path.dirname(os.path.abspath(path))))
     _, frame, cache = photo_state(project, source); mapping = axis_mapping(project, source); scale = resolved_scale(project, source, frame['s_est'])
     yaw = yaw_name(project, source)
-    planes = {name: plane for plane in frame['planes'] for name in [plane['id'], *plane.get('aliases', [])]}; observations, seen = [], set()
+    from .semantique import semantic_planes
+    planes = {**semantic_planes(cache, frame['s_est']), **{name: plane for plane in frame['planes'] for name in [plane['id'], *plane.get('aliases', [])]}}; observations, seen = [], set()
     for plane_id, expr, sigma_m in project.db.execute('select plane_id, expr, sigma from photos_assoc where source=? order by plane_id', (source,)):
         plane = planes.get(plane_id)
         if not plane or not plane['axis'] or (plane['id'], expr) in seen: continue
@@ -758,9 +759,10 @@ def densified(cache, meta, max_size, progress, started):
     dense = lambda *parts: os.path.join(cache, 'dense', *parts)
     run_colmap(['image_undistorter', '--image_path', meta.get('image_dir', meta['root']), '--input_path', os.path.join(cache, 'sparse', meta['model']), '--output_path', dense(),
                 '--max_image_size', str(max_size)], os.path.join(cache, 'undistort.log'), progress, 0, .03, 'redressement')
-    run_colmap(['patch_match_stereo', '--workspace_path', dense(), '--PatchMatchStereo.geom_consistency', '1'], os.path.join(cache, 'patchmatch.log'),
-               progress, .03, .95, 'profondeurs', line_total=2 * meta['registered'])
-    run_colmap(['stereo_fusion', '--workspace_path', dense(), '--output_path', dense('fused.ply')], os.path.join(cache, 'fusion.log'), progress, .95, .99, 'fusion')
+    run_colmap(['patch_match_stereo', '--workspace_path', dense(), '--PatchMatchStereo.geom_consistency', '1', '--PatchMatchStereo.cache_size', DENSE_CACHE_GB],
+               os.path.join(cache, 'patchmatch.log'), progress, .03, .95, 'profondeurs', line_total=2 * meta['registered'])
+    run_colmap(['stereo_fusion', '--workspace_path', dense(), '--output_path', dense('fused.ply'), '--StereoFusion.cache_size', DENSE_CACHE_GB],
+               os.path.join(cache, 'fusion.log'), progress, .95, .99, 'fusion')
     frame = frame_and_planes(cache, progress); progress(1.0, 'terminé')
     return {'dense_points': len(read_ply(dense('fused.ply'))[0]), 'planes': len(frame['planes']), 'total_s': time.perf_counter() - started}
 
@@ -889,11 +891,15 @@ def cloud_sample(cache, limit):
 @rpc('photos.cloud')
 def cloud(ctx, source='photos', limit=50000, pose=None, color='photo'):
     project = ctx.require_project(); _, frame, cache = photo_state(project, source, compute=False); points, colors = cloud_sample(cache, int(limit))
-    if color != 'photo': from . import groupes; colors = groupes.colours(project, source, points, color)
+    labels = None
+    if color == 'semantique':
+        from .semantique import PALETTE, classify
+        labels = classify(project, source, points); colors = PALETTE[labels] if labels is not None else colors
+    elif color != 'photo': from . import groupes; colors = groupes.colours(project, source, points, color)
     linear_map, shift, _ = project_transform(project, source, frame, pose); points = points @ linear_map.T + shift
     low, high = np.percentile(points, 1, 0), np.percentile(points, 99, 0); margin = 0.1 * (high - low)
     kept = np.all((points > low - margin) & (points < high + margin), 1); kept[np.flatnonzero(kept)[int(limit):]] = False
-    return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [],
+    return {'points': points[kept].round(3).ravel().tolist(), 'colors': colors[kept].ravel().tolist() if len(colors) else [], 'labels': labels[kept].tolist() if labels is not None else None,
             'dense': os.path.exists(os.path.join(cache, 'dense', 'fused.ply'))}
 
 

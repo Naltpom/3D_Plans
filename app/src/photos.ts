@@ -2,7 +2,7 @@ import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, report, run } from "./ui";
 import { refreshSources } from "./projects";
 import { refit, showCameras, showCloud, throttle, type Shape } from "./view3d";
-import { cloudMode, showColors } from "./seances";
+import { cloudMode, hiddenLabels, setCounts, showColors } from "./seances";
 
 type UV = [number, number];
 type Point = number[];
@@ -21,7 +21,7 @@ const ROTATIONS: Record<string, string> = { "+x+y+z": "0°", "+z+y-x": "90°", "
 const KINDS = ["point", "face", "arête", "point"];
 const BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
 const STEPS = 8;
-const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification", "scan.live": "Scan au téléphone" };
+const TASKS: Record<string, string> = { "tools.install": "Installation des outils photo", "photos.extract": "Calcul des positions", "photos.densify": "Densification", "semantique.analyse": "Analyse des photos par l'IA", "scan.live": "Scan au téléphone" };
 const LIVE = new Set(["photos.extract", "scan.live"]);
 const TASK_KEY = "plans3d.photoTask";
 const STAGES = ["orientation des photos", "pistes de points", "position des photos", "ajustement", "retriangulation"];
@@ -102,8 +102,21 @@ const schedule = () => {
   timer = window.setTimeout(() => run(refresh), 30);
 };
 
+let lastCloud: { points: number[]; colors: number[]; labels?: number[] | null } = { points: [], colors: [] };
+
+function showFiltered(cloud = lastCloud) {
+  if (cloud !== lastCloud) setCounts(cloud.labels ?? null);
+  lastCloud = cloud;
+  const hidden = hiddenLabels();
+  if (!cloud.labels || !hidden.size) return showCloud(cloud.points, cloud.colors);
+  const keep = cloud.labels.map((l, i) => hidden.has(l) ? -1 : i).filter((i) => i >= 0);
+  showCloud(keep.flatMap((i) => cloud.points.slice(3 * i, 3 * i + 3)), keep.flatMap((i) => cloud.colors.slice(3 * i, 3 * i + 3)));
+}
+
+
+
 async function cloudOf(id: string | null) {
-  const empty = { points: [] as number[], colors: [] as number[] };
+  const empty = { points: [] as number[], colors: [] as number[], labels: null as number[] | null };
   const ask = (color: string) => call<typeof empty>("photos.cloud", { source: id, color, ...preview ? { pose: preview } : {} });
   return id ? ask(cloudMode()).catch(() => ask("photo")).catch(() => empty) : empty;
 }
@@ -123,7 +136,7 @@ async function refresh() {
   sourceSelect.value = source ?? "";
   sourceSelect.hidden = sources.length < 2;
   section.hidden = !source;
-  if (!LIVE.has(busy)) showCloud(cloud.points, cloud.colors);
+  if (!LIVE.has(busy)) showFiltered(cloud);
   showColors(source, !LIVE.has(busy) && cloud.points.length > 0);
   if (image && !cameras().some((c) => c.name === image)) closePhoto();
   render();
@@ -676,6 +689,7 @@ document.addEventListener("plans3d:opened", (event) => {
   section.hidden = true;
 });
 document.addEventListener("plans3d:cloud", schedule);
+document.addEventListener("plans3d:cloud-filter", () => showFiltered());
 document.addEventListener("plans3d:updated", () => {
   dirty = false;
   schedule();

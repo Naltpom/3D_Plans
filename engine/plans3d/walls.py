@@ -5,7 +5,7 @@ from .rpc import read_cotes, rpc, write_cotes
 
 MERGE_M, ASSOC_M, SPAN_M, TOP_M, LENGTH_M, SURE_LENGTH_M, CORNER_M, FRONT_M, FLOOR_M, CEILING_M = 0.1, 0.03, 0.8, 1.3, 0.5, 1.0, 0.75, 0.1, 0.2, 1.8
 SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 13, 'echelle', 1.0
-LETTERS, KEPT = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ('cadastre', 'gabarit')
+LETTERS, KEPT, SEMANTIC_SIGMA_M = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ('cadastre', 'gabarit'), (0.1, 0.03)
 SEE_M, SEE_BAND_M, SEE_SHARE, SEE_CELL_M, MOVED_POINTS, MOVED_SHARE = 0.2, 0.45, 0.5, 0.1, 20, 0.5
 FURNITURE, MOVED = 'meuble : on voit la pièce au-dessus', 'meuble : déplacé entre deux séances'
 
@@ -110,11 +110,37 @@ def proposals(project, source, raw=False):
                       'sure': not wall['reason'], 'reason': wall['reason'], 'meuble': bool(wall['meuble']), 'planes': wall['planes'],
                       'sens': float(np.sign(position - np.median(cameras[:, 'xyz'.index(axis)])) or 1.0),
                       'component': comp and comp['id'], 'angles': {end: comp and angle(end) for end in 'ab'}})
-    floor, ceiling, height = levels(frame); closed = [wall for wall in walls if wall['component'] and all(wall['angles'].values())]
-    return {'walls': walls, 'floor': floor, 'ceiling': ceiling,
-            'ceiling_height': ceiling and float(to_project([0, height / frame['s_est'], 0])[1] - to_project([0, 0, 0])[1]),
+    floor, ceiling, height = levels(frame); understood = None if raw else semantic_walls(project, source, frame, to_project, mapping)
+    if understood:
+        walls, height = understood['walls'], understood['height'] / frame['s_est'] if understood['height'] else height
+        for wall in walls:
+            comp = next((c for c in guided if set(wall['planes']) & set(c['options'].get('plans', []))), None)
+            wall.update(component=comp and comp['id'], angles={end: comp and (comp['options'].get('angles', {}).get(end) or ('clics' if len(clicked.get(f"{comp['id']}:{end}", ())) >= 2 else None)) for end in 'ab'})
+    closed = [wall for wall in walls if wall['component'] and all(wall['angles'].values())]
+    return {'walls': walls, 'floor': floor, 'ceiling': ceiling, 'room': understood and understood['summary'],
+            'ceiling_height': height and float(to_project([0, height if understood else height / frame['s_est'], 0])[1] - to_project([0, 0, 0])[1]),
             'measure': max(closed, key=lambda wall: wall['length'])['component'] if closed else None,
             'dense': not frame['cloud'].endswith('épars'), 'densify_min': max(1, round(meta['registered'] * DENSIFY_S_PER_PHOTO / 60))}
+
+
+def semantic_walls(project, source, frame, to_project, mapping):
+    from . import lumiere, semantique
+    if lumiere.meta(project).get('guide', {}).get('type', 'piece') != 'piece': return None
+    try: found = semantique.understand(project, source)
+    except (OSError, ValueError, KeyError): return None
+    room = found and found['room']
+    if not room: return None
+    scale, height = frame['s_est'], room['height'] or 2.5; at = lambda xz, y=0.0: to_project(np.array([xz[0], y, xz[1]]) / scale); walls = []
+    for letter, e in zip(LETTERS, room['edges']):
+        axis = mapping[e['axis']][0]; k = 'xyz'.index(axis); run = 'z' if axis == 'x' else 'x'; ends = sorted((at(e['a']), at(e['b'])), key=lambda p: p['xyz'.index(run)])
+        middle = (np.array(e['a']) + np.array(e['b'])) / 2; middle['xz'.index(e['axis'])] -= 0.1 * e['sens']; inner = at(middle)
+        reason = '' if e['seen'] else 'pas vu sur les photos : fermeture proposée'
+        walls.append({'id': letter, 'label': f'Mur {letter}', 'axis': axis, 'position': float(ends[0][k]), 'a': [float(ends[0][0]), float(ends[0][2])], 'b': [float(ends[1][0]), float(ends[1][2])],
+                      'length': float(np.linalg.norm(ends[1] - ends[0])), 'height': float(at(e['a'], height)[1] - at(e['a'])[1]), 'n': e['n'], 'photos': int(e.get('photos', 0)),
+                      'sure': not reason, 'reason': reason, 'meuble': False, 'planes': e['planes'] or [e['id']], 'sigma': None if e['planes'] else SEMANTIC_SIGMA_M[bool(e['seen'])],
+                      'sens': float(np.sign(ends[0][k] - inner[k]) or 1.0), 'component': None, 'angles': {'a': None, 'b': None}, 'closure': not e['seen']})
+    return {'walls': walls, 'height': room['height'], 'summary': {'closed': all(e['seen'] for e in room['edges']), 'missing': [w['id'] for w in walls if w['closure']],
+                                                                    'meubles': sorted({p['kind'] for p in room['furniture_planes']})}}
 
 
 def corners(wall, chosen):
@@ -165,7 +191,7 @@ def create_walls(ctx, source, walls):
             'source': source, 'plans': w['planes'], 'angles': {e: links[e] and ids[links[e]['id']] for e in 'ab'}}, w['label'])
     levels = [(found['floor'], '0')] * bool(found['floor']) + [(found['ceiling'], f'{first}_h')] * bool(found['ceiling'])
     project.db.executemany('insert or replace into photos_assoc values (?,?,?,?)',
-                           [(source, plane, position[w['id']], None) for w in chosen for plane in w['planes']] + [(source, plane, expr, None) for plane, expr in levels])
+                           [(source, plane, position[w['id']], w.get('sigma')) for w in chosen for plane in w['planes']] + [(source, plane, expr, None) for plane, expr in levels])
     photos.ensure_params(project, source); photos.invalidate(project, source)
     return {'created': list(ids.values())}
 
@@ -271,7 +297,7 @@ def fit_walls(ctx, source='photos', turn=None):
     return {'pairs': [[seg['id'], t['id']] for seg, t, _ in paired], 'scale_known': parallel}
 
 
-SNAP_M, SNAP_DEG, HOLE_CELL, BAND_M = 0.6, 10.0, 0.1, 0.06
+SNAP_M, SNAP_DEG, HOLE_CELL, BAND_M, SNAP_OPENING_M = 0.6, 10.0, 0.1, 0.06, 0.2
 
 
 @rpc('photos.snap_walls')
@@ -319,10 +345,14 @@ def propose_openings(ctx, source='photos'):
     from .plan import current_values, wall_ends
     project = ctx.require_project(); _, frame, cache = photos.photo_state(project, source, compute=False)
     points, _ = photos.cloud_sample(cache, 400000); linear_map, shift, _ = photos.project_transform(project, source, frame); points = points @ linear_map.T + shift
-    values, existing = current_values(project), components.load(project); found = []
+    values, existing = current_values(project), components.load(project); found = []; from .semantique import placed_openings; seen = placed_openings(project, source)
     for comp in existing.values():
         if comp['type'] != 'mur': continue
         a, b = wall_ends(comp, values); length = np.linalg.norm(b - a); u = (b - a) / length; normal = np.array([-u[1], u[0]])
+        if seen is not None:
+            found += [{**{k: o[k] for k in ('type', 'width', 'height', 'sill', 'sigma')}, 'along': float((o['xz'] - a) @ u), 'wall': comp['id'], 'label': comp['label'], 'point': o['xz'].round(3).tolist(), 'ia': True}
+                      for o in seen if abs((o['xz'] - a) @ normal) < SNAP_OPENING_M and 0 <= (o['xz'] - a) @ u <= length]
+            continue
         base, height = components.evaluate(comp['expressions']['y0'], values), components.evaluate(comp['expressions']['h'], values)
         flat = points[:, [0, 2]] - a; near = np.abs(flat @ normal) < BAND_M
         local = np.stack([flat[near] @ u, points[near, 1] - base], 1)
