@@ -1,6 +1,6 @@
 import { call } from "./host";
 import { button, el, number, run } from "./ui";
-import { photoInfo, photoTask } from "./photos";
+import { denseInfo, photoInfo, photoTask, stopDense } from "./photos";
 import { classes, cloudMode } from "./seances";
 import { cloudPick } from "./view3d";
 import { update } from "./projects";
@@ -11,7 +11,7 @@ type Result = { scene: { place: string }; room: { edges: Edge[] } | null; lights
 type Status = { installed: boolean; download_mb: number; photos: number; segmented: number; dense: boolean; result: Result | null };
 
 const PLACES: Record<string, string> = { dedans: "Dedans", dehors: "Dehors", "dedans et dehors": "Dedans et dehors" };
-let status: Status | null = null, dense = false, last: Result | null = null;
+let status: Status | null = null, last: Result | null = null;
 let popup: HTMLElement | null = null;
 type Candidate = { id: string; label: string; size: number[]; factor: number };
 type Piece = { key: string; kind: string; label: string; size: number[]; n: number; confirmed: string | null; candidates: Candidate[] };
@@ -36,21 +36,17 @@ function tags(result: Result) {
 
 export function understandCard(after: () => Promise<void>) {
   if (!status || photoInfo().busy) return [];
-  const analyse = (withDense: boolean) => run(async () => {
-    last = await photoTask("semantique.analyse", { dense: withDense }) as Result | null;
+  const analyse = () => run(async () => {
+    last = await photoTask("semantique.analyse") as Result | null;
     await loadUnderstanding();
     await after();
   });
   const box = el("div", "card");
   const result = status.result;
   if (!result || status.segmented < status.photos) {
-    const option = Object.assign(el("input"), { type: "checkbox", checked: dense });
-    option.onchange = () => { dense = option.checked; };
-    const line = el("label", "check");
-    line.append(option, "Nuage dense aussi (plus de points sur les murs, plusieurs minutes)");
     box.append(el("b", "", "Comprendre la pièce"), el("span", "", "L'IA reconnaît sur chaque photo murs, sol, plafond, portes, fenêtres, meubles et lampes, sur ce PC. Les murs sont ensuite cherchés seulement sur les points « mur »."
-      + (status.installed ? "" : ` Premier usage : modèle de ≈ ${status.download_mb} Mo téléchargé une fois.`)), ...status.dense ? [] : [line],
-      button("Analyser les photos", "primary", "Reconnaissance locale des objets sur chaque photo", () => analyse(dense && !status!.dense)));
+      + (status.installed ? "" : ` Premier usage : modèle de ≈ ${status.download_mb} Mo téléchargé une fois.`)),
+      button("Analyser les photos", "primary", "Reconnaissance locale des objets sur chaque photo", analyse));
     return [box];
   }
   box.append(el("b", "", result.room ? (result.closed ? "Pièce fermée, comprise par l'IA" : "Pièce fermée par l'IA, un mur non vu") : result.scene.place === "dehors" ? "Dehors : pas de pièce à fermer" : "Pièce comprise par l'IA"),
@@ -61,10 +57,46 @@ export function understandCard(after: () => Promise<void>) {
     document.dispatchEvent(new CustomEvent("plans3d:furniture-refresh"));
     actions.replaceChildren(el("small", "", `${done.added} luminaire${done.added > 1 ? "s ajoutés" : " ajouté"} : réglages à l'étape Lumière.`));
   })));
-  if (!status.dense) actions.append(button("Nuage dense", "", "Profondeur de chaque pixel, puis nouvelle analyse (plusieurs minutes)", () => analyse(true)));
   if (actions.childElementCount) box.append(actions);
   return [box];
 }
+
+const AUTO = "plans3d.denseAuto";
+const PHASES: Record<string, string> = { redressement: "Préparation des photos", profondeurs: "Profondeur de chaque pixel", fusion: "Fusion des points", plans: "Recherche des murs", "étiquettes": "Étiquettes et murs" };
+export const denseAuto = () => localStorage.getItem(AUTO) !== "0";
+let live: { bar: HTMLProgressElement; text: HTMLElement } | null = null;
+
+function tick() {
+  const info = denseInfo();
+  if (!info || !live) return;
+  const seconds = (Date.now() - info.started) / 1000, known = info.fraction > 0.02, left = known ? Math.max(1, Math.round(seconds * (1 - info.fraction) / info.fraction / 60)) : 0;
+  if (known) live.bar.value = info.fraction;
+  const phase = Object.entries(PHASES).find(([key]) => info.message.includes(key))?.[1] ?? "Démarrage";
+  live.text.textContent = `${phase} · ${known ? `${Math.round(info.fraction * 100)} % · encore ≈ ${left} min` : `${Math.floor(seconds / 60)} min ${String(Math.floor(seconds % 60)).padStart(2, "0")} s`}`;
+}
+
+export function denseCard(start: () => void, minutes: number) {
+  const info = denseInfo(), box = el("div", "card");
+  if (!info && status?.dense) return [];
+  const option = Object.assign(el("input"), { type: "checkbox", checked: denseAuto() }), line = el("label", "check");
+  option.onchange = () => localStorage.setItem(AUTO, option.checked ? "1" : "0");
+  line.append(option, "Après chaque scan, le lancer tout seul");
+  if (!info) {
+    live = null;
+    box.append(el("b", "", "Nuage dense"), el("span", "", `Plus de points sur les murs (≈ ${minutes} min). Il calcule en fond : tu peux continuer, les murs seront reproposés à la fin.`), line,
+      row(button("Calculer le nuage dense", "", "Profondeur de chaque pixel sur une partie des photos, en fond", start)));
+    return [box];
+  }
+  live = { bar: Object.assign(el("progress"), { max: 1, ariaLabel: "Avancement du nuage dense" }), text: el("small") };
+  box.setAttribute("role", "status");
+  box.append(el("b", "", "Nuage dense en cours, en fond"), el("span", "", "Plus de points sur les murs. Tu peux continuer : les murs seront reproposés à la fin, sans toucher à ceux que tu as validés."),
+    live.text, live.bar, line, row(button("Arrêter le nuage dense", "", "Arrêter le calcul du nuage dense", () => run(stopDense))));
+  tick();
+  return [box];
+}
+
+document.addEventListener("plans3d:dense", tick);
+window.setInterval(tick, 1000);
 
 export function piecesCard(after: () => void) {
   if (!status?.result || photoInfo().busy) return [];

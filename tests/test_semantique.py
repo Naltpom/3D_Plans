@@ -101,3 +101,30 @@ def test_clip_tokenizer_words(tmp_path, monkeypatch):
     ids = reconnus.encode('A  Bed')
     S.SESSION.pop('tok', None)
     assert ids[:4] == [49406, 320, 2722, 49407] and len(ids) == 77
+
+
+def test_floor_and_ceiling_planes_follow_a_tilted_frame(tmp_path):
+    data, tilt = scene(tmp_path), np.radians(3); rng = np.random.default_rng(2)
+    floor = np.c_[rng.uniform(0.2, 2.3, 300), np.zeros(300), rng.uniform(0.2, 3.0, 300)]
+    data.update(P=np.vstack([data['P'], floor]), L=np.concatenate([data['L'], np.full(300, S.INDEX['sol'], np.uint8)]))
+    data['frame']['R'] = Rotation.from_rotvec([tilt, 0, 0]).as_matrix().tolist(); data['model']['P'] = data['P']
+    low, high, height = S.levels(data)
+    assert abs(low[1] + np.tan(tilt)) < 0.01 and abs(high[1] - low[1]) < 0.02 and abs(height - HEIGHT) < 0.05
+
+
+def test_edge_names_survive_a_new_analysis():
+    frame = {'R': np.eye(3).tolist(), 't': [0.0, 0.0, 0.0], 's_est': 1.0}
+    before = [{'id': 's03', 'axis': 'x', 'position': 1.0, 'a': [1.0, 0.0], 'b': [1.0, 2.0]}, {'id': 's07', 'axis': 'z', 'position': 3.0, 'a': [0.0, 3.0], 'b': [2.0, 3.0]}]
+    edges = [{'id': 's01', 'axis': 'x', 'position': 1.06, 'a': [1.06, 0.5], 'b': [1.06, 2.5]}, {'id': 's02', 'axis': 'z', 'position': 2.5, 'a': [0.0, 2.5], 'b': [2.0, 2.5]}]
+    retired = S.named(edges, before, frame)
+    assert [e['id'] for e in edges] == ['s03', 's08'] and [e['id'] for e in retired] == ['s07'] and edges[0]['raw'] == [1.0, 0.0, 0.0, 1.06]
+
+
+def test_semantic_planes_follow_a_new_frame(tmp_path):
+    import json
+    os.makedirs(S.folder(str(tmp_path))); first = {'R': np.eye(3).tolist(), 't': [0.0, 0.0, 0.0], 's_est': 2.0}
+    edge = {'id': 's01', 'axis': 'x', 'position': 3.0, 'a': [3.0, 0.0], 'b': [3.0, 1.0]}; S.named([edge], [], first)
+    old = {'id': 's09', 'axis': 'z', 'position': 4.0, 'a': [0.0, 4.0], 'b': [1.0, 4.0]}
+    json.dump({'room': {'edges': [edge], 'retired': [old]}}, open(S.summary_path(str(tmp_path)), 'w'))
+    planes = S.semantic_planes(str(tmp_path), {**first, 't': [0.5, 0.0, 0.0]})
+    assert abs(planes['s01']['offset'] - 2.0) < 1e-9 and abs(planes['s09']['offset'] - 2.0) < 1e-9

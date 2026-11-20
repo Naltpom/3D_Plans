@@ -16,6 +16,7 @@ IMAGE_UP = {1: (0, -1, 0), 3: (0, 1, 0), 6: (-1, 0, 0), 8: (1, 0, 0)}
 RUNNING, STOPPED, PROCESSES, PEAKS = set(), set(), {}, {}
 LIVE_POINTS, FEATURES, IMAGE_SIZE, PAIR_INLIERS = 50000, 8192, 2400, 15
 ALIGN_M, FRESH, DENSE_CACHE_GB = 0.05, '.new', '1.5'
+DENSE_SIZE, DENSE_SOURCES, DENSE_ITERATIONS, DENSE_COVER, DENSE_STOP, DENSE_ANGLE_DEG, DENSE_WORK = 800, 8, 3, 3, 0.1, 2.0, 'dense.new'
 PROCESSED = re.compile(r'Name:\s+(\S+)')
 STAGES = ('rotation averaging', 'track establishment', 'global positioning', 'iterative bundle adjustment', 'iterative retriangulation')
 LINE = 'ligne:'
@@ -381,6 +382,12 @@ def reframe(plane, change, shift):
             'low': corners.min(0), 'high': corners.max(0)}
 
 
+def retired(old):
+    k = int(np.abs(old['normal']).argmax()); axis = 'xyz'[k] if abs(old['normal'][k]) > np.cos(np.radians(10)) else ''
+    return {'id': old['id'], 'aliases': old['aliases'], 'axis': axis, 'normal': unit(old['normal']).tolist(), 'offset': float(old['center'][k] if axis else old['center'] @ old['normal']),
+            'bbox': [old['low'].tolist(), old['high'].tolist()]}
+
+
 def same_plane(new, old, tolerance):
     return (abs(np.dot(new['normal'], old['normal'])) > np.cos(np.radians(5)) and abs((old['center'] - plane_center(new)) @ new['normal']) <= tolerance
             and np.all(np.minimum(np.array(new['bbox'][1]), old['high']) >= np.maximum(np.array(new['bbox'][0]), old['low']) - tolerance))
@@ -405,14 +412,15 @@ def frame_and_planes(cache, progress=no_progress):
         points, normals = np.vstack([points, dense_points]), np.vstack([point_normals(points), dense_normals])
     result = find_frame_and_planes(points, centers, ups, normals, previous_x=np.array(previous['R'][0]) if 'R' in previous else None); used = set()
     change = np.array(result['R']) @ np.array(previous.get('R', np.eye(3))).T; shift = np.array(result['t']) - change @ np.array(previous.get('t', np.zeros(3)))
-    old_planes = [reframe(plane, change, shift) for plane in previous['planes']]; tolerance = MERGE_M / result['s_est']
-    next_number = 1 + max([int(plane['id'][1:]) for plane in previous['planes']], default=0)
+    known = previous['planes'] + previous.get('retired', []); old_planes = [reframe(plane, change, shift) for plane in known]; tolerance = MERGE_M / result['s_est']
+    next_number = 1 + max([int(plane['id'][1:]) for plane in known], default=0)
     for plane in result['planes']:
         matches = [old for old in old_planes if old['id'] not in used and same_plane(plane, old, tolerance)]
         if matches: plane['id'] = matches[0]['id']; plane['aliases'] = sorted({alias for old in matches for alias in [old['id'], *old['aliases']]} - {plane['id']})
         else: plane['id'] = f'p{next_number:02d}'; next_number += 1
         used.update([plane['id'], *plane.get('aliases', [])])
-    result['cloud'] = signature; json.dump(result, open(in_cache('frame.json'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
+    result['retired'] = [retired(old) for old in old_planes if old['id'] not in used]
+    result['cloud'] = signature; json.dump(result, open(in_cache('frame.json.tmp'), 'w', encoding='utf-8'), indent=1, ensure_ascii=False); os.replace(in_cache('frame.json.tmp'), in_cache('frame.json'))
     return result
 
 
@@ -671,7 +679,7 @@ def photos_colmap(path, source):
     _, frame, cache = photo_state(project, source); mapping = axis_mapping(project, source); scale = resolved_scale(project, source, frame['s_est'])
     yaw = yaw_name(project, source)
     from .semantique import semantic_planes
-    planes = {**semantic_planes(cache, frame['s_est']), **{name: plane for plane in frame['planes'] for name in [plane['id'], *plane.get('aliases', [])]}}; observations, seen = [], set()
+    planes = {**semantic_planes(cache, frame), **{name: plane for plane in frame.get('retired', []) + frame['planes'] for name in [plane['id'], *plane.get('aliases', [])]}}; observations, seen = [], set()
     for plane_id, expr, sigma_m in project.db.execute('select plane_id, expr, sigma from photos_assoc where source=? order by plane_id', (source,)):
         plane = planes.get(plane_id)
         if not plane or not plane['axis'] or (plane['id'], expr) in seen: continue
@@ -750,28 +758,65 @@ def extract(ctx, source='photos', fresh=False, progress=no_progress):
 
 
 @rpc('photos.densify', long=True)
-def densify(ctx, source='photos', max_size=1000, progress=no_progress):
-    project = ctx.require_project(); meta, _, cache = photo_state(project, source, compute=False); started = time.perf_counter(); STOPPED.discard(cache)
+def densify(ctx, source='photos', max_size=DENSE_SIZE, progress=no_progress):
+    project = ctx.require_project(); meta, _, cache = photo_state(project, source, compute=False); started = time.perf_counter()
     try: return densified(cache, meta, max_size, progress, started)
     except Stopped: return {'stopped': True}
 
 
+def dense_images(model, cover=DENSE_COVER, stop=DENSE_STOP, count=DENSE_SOURCES, angle=DENSE_ANGLE_DEG):
+    owner = np.repeat(np.arange(len(model['P'])), np.diff(model['Tptr'])); total = len(model['q'])
+    seen = coo_matrix((np.ones(len(owner)), (model['Timg'], owner)), shape=(total, len(model['P']))).tocsr(); seen.data[:] = 1
+    need, chosen, first = np.full(len(model['P']), cover), [], 0
+    while len(chosen) < total:
+        gain = seen @ (need > 0); gain[chosen] = -1; best = int(gain.argmax()); first = first or gain[best]
+        if gain[best] <= stop * first: break
+        chosen.append(best); need[seen[best].indices] -= 1
+    centers, sources = camera_centers(model), {}
+    for i in sorted(chosen):
+        scored = []
+        for j in chosen:
+            shared = np.intersect1d(seen[i].indices, seen[j].indices)
+            if j == i or len(shared) < 10: continue
+            a, b = unit_rows(model['P'][shared] - centers[i]), unit_rows(model['P'][shared] - centers[j])
+            if np.median(np.einsum('ij,ij->i', a, b)) <= np.cos(np.radians(angle)): scored.append((len(shared), j))
+        if scored: sources[i] = [j for _, j in sorted(scored, reverse=True)[:count]]
+    return sorted(chosen), sources
+
+
+def replaced(fresh, target):
+    for _ in range(20):
+        try:
+            if os.path.exists(target): os.replace(target, stale := f'{target}.old{time.time_ns()}'); shutil.rmtree(stale, ignore_errors=True)
+            return os.replace(fresh, target)
+        except OSError: time.sleep(.25)
+    raise ValueError(f'dossier bloqué par un autre programme (OneDrive, antivirus ?), réessaie : {target}')
+
+
 def densified(cache, meta, max_size, progress, started):
-    dense = lambda *parts: os.path.join(cache, 'dense', *parts)
-    run_colmap(['image_undistorter', '--image_path', meta.get('image_dir', meta['root']), '--input_path', os.path.join(cache, 'sparse', meta['model']), '--output_path', dense(),
-                '--max_image_size', str(max_size)], os.path.join(cache, 'undistort.log'), progress, 0, .03, 'redressement')
-    run_colmap(['patch_match_stereo', '--workspace_path', dense(), '--PatchMatchStereo.geom_consistency', '1', '--PatchMatchStereo.cache_size', DENSE_CACHE_GB],
-               os.path.join(cache, 'patchmatch.log'), progress, .03, .95, 'profondeurs', line_total=2 * meta['registered'])
-    run_colmap(['stereo_fusion', '--workspace_path', dense(), '--output_path', dense('fused.ply'), '--StereoFusion.cache_size', DENSE_CACHE_GB],
-               os.path.join(cache, 'fusion.log'), progress, .95, .99, 'fusion')
+    work, sparse = os.path.join(cache, DENSE_WORK), os.path.join(cache, 'sparse', meta['model']); at = lambda *parts: os.path.join(work, *parts)
+    lines = [line for line in open(os.path.join(sparse, 'images.txt'), encoding='utf-8') if line[0] != '#']; names = [line.split(maxsplit=9)[9].strip() for line in lines[::2] if line.strip()]
+    emptied(work); STOPPED.discard(work)
+    try:
+        chosen, sources = dense_images(load_model(cache)); write_lines(at('images.txt'), [names[i] for i in chosen])
+        run_colmap(['image_undistorter', '--image_path', meta.get('image_dir', meta['root']), '--input_path', sparse, '--output_path', work, '--image_list_path', at('images.txt'),
+                    '--max_image_size', str(max_size)], at('undistort.log'), progress, 0, .03, 'redressement')
+        write_lines(at('stereo', 'patch-match.cfg'), [line for i, near in sources.items() for line in (names[i], ', '.join(names[j] for j in near))])
+        write_lines(at('stereo', 'fusion.cfg'), [names[i] for i in sources])
+        run_colmap(['patch_match_stereo', '--workspace_path', work, '--PatchMatchStereo.geom_consistency', '1', '--PatchMatchStereo.cache_size', DENSE_CACHE_GB,
+                    '--PatchMatchStereo.num_iterations', str(DENSE_ITERATIONS)], at('patchmatch.log'), progress, .03, .95, 'profondeurs', line_total=2 * len(sources))
+        run_colmap(['stereo_fusion', '--workspace_path', work, '--output_path', at('fused.ply'), '--StereoFusion.cache_size', DENSE_CACHE_GB], at('fusion.log'), progress, .95, .99, 'fusion')
+        replaced(work, os.path.join(cache, 'dense'))
+    except BaseException:
+        shutil.rmtree(work, ignore_errors=True); raise
     frame = frame_and_planes(cache, progress); progress(1.0, 'terminé')
-    return {'dense_points': len(read_ply(dense('fused.ply'))[0]), 'planes': len(frame['planes']), 'total_s': time.perf_counter() - started}
+    return {'dense_points': len(read_ply(os.path.join(cache, 'dense', 'fused.ply'))[0]), 'dense_photos': len(sources), 'planes': len(frame['planes']), 'total_s': time.perf_counter() - started}
 
 
 @rpc('photos.stop')
-def stop(ctx, source='photos'):
+def stop(ctx, source='photos', dense=False):
     _, cache = source_cache(ctx.require_project(), source)
-    for folder in (cache, cache + FRESH):
+    for folder in [os.path.join(cache, DENSE_WORK)] + [cache, cache + FRESH] * (not dense):
         STOPPED.add(folder)
         if process := PROCESSES.get(folder): process.kill()
 

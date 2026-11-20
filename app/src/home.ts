@@ -1,7 +1,7 @@
 import { host } from "./host";
 import { $, button, el, run } from "./ui";
 import { forget, openProject, recent } from "./projects";
-import { photoInfo } from "./photos";
+import { denseInfo, photoInfo } from "./photos";
 
 const home = $("#home");
 const list = $("#home-list");
@@ -18,7 +18,7 @@ function when(iso?: string) {
 }
 
 export function idle() {
-  if (photoInfo().busy) throw new Error("Un calcul de photos est en cours : arrête-le ou attends la fin avant de changer de projet.");
+  if (photoInfo().busy || denseInfo()) throw new Error("Un calcul de photos est en cours : arrête-le ou attends la fin avant de changer de projet.");
 }
 
 export function showHome(on = true) {

@@ -37,8 +37,9 @@ OUTSIDE, FURNITURE = ids('ciel', 'arbre', 'herbe', 'sol_ext'), ids('lit', 'canap
 ON_WALL = ids('mur', 'porte', 'fenetre', 'tableau', 'radiateur', 'rideau')
 BACKGROUND = ids('mur', 'sol', 'plafond', 'porte', 'fenetre', 'rideau', 'tableau', 'radiateur', 'ciel', 'arbre', 'herbe', 'sol_ext', 'batiment', 'personne')
 SIZE, VERSION, MAX_DENSE = 768, 1, 1_500_000
-CELL_M, BAND_M, LINE_M, NMS_M, SUPPORT_M, RANGE_M, WALL_CELL_M, REFINE_M, ASSOC_M = 0.05, 0.04, 0.02, 0.3, 0.4, 8.0, 0.05, 0.4, 0.05
-LOCK, SESSION = threading.Lock(), {}
+CELL_M, BAND_M, LINE_M, NMS_M, SUPPORT_M, RANGE_M, WALL_CELL_M, REFINE_M, ASSOC_M, MAX_SLOPE = 0.05, 0.04, 0.02, 0.3, 0.4, 8.0, 0.05, 0.4, 0.05, 0.1
+LOCK, COMPUTE, SESSION, KEEP_M = threading.Lock(), threading.RLock(), {}, 0.1
+PUSH_M, PUSH_MIN, PUSH_SHARE, PARALLEL_SLOPE = 0.5, 20, 0.4, 0.05
 
 
 def path(name): return os.path.join(FOLDER, name + os.path.splitext(FILES[name][0])[1])
@@ -195,14 +196,13 @@ def points_signature(cache, model):
 def labelled(project, source):
     meta, frame, cache = photos.photo_state(project, source, compute=False); model = photos.load_model(cache); file = folder(cache, 'points.npz')
     if not os.path.isdir(folder(cache, 'cartes')): return None
-    signature = points_signature(cache, model)
-    if os.path.exists(file):
-        with np.load(file) as saved:
-            if str(saved['signature']) == signature: data = dict(saved)
-            else: data = None
-    else: data = None
-    if data is None:
-        points, labels, share = label_points(meta, cache, model); data = {'P': points, 'L': labels, 'S': share, 'signature': signature}; np.savez(file, **data)
+    signature, data = points_signature(cache, model), None
+    with COMPUTE:
+        if os.path.exists(file):
+            with np.load(file) as saved:
+                if str(saved['signature']) == signature: data = dict(saved)
+        if data is None:
+            points, labels, share = label_points(meta, cache, model); data = {'P': points, 'L': labels, 'S': share, 'signature': signature}; np.savez(file, **data)
     step = 0.06 / frame['s_est']
     return {'P': data['P'], 'L': apply_corrections(data['P'], data['L'], cache, step), 'S': data['S'], 'frame': frame, 'cache': cache, 'model': model, 'meta': meta}
 
@@ -217,39 +217,81 @@ def classify(project, source, points):
 def to_frame(frame, points): return (np.asarray(points, float) @ np.array(frame['R']).T + frame['t']) * frame['s_est']
 
 
-def rays(model, i, frame, rows_cols, mask):
-    r, c = np.nonzero(mask); (width, height), (rows, cols) = model['wh'][i], rows_cols
+def rays(model, i, frame, rows_cols, mask=None, r=None, c=None):
+    if mask is not None: r, c = np.nonzero(mask)
+    (width, height), (rows, cols) = model['wh'][i], rows_cols
     x, y = photos.undistort(model['K'][i], (c + 0.5) * width / cols, (r + 0.5) * height / rows)
     rotation = np.array(frame['R']) @ photos.rotation_matrices(model['q'][i:i + 1])[0].T
     directions = np.stack([x, y, np.ones_like(x)], 1) @ rotation.T
     return directions / np.linalg.norm(directions, axis=1, keepdims=True)
 
 
-def at_level(origin, directions, level):
-    with np.errstate(divide='ignore', invalid='ignore'): t = (level - origin[1]) / directions[:, 1]
+def at_level(origin, directions, plane):
+    a, b, c = (0.0, 0.0, plane) if np.isscalar(plane) else plane
+    with np.errstate(divide='ignore', invalid='ignore'): t = (a * origin[0] + b * origin[2] + c - origin[1]) / (directions[:, 1] - a * directions[:, 0] - b * directions[:, 2])
     ok = (t > 0) & (t < RANGE_M)
     return origin + t[ok, None] * directions[ok], ok
 
 
-def ceiling_level(data, points):
-    flat = [p for p in data['frame']['planes'] if p['axis'] == 'y' and p['offset'] * data['frame']['s_est'] > 1.8]
-    up = points[data['L'] == INDEX['plafond'], 1]
-    if len(up) >= 30 and np.subtract(*np.percentile(up, [75, 25])) < 0.15: return float(np.median(up))
-    return float(max(flat, key=lambda p: p['n'])['offset'] * data['frame']['s_est']) if flat else None
+def level_at(plane, xz): return plane[0] * xz[..., 0] + plane[1] * xz[..., 1] + plane[2]
+
+
+def fit_plane(p, minimum):
+    if len(p) < minimum: return None
+    A, w = np.c_[p[:, 0], p[:, 2], np.ones(len(p))], np.ones(len(p))
+    for _ in range(10):
+        coef = np.linalg.lstsq(A * w[:, None], p[:, 1] * w, rcond=None)[0]; w = 1 / np.maximum(np.abs(p[:, 1] - A @ coef), 0.02)
+    if np.abs(coef[:2]).max() > MAX_SLOPE: coef = np.array([0.0, 0.0, np.median(p[:, 1])])
+    return coef
+
+
+def ceiling_samples(data, centers, floor):
+    model, frame, found = data['model'], data['frame'], []
+    for i, name in enumerate(model['names']):
+        raw = read_map(data['cache'], name)
+        if raw is None: continue
+        turn = {3: 2, 6: -1, 8: 1}.get(int(model['orientation'][i]), 0); labels = np.rot90(raw, turn); rows = np.arange(labels.shape[0])[:, None]
+        top = np.where(np.isin(labels, ids('plafond')) & ndimage.binary_dilation(np.isin(labels, CEILING_EDGE)), rows, -1).max(0)
+        low = np.where(np.isin(labels, ids('sol')) & ndimage.binary_dilation(np.isin(labels, FLOOR_EDGE)) & (rows > top), rows, labels.shape[0]).min(0)
+        wall = np.vstack([np.zeros((1, labels.shape[1])), np.cumsum(np.isin(labels, FLOOR_EDGE), 0)]); cols = np.arange(labels.shape[1])
+        ok = (top >= 0) & (low < labels.shape[0]) & (low - top > 2)
+        ok[ok] &= (wall[low[ok], cols[ok]] - wall[top[ok] + 1, cols[ok]]) >= 0.9 * (low[ok] - top[ok] - 1)
+        if not ok.any(): continue
+        index = np.rot90(np.indices(raw.shape), turn, axes=(1, 2))
+        pick = lambda r: (index[0][r, cols[ok]], index[1][r, cols[ok]])
+        down, up = (rays(model, i, frame, raw.shape, None, *pick(r)) for r in (low[ok], top[ok]))
+        hit, kept = at_level(centers[i], down, floor); up = up[kept]; reach = np.linalg.norm(hit[:, [0, 2]] - centers[i, [0, 2]], axis=1)
+        flat = np.linalg.norm(up[:, [0, 2]], axis=1); good = flat > 1e-6
+        found.append(centers[i] + up[good] * (reach[good] / flat[good])[:, None])
+    return np.vstack(found) if found else np.zeros((0, 3))
+
+
+def levels(data):
+    if 'levels' in data: return data['levels']
+    frame = data['frame']; points, centers = to_frame(frame, data['P']), to_frame(frame, photos.camera_centers(data['model'])); middle = centers[:, [0, 2]].mean(0)
+    floor = fit_plane(points[(data['L'] == INDEX['sol']) & (np.abs(points[:, 1]) < 0.3)], 50)
+    floor = np.zeros(3) if floor is None else floor; above = np.vstack([ceiling_samples(data, centers, floor), points[data['L'] == INDEX['plafond']]])
+    ceiling = fit_plane(above, 20)
+    if ceiling is not None and np.abs(ceiling[:2] - floor[:2]).max() > PARALLEL_SLOPE: ceiling = np.array([*floor[:2], np.median(above[:, 1] - floor[0] * above[:, 0] - floor[1] * above[:, 2])])
+    flat = [p for p in frame['planes'] if p['axis'] == 'y' and p['offset'] * frame['s_est'] > 1.8]
+    if ceiling is None and flat: ceiling = np.array([0.0, 0.0, max(flat, key=lambda p: p['n'])['offset'] * frame['s_est']])
+    data['levels'] = floor, ceiling, None if ceiling is None else float(level_at(ceiling, middle) - level_at(floor, middle))
+    return data['levels']
 
 
 def evidence(data):
-    frame, model = data['frame'], data['model']; points = to_frame(frame, data['P']); height = ceiling_level(data, points)
-    centers = to_frame(frame, photos.camera_centers(model)); wall = np.isin(data['L'], WALL_POINTS) & (points[:, 1] > 0.2) & (points[:, 1] < (height or 2.4) - 0.1)
+    frame, model = data['frame'], data['model']; floor, ceiling, height = levels(data)
+    points, centers = to_frame(frame, data['P']), to_frame(frame, photos.camera_centers(model)); above = points[:, 1] - level_at(floor, points[:, [0, 2]])
+    wall = np.isin(data['L'], WALL_POINTS) & (above > 0.2) & (above < (height or 2.4) - 0.1)
     samples, owners = [points[wall][:, [0, 2]]], [np.full(wall.sum(), -1)]
     for i, name in enumerate(model['names']):
         labels = read_map(data['cache'], name)
         if labels is None: continue
-        edges = [(np.isin(labels, ids('sol')) & ndimage.binary_dilation(np.isin(labels, FLOOR_EDGE)), 0.0)]
-        if height: edges.append((np.isin(labels, ids('plafond')) & ndimage.binary_dilation(np.isin(labels, CEILING_EDGE)), height))
-        for mask, level in edges:
+        edges = [(np.isin(labels, ids('sol')) & ndimage.binary_dilation(np.isin(labels, FLOOR_EDGE)), floor)]
+        if height: edges.append((np.isin(labels, ids('plafond')) & ndimage.binary_dilation(np.isin(labels, CEILING_EDGE)), ceiling))
+        for mask, plane in edges:
             if mask.any():
-                hit, _ = at_level(centers[i], rays(model, i, frame, labels.shape, mask), level); samples.append(hit[:, [0, 2]]); owners.append(np.full(len(hit), i))
+                hit, _ = at_level(centers[i], rays(model, i, frame, labels.shape, mask), plane); samples.append(hit[:, [0, 2]]); owners.append(np.full(len(hit), i))
     return np.vstack(samples), np.concatenate(owners), centers, height, points
 
 
@@ -329,7 +371,17 @@ def wall_planes(data, points):
     return found
 
 
-def refine(polygon, candidates):
+def outer_wall(walls, axis, position, out, low, high):
+    inside = walls[(walls[:, 1 - axis] >= low + 0.1) & (walls[:, 1 - axis] <= high - 0.1)]; gap = (inside[:, axis] - position) * out
+    counts = np.bincount(((gap[(gap > -0.1) & (gap < PUSH_M)] + 0.1) / 0.05).astype(int), minlength=int((PUSH_M + 0.1) / 0.05))
+    strong = np.flatnonzero(counts >= max(PUSH_MIN, PUSH_SHARE * counts.max())) if len(inside) else []
+    if not len(strong) or strong[-1] * 0.05 - 0.1 <= 0.05: return None
+    band = np.abs(gap - (strong[-1] * 0.05 - 0.075)) <= 0.075
+    if len(np.unique(((inside[band, 1 - axis] - low) / 0.1).astype(int))) < 0.3 * (high - low - 0.2) / 0.1: return None
+    return float(position + out * np.median(gap[band]))
+
+
+def refine(polygon, candidates, walls):
     corners = np.array(polygon, float); count = len(corners); area = 0.5 * np.sum(corners[:, 0] * np.roll(corners[:, 1], -1) - np.roll(corners[:, 0], -1) * corners[:, 1])
     edges = []
     for k in range(count):
@@ -338,6 +390,7 @@ def refine(polygon, candidates):
         here = [c for c in candidates[axis] if abs(c[0] - position) < 1e-6]; kind = here[0][1] if here else kind
         options = [c for c in candidates[axis] if c[1] == 'plan' and 0 < (c[0] - position) * out <= REFINE_M and min(c[2], high) - max(c[3], low) > 0.3 * (high - low)]
         if options: position, kind = max(options, key=lambda c: (c[0] - position) * out)[0], 'plan'
+        if (pushed := outer_wall(walls, axis, position, out, low, high)) is not None: position, kind = pushed, 'pic'
         edges.append([axis, position, kind, out])
     rebuilt = [[edges[k][1], edges[k - 1][1]] if edges[k][0] == 0 else [edges[k - 1][1], edges[k][1]] for k in range(count)]
     return rebuilt, edges
@@ -366,7 +419,7 @@ def outline(samples, owners, centers, planes):
     centre = [np.searchsorted(xs, centers[:, 0]) - 1, np.searchsorted(zs, centers[:, 2]) - 1]; ok = (centre[0] >= 0) & (centre[0] < len(xs) - 1) & (centre[1] >= 0) & (centre[1] < len(zs) - 1)
     votes = np.bincount(labels[centre[0][ok], centre[1][ok]], minlength=count + 1)[1:] if ok.any() else np.bincount(labels.ravel(), minlength=count + 1)[1:]
     polygon = loops(ndimage.binary_fill_holes(labels == votes.argmax() + 1), xs, zs)
-    return refine(polygon, candidates) if len(polygon) >= 4 else None
+    return refine(polygon, candidates, samples[owners < 0]) if len(polygon) >= 4 else None
 
 
 def edge_support(samples, axis, position, low, high):
@@ -390,7 +443,8 @@ def room(data):
 
 
 def wall_hits(data, edges, height):
-    frame, model = data['frame'], data['model']; centers = to_frame(frame, photos.camera_centers(model)); top = height or 2.5
+    frame, model, floor = data['frame'], data['model'], levels(data)[0]; centers = to_frame(frame, photos.camera_centers(model)); top = height or 2.5
+    rise = lambda hit: hit[:, 1] - level_at(floor, hit[:, [0, 2]])
     grids = [np.zeros((int(np.ceil(e['length'] / WALL_CELL_M)) + 1, int(np.ceil(top / WALL_CELL_M)) + 1, len(KEYS)), np.int32) for e in edges]; seen = [set() for _ in edges]
     for i, name in enumerate(model['names']):
         labels = read_map(data['cache'], name)
@@ -400,13 +454,13 @@ def wall_hits(data, edges, height):
             axis = 'xz'.index(e['axis']) * 2; other = 2 - axis
             with np.errstate(divide='ignore', invalid='ignore'): t = (e['position'] - centers[i][axis]) / directions[:, axis]
             hit = centers[i] + t[:, None] * directions; low, high = sorted((e['a'][1 - axis // 2], e['b'][1 - axis // 2]))
-            ok = (t > 0) & (t < best) & (hit[:, other] >= low) & (hit[:, other] <= high) & (hit[:, 1] >= 0) & (hit[:, 1] <= top)
+            ok = (t > 0) & (t < best) & (hit[:, other] >= low) & (hit[:, other] <= high) & (rise(hit) >= 0) & (rise(hit) <= top)
             best[ok], owner[ok] = t[ok], k
         for k, e in enumerate(edges):
             pick = owner == k
             if not pick.any(): continue
             axis = 'xz'.index(e['axis']) * 2; other = 2 - axis; hit = centers[i] + best[pick, None] * directions[pick]; start = min(e['a'][1 - axis // 2], e['b'][1 - axis // 2])
-            u, v = ((hit[:, other] - start) / WALL_CELL_M).astype(int).clip(0, grids[k].shape[0] - 1), (hit[:, 1] / WALL_CELL_M).astype(int).clip(0, grids[k].shape[1] - 1)
+            u, v = ((hit[:, other] - start) / WALL_CELL_M).astype(int).clip(0, grids[k].shape[0] - 1), (rise(hit) / WALL_CELL_M).astype(int).clip(0, grids[k].shape[1] - 1)
             np.add.at(grids[k], (u, v, classes[pick]), 1)
             if pick.sum() >= 20: seen[k].add(i)
     return grids, [len(found) for found in seen]
@@ -459,19 +513,36 @@ def scene(data):
 def summary_path(cache): return folder(cache, 'piece.json')
 
 
+def span(e):
+    axis = 'xz'.index(e['axis']); return sorted((e['a'][1 - axis], e['b'][1 - axis]))
+
+
+def named(edges, before, frame):
+    top, used, k = max([int(e['id'][1:]) for e in before if e['id'][1:].isdigit()], default=0), set(), lambda e: 'xz'.index(e['axis']) * 2
+    for e in edges:
+        same = [p for p in before if p['id'] not in used and p['axis'] == e['axis'] and abs(p['position'] - e['position']) <= KEEP_M and min(span(p)[1], span(e)[1]) > max(span(p)[0], span(e)[0])]
+        if same: e['id'] = min(same, key=lambda p: abs(p['position'] - e['position']))['id']
+        else: top += 1; e['id'] = f's{top:02d}'
+        used.add(e['id']); e['raw'] = [*frame['R'][k(e)], e['position'] / frame['s_est'] - frame['t'][k(e)]]
+    return [p for p in before if p['id'] not in used]
+
+
 def understand(project, source, force=False):
     data = labelled(project, source)
     if data is None: return None
     file = summary_path(data['cache']); signature = f"{points_signature(data['cache'], data['model'])}:{len(corrections(data['cache']))}:{os.path.getmtime(folder(data['cache'], 'corrections.json')) if corrections(data['cache']) else 0}"
-    if not force and os.path.exists(file) and (saved := photos.load_json(file)).get('signature') == signature: return {**saved, 'data': data}
-    points = to_frame(data['frame'], data['P']); place = scene(data); shape = room(data) if place['place'] != 'dehors' else None
-    if shape:
-        for edge, grid, count in zip(shape['edges'], *wall_hits(data, shape['edges'], shape['height'])):
-            edge.update(wall_share=float(grid[:, :, INDEX['mur']].sum() / max(grid.sum(), 1)), openings=openings(grid), photos=count)
-    result = {'signature': signature, 'scene': place, 'room': shape, 'device': None,
-              'lights': objects(data, points, ['lampe'], 8), 'furniture': objects(data, points, KEYS[INDEX['lit']:INDEX['personne']]),
-              'counts': {KEYS[k]: int(c) for k, c in enumerate(np.bincount(data['L'], minlength=len(KEYS))) if c}}
-    json.dump(result, open(file, 'w', encoding='utf-8'), ensure_ascii=False)
+    with COMPUTE:
+        saved = photos.load_json(file) if os.path.exists(file) else {}
+        if not force and saved.get('signature') == signature: return {**saved, 'data': data}
+        points = to_frame(data['frame'], data['P']); place = scene(data); shape = room(data) if place['place'] != 'dehors' else None
+        if shape:
+            for edge, grid, count in zip(shape['edges'], *wall_hits(data, shape['edges'], shape['height'])):
+                edge.update(wall_share=float(grid[:, :, INDEX['mur']].sum() / max(grid.sum(), 1)), openings=openings(grid), photos=count)
+            before = saved.get('room') or {}; shape['retired'] = named(shape['edges'], before.get('edges', []) + before.get('retired', []), data['frame'])
+        result = {'signature': signature, 'scene': place, 'room': shape, 'device': None,
+                  'lights': objects(data, points, ['lampe'], 8), 'furniture': objects(data, points, KEYS[INDEX['lit']:INDEX['personne']]),
+                  'counts': {KEYS[k]: int(c) for k, c in enumerate(np.bincount(data['L'], minlength=len(KEYS))) if c}}
+        json.dump(result, open(file + '.tmp', 'w', encoding='utf-8'), ensure_ascii=False); os.replace(file + '.tmp', file)
     return {**result, 'data': data}
 
 
@@ -496,17 +567,26 @@ def status(ctx, source='photos'):
 
 
 @rpc('semantique.analyse', long=True)
-def analyse(ctx, source='photos', dense=False, progress=None):
+def analyse(ctx, source='photos', progress=None):
     progress = progress or photos.no_progress; project = ctx.require_project(); meta, _, cache = photos.photo_state(project, source, compute=False)
-    model = photos.load_model(cache); photos.STOPPED.discard(cache); started = time.perf_counter(); split = 0.25 if dense and not dense_signature(cache) else 0.9
+    model = photos.load_model(cache); photos.STOPPED.discard(cache); started = time.perf_counter()
     try:
         if not installed(): install(lambda f, m='': progress(0.3 * f, m))
-        segmented = segment_all(meta, cache, model, progress, 0.3 if not installed() else 0.0, split)
-        if dense and not dense_signature(cache): photos.densified(cache, meta, 1000, lambda f, m='': progress(split + (0.95 - split) * f, m), started)
-        progress(0.96, 'étiquettes des points et murs'); result = public(understand(project, source, force=True))
+        segmented = segment_all(meta, cache, model, progress, 0.3 if not installed() else 0.0, 0.9)
+        progress(0.92, 'étiquettes des points et murs'); result = public(understand(project, source, force=True))
     except photos.Stopped: return {'stopped': True}
     progress(1.0, 'terminé')
     return {**result, 'segmented': segmented, 'device': device(), 'total_s': round(time.perf_counter() - started, 1)}
+
+
+@rpc('semantique.dense', long=True)
+def dense(ctx, source='photos', progress=None):
+    progress = progress or photos.no_progress; project = ctx.require_project(); meta, _, cache = photos.photo_state(project, source, compute=False); started = time.perf_counter()
+    try: done = photos.densified(cache, meta, photos.DENSE_SIZE, lambda f, m='': progress(0.9 * f, m), started)
+    except photos.Stopped: return {'stopped': True}
+    progress(0.92, 'étiquettes des points et murs'); result = public(understand(project, source, force=True)) if os.path.isdir(folder(cache, 'cartes')) else None
+    progress(1.0, 'terminé')
+    return {**(result or {}), **done, 'total_s': round(time.perf_counter() - started, 1)}
 
 
 @rpc('semantique.corriger')
@@ -529,9 +609,12 @@ def annuler(ctx, source='photos'):
     return public(understand(project, source))
 
 
-def semantic_planes(cache, scale):
-    file = summary_path(cache); room = photos.load_json(file).get('room') if os.path.exists(file) else None
-    return {e['id']: {'id': e['id'], 'axis': e['axis'], 'offset': e['position'] / scale} for e in room['edges']} if room else {}
+def semantic_planes(cache, frame):
+    file = summary_path(cache); room = (photos.load_json(file).get('room') if os.path.exists(file) else None) or {}; planes = {}
+    for e in room.get('edges', []) + room.get('retired', []):
+        k, m = 'xz'.index(e['axis']) * 2, np.array(frame['R']) @ e['raw'][:3] if 'raw' in e else None
+        planes.setdefault(e['id'], {'id': e['id'], 'axis': e['axis'], 'offset': float((e['raw'][3] + m @ frame['t']) / m[k]) if m is not None else e['position'] / frame['s_est']})
+    return planes
 
 
 def projector(project, source, frame):

@@ -1,10 +1,10 @@
 import os
 import numpy as np
 from . import components, groupes, photos
-from .rpc import read_cotes, rpc, write_cotes
+from .rpc import RpcError, read_cotes, rpc, write_cotes
 
 MERGE_M, ASSOC_M, SPAN_M, TOP_M, LENGTH_M, SURE_LENGTH_M, CORNER_M, FRONT_M, FLOOR_M, CEILING_M = 0.1, 0.03, 0.8, 1.3, 0.5, 1.0, 0.75, 0.1, 0.2, 1.8
-SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 13, 'echelle', 1.0
+SURE_POINTS, SURE_SHARE, DENSIFY_S_PER_PHOTO, SCALE_COTE, FRONT_MAX_M = 200, 0.01, 2, 'echelle', 1.0
 LETTERS, KEPT, SEMANTIC_SIGMA_M = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', ('cadastre', 'gabarit'), (0.1, 0.03)
 SEE_M, SEE_BAND_M, SEE_SHARE, SEE_CELL_M, MOVED_POINTS, MOVED_SHARE = 0.2, 0.45, 0.5, 0.1, 20, 0.5
 FURNITURE, MOVED = 'meuble : on voit la pièce au-dessus', 'meuble : déplacé entre deux séances'
@@ -120,7 +120,7 @@ def proposals(project, source, raw=False):
     return {'walls': walls, 'floor': floor, 'ceiling': ceiling, 'room': understood and understood['summary'],
             'ceiling_height': height and float(to_project([0, height if understood else height / frame['s_est'], 0])[1] - to_project([0, 0, 0])[1]),
             'measure': max(closed, key=lambda wall: wall['length'])['component'] if closed else None,
-            'dense': not frame['cloud'].endswith('épars'), 'densify_min': max(1, round(meta['registered'] * DENSIFY_S_PER_PHOTO / 60))}
+            'version': understood and understood['version'], 'dense': not frame['cloud'].endswith('épars'), 'densify_min': max(1, round(meta['registered'] * DENSIFY_S_PER_PHOTO / 60))}
 
 
 def semantic_walls(project, source, frame, to_project, mapping):
@@ -139,7 +139,7 @@ def semantic_walls(project, source, frame, to_project, mapping):
                       'length': float(np.linalg.norm(ends[1] - ends[0])), 'height': float(at(e['a'], height)[1] - at(e['a'])[1]), 'n': e['n'], 'photos': int(e.get('photos', 0)),
                       'sure': not reason, 'reason': reason, 'meuble': False, 'planes': e['planes'] or [e['id']], 'sigma': None if e['planes'] else SEMANTIC_SIGMA_M[bool(e['seen'])],
                       'sens': float(np.sign(ends[0][k] - inner[k]) or 1.0), 'component': None, 'angles': {'a': None, 'b': None}, 'closure': not e['seen']})
-    return {'walls': walls, 'height': room['height'], 'summary': {'closed': all(e['seen'] for e in room['edges']), 'missing': [w['id'] for w in walls if w['closure']],
+    return {'walls': walls, 'height': room['height'], 'version': found['signature'], 'summary': {'closed': all(e['seen'] for e in room['edges']), 'missing': [w['id'] for w in walls if w['closure']],
                                                                     'meubles': sorted({p['kind'] for p in room['furniture_planes']})}}
 
 
@@ -173,8 +173,9 @@ def propose_walls(ctx, source='photos'):
 
 
 @rpc('photos.create_walls')
-def create_walls(ctx, source, walls):
+def create_walls(ctx, source, walls, version=None):
     project = ctx.require_project(); found = proposals(project, source); chosen = [wall for wall in found['walls'] if wall['id'] in walls]
+    if version and found['version'] and version != found['version']: raise RpcError('les murs viennent d’être reproposés : vérifie-les, puis valide')
     if {wall['axis'] for wall in chosen} != {'x', 'z'}: raise ValueError('il faut au moins un mur dans chaque direction')
     photos.ensure_schema(project); clear(project, source)
     origin = {axis: min((w for w in chosen if w['axis'] == axis), key=lambda w: w['position']) for axis in 'xz'}

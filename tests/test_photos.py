@@ -260,3 +260,21 @@ def test_stop_and_thumbnail(tmp_path, monkeypatch):
     def stopped(arguments, *rest, **options): raise photos.Stopped('calcul arrêté')
     monkeypatch.setattr(photos, 'run_colmap', stopped)
     assert photos.extract(ctx) == {'stopped': True} and photos.source_status(project, 'photos', photos.source_cache(project, 'photos')[0])['state'] == 'à calculer'
+
+
+def test_dense_images_keep_a_well_spread_subset():
+    xs = np.linspace(0, 4, 40); points = np.c_[np.linspace(-0.5, 4.5, 500), np.tile([0.5, 1.0, 1.5, 2.0], 125), np.full(500, 3.0)]
+    q = np.tile([1.0, 0, 0, 0], (40, 1)); t = -np.c_[xs, np.full(40, 1.4), np.zeros(40)]
+    seen = [(p, i) for p in range(500) for i in range(40) if abs(points[p, 0] - xs[i]) < 1.2]
+    owner, image = np.array(seen).T; counts = np.bincount(owner, minlength=500)
+    model = {'q': q, 't': t, 'P': points, 'Tptr': np.r_[0, np.cumsum(counts)], 'Timg': image[np.argsort(owner, kind='stable')]}
+    chosen, sources = photos.dense_images(model)
+    assert 5 <= len(chosen) < 30 and set(sources) <= set(chosen) and all(i not in near and set(near) <= set(chosen) and 0 < len(near) <= photos.DENSE_SOURCES for i, near in sources.items())
+    views = np.array([sum(abs(points[p, 0] - xs[i]) < 1.2 for i in chosen) for p in range(500)])
+    assert (views >= np.minimum(3, counts)).mean() > 0.95
+
+
+def test_lost_plane_kept_in_new_frame():
+    old = {'id': 'p07', 'aliases': ['p02'], 'axis': 'x', 'normal': [1.0, 0.0, 0.0], 'offset': 2.0, 'bbox': [[2.0, 0.0, -1.0], [2.0, 2.5, 1.0]]}
+    kept = photos.retired(photos.reframe(old, np.eye(3), np.array([0.5, 0.0, 0.0])))
+    assert kept['id'] == 'p07' and kept['aliases'] == ['p02'] and kept['axis'] == 'x' and abs(kept['offset'] - 2.5) < 1e-9 and photos.reframe(kept, np.eye(3), np.zeros(3))['center'][0] == 2.5

@@ -2,13 +2,13 @@ import { call, host, onEvent } from "./host";
 import { $, button, cm, el, number, run } from "./ui";
 import { addSources, openProject, refreshSources, remember, update, type UpdateResult } from "./projects";
 import { idle, showHome } from "./home";
-import { autoPositions, closeGuided, openGuided, photoInfo, photoTask, previewPose, stopTask } from "./photos";
+import { autoPositions, closeGuided, denseInfo, denseTask, openGuided, photoInfo, photoTask, previewPose, stopDense, stopTask } from "./photos";
 import { fourPaint, fourStep, hidePlan, reread, resetFour, type Helpers } from "./murs";
 import { closeDrawing, drawingOpen, drawingStep, openDrawing, type Helpers as DrawHelpers } from "./dessin";
 import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
-import { loadUnderstanding, piecesCard, understandCard } from "./comprendre";
+import { denseAuto, denseCard, loadUnderstanding, piecesCard, understandCard } from "./comprendre";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { phoneCheck } from "./telephone";
 import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
@@ -22,7 +22,7 @@ type Info = { name: string; path: string; guide?: Guide };
 type Source = { id: string; path: string; kind: string; obs: number; photos?: number; registered?: number | null; state?: string; error?: string };
 type End = "a" | "b";
 type Wall = { id: string; label: string; axis: string; a: number[]; b: number[]; length: number; height: number; n: number; photos: number; sure: boolean; reason: string; meuble?: boolean; closure?: boolean; component: string | null; angles: Record<End, string | null> };
-type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number; room?: { closed: boolean; missing: string[] } | null };
+type Proposal = { walls: Wall[]; measure: string | null; dense: boolean; densify_min: number; version?: string | null; room?: { closed: boolean; missing: string[] } | null };
 type Candidate = { label: string; expr: string; sigma: number };
 type Reading = { walls: { points: number[][]; closed: boolean; length: number }[]; openings: { type: string; point: number[] }[];
   cotes: { texte: string; value_cm: number; drawn_m: number | null; ok: boolean; message: string; wall: number | null; edge: number | null }[] } | null;
@@ -51,12 +51,10 @@ const BODY: [string, string, string][] = [["longueur", "Longueur utile", "330"],
 const PHASES: Record<string, [string, string][]> = {
   "photos.extract": [["points clés", "Repérage des détails sur chaque photo"], ["appariement", "Mise en relation des photos"],
     ["poses", "Calcul de la position de chaque photo"], ["plans", "Recherche des murs, du sol et du plafond"]],
-  "photos.densify": [["redressement", "Préparation des photos"], ["profondeurs", "Calcul de la profondeur de chaque pixel"],
-    ["fusion", "Fusion en un nuage dense"], ["plans", "Recherche des murs"]],
   "tools.install": [["", "Téléchargement et installation de COLMAP"]],
 };
 PHASES["semantique.analyse"] = [["téléchargement", "Téléchargement du modèle (une seule fois)"], ["photo", "Reconnaissance des objets sur chaque photo"],
-  ["profondeurs", "Nuage dense"], ["étiquettes", "Étiquettes des points, murs et ouvertures"]];
+  ["étiquettes", "Étiquettes des points, murs et ouvertures"]];
 PHASES["meubles.reconnus"] = [["téléchargement", "Téléchargement du modèle image-texte (une seule fois)"], ["comparaison", "Comparaison au catalogue IKEA"]];
 PHASES["photos.restart"] = [...PHASES["photos.extract"].slice(0, 3), ["recalage", "Recalage sur l'ancien calcul"], PHASES["photos.extract"][3]];
 const KINDS: Record<string, string> = { cotes_csv: "Cotes", photos_colmap: "Photos", cadastre_pdf: "Cadastre", cadastre_geojson: "Cadastre", grille_alti: "Relief" };
@@ -93,6 +91,7 @@ let vision: { vision_ready?: boolean } | null = null;
 let detail = "";
 let everything = false;
 let fitted: { pairs: string[][]; scale_known: boolean } | null = null;
+let denseNote: { title: string; text: string; again: boolean } | null = null;
 const shown = () => everything ? walls() : walls().filter((w, i, all) => w.component || checked.has(w.id) || [...all].sort((a, b) => Number(b.sure) - Number(a.sure) || b.n - a.n).indexOf(w) < 6);
 let built: Built[] = [];
 let land: Cadastre = null;
@@ -371,14 +370,52 @@ function alert(title: string, text: string) {
 
 async function startScan(mode = guide.type === "maison" ? "facades" : "piece") {
   if (!photoInfo().installed) await photoTask("tools.install");
+  if (denseInfo()) await stopDense();
   await openScan(render);
-  const done = await photoTask("scan.live", { source: photoSource()?.id ?? "photos", mode }).finally(render);
-  if (mode === "piece" && done?.registered && guide.type === "piece") await photoTask("semantique.analyse", { dense: true }).finally(render);
+  const source = photoSource()?.id ?? "photos", done = await photoTask("scan.live", { source, mode }).finally(render);
+  if (mode !== "piece" || !done?.registered || guide.type !== "piece") return;
+  const analysed = await photoTask("semantique.analyse", { source }).finally(render);
+  if (analysed?.stopped) return;
+  if (key() === "positions") await complete(guide.step);
+  if (denseAuto()) void run(() => denseInBackground(source));
+}
+
+const extent = (list: Wall[]) => {
+  const xs = list.flatMap((w) => [w.a[0], w.b[0]]), zs = list.flatMap((w) => [w.a[1], w.b[1]]);
+  return list.length ? `${number(Math.max(...xs) - Math.min(...xs), 2)} × ${number(Math.max(...zs) - Math.min(...zs), 2)} m` : "";
+};
+const across = (w: Wall) => w.axis === "x" ? w.a[0] : w.a[1];
+const along = (w: Wall) => (w.axis === "x" ? [w.a[1], w.b[1]] : [w.a[0], w.b[0]]).sort((p, q) => p - q);
+const alike = (u: Wall, w: Wall) => u.axis === w.axis && Math.abs(across(u) - across(w)) <= 0.15 && Math.min(along(u)[1], along(w)[1]) > Math.max(along(u)[0], along(w)[0]);
+
+async function denseInBackground(source = photoInfo().source) {
+  const task = denseTask(source);
+  render();
+  const done = await task;
+  if (!done || done.stopped || !info) return render();
+  const before = walls(), off = before.filter((w) => (w.sure || w.closure) && !w.component && !checked.has(w.id)), validated = created().length > 0;
+  await loadProposal(true);
+  if (!validated) checked = new Set([...checked].filter((id) => !off.some((w) => alike(w, walls().find((n) => n.id === id)!))));
+  denseNote = validated ? { title: "Nuage dense prêt", text: `Il propose ${plural(walls().length, "mur")}, ${extent(walls())}. Tes murs validés restent tels quels ; tu peux reprendre les murs proposés, puis valider à nouveau.`, again: true }
+    : { title: "Murs reproposés avec le nuage dense", text: `${extent(walls())} (avant : ${extent(before)}).${off.length ? " Les murs que tu avais décochés le restent." : ""}`, again: false };
+  render();
+  paint();
+}
+
+function noteCard() {
+  if (!denseNote) return [];
+  const close = () => { denseNote = null; render(); paint(); };
+  if (!denseNote.again) return [card(denseNote.title, denseNote.text)];
+  return [card(denseNote.title, denseNote.text, button("Reprendre les murs proposés", "", "Cocher les murs du nuage dense ; valide ensuite pour remplacer les tiens", () => {
+    checked = new Set(walls().filter((w) => w.sure || w.closure).map((w) => w.id));
+    close();
+  }), button("Garder les miens", "", "Fermer", close))];
 }
 
 const scanCta = (main = false) => row(cta("Scanner au téléphone", `Filmer ${filmed()} : les images arrivent et se placent en direct`, main ? "primary" : "", () => startScan()));
 
 async function restart() {
+  if (denseInfo()) await stopDense();
   restarting = true;
   restarted = await photoTask("photos.extract", { fresh: true }).catch((error: Error) => ({ error: error.message })).finally(() => { restarting = false; });
   if (restarted?.realigned_m === null && guide.plan?.fit) await save({ plan: { ...guide.plan, fit: null } });
@@ -391,7 +428,7 @@ function positionsStep() {
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back())];
   if (photo.busy === "scan.live") return [intro(scanTitle(), scanFinal() ? "Le téléphone a fini : toutes les images sont recalculées ensemble, comme des photos." : "Les images du téléphone arrivent au fil du scan et se placent en direct dans la vue."),
     ...scanPanel(), ...scanFinal() ? progress("photos.extract", photo.fraction, photo.message, photo.started) : [], footer(...scanButtons())];
-  if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", "Le scan est placé. L'IA reconnaît murs, sol, plafond, meubles et lampes sur chaque image, puis le nuage dense remplit les murs. Tu peux l'arrêter : l'étape des murs reprendra ce qui est fait."),
+  if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", `Le scan est placé. L'IA reconnaît murs, sol, plafond, meubles et lampes sur chaque image (moins d'une minute), puis l'étape des murs s'ouvre${denseAuto() ? " ; le nuage dense suivra en fond" : ""}. Tu peux l'arrêter : l'étape des murs reprendra ce qui est fait.`),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "photos.extract") return [restarting ? intro("Je recommence l'analyse", "Tout est refait depuis les photos. L'ancien résultat reste en place jusqu'à la fin. Tu peux tourner la vue pendant le calcul.")
     : intro("Je place tes photos", "Chaque cône est une photo placée, les points sont les détails retrouvés sur plusieurs photos. Tu peux tourner la vue pendant le calcul."),
@@ -444,17 +481,17 @@ function photoWalls() {
   const validate = button("Valider les murs", same && done.length ? "" : "primary", "Créer les murs cochés", () => run(() => act("Création des murs", validateWalls)));
   validate.disabled = axes.size < 2;
   const doubt = walls().find((w) => !w.sure && !w.component && !w.meuble);
-  const densify = button(`Densifier (≈ ${proposal.densify_min} min)`, "", "Optionnel : nuage dense, plus de murs trouvés", () => run(densifyCloud));
   const angles = missing();
   return [
     ...understandCard(async () => { await loadProposal(true); render(); paint(); }), ...piecesCard(() => { render(); paint(); }),
+    ...noteCard(),
     list,
     ...walls().length && axes.size < 2 ? [el("p", "warn", "Coche au moins un mur dans chaque direction.")] : [],
     row(validate),
     ...doubt ? [card(`Le ${lower(doubt.label)} est incertain`,
-      `${doubt.reason[0].toUpperCase()}${doubt.reason.slice(1)}. Deux solutions : clique un de ses angles sur 2 photos, ou lance la densification (≈ ${proposal.densify_min} min, optionnelle).`,
-      button("Cliquer sur les photos", "", "Valider ce mur et cliquer un de ses angles", () => run(() => act("Création des murs", () => clickWall(doubt)))), ...proposal.dense ? [] : [densify])]
-      : proposal.dense ? [] : [card("D'autres murs ?", `La densification cherche plus de points (≈ ${proposal.densify_min} min, optionnelle).`, densify)],
+      `${doubt.reason[0].toUpperCase()}${doubt.reason.slice(1)}. Clique un de ses angles sur 2 photos${proposal.dense ? "" : ", ou attends le nuage dense"}.`,
+      button("Cliquer sur les photos", "", "Valider ce mur et cliquer un de ses angles", () => run(() => act("Création des murs", () => clickWall(doubt)))))] : [],
+    ...photoInfo().busy ? [] : denseCard(() => run(() => denseInBackground()), proposal.densify_min),
     ...angles.length ? [card("Angles à préciser", `Ces angles n'ont pas été trouvés : clique-les sur 2 photos pour que les longueurs soient justes.`,
       ...angles.map(([wall, end]) => button(`${wall.label}, ${side(wall, end)}`, "", "Cliquer cet angle sur 2 photos", () => run(() => clickAngle(wall, end)))))] : [],
   ];
@@ -465,8 +502,6 @@ function wallsStep() {
   if (photo.busy === "meubles.reconnus") return [intro("Meubles comparés au catalogue IKEA", "Chaque meuble reconnu est comparé aux articles du catalogue importé : dimensions mesurées sur les photos et ressemblance entre l'image et la description de l'article."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", "Chaque photo est découpée en murs, sol, plafond, portes, fenêtres, meubles et lampes, sur ce PC. Les murs viennent ensuite des seuls points « mur »."),
-    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
-  if (photo.busy === "photos.densify") return [intro("Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (tool === "trace") return [intro("Trace la pièce", "Clique chaque angle dans la vue de dessus : la grille de 5 cm, l'angle droit et les murs existants sont aimantés. Pour une longueur exacte, tape-la en cm puis Entrée. Clique le premier angle pour fermer."),
     ...controls(), ...sketch?.points ? [opacity(sketch)] : []];
@@ -631,20 +666,14 @@ async function act(text: string, task: () => Promise<unknown>) {
 }
 
 async function validateWalls() {
-  await call("photos.create_walls", { source: photoInfo().source, walls: [...checked] });
+  await call("photos.create_walls", { source: photoInfo().source, walls: [...checked], version: proposal?.version });
+  denseNote = null;
   guide.done = [...guide.done.filter((n) => n < guide.step), guide.step];
   delete guide.measures;
   await save();
   await update();
   await loadPlan();
   await loadProposal(true);
-  render();
-}
-
-async function densifyCloud() {
-  render();
-  await photoTask("photos.densify");
-  await loadProposal();
   render();
 }
 
@@ -942,7 +971,7 @@ host.documents().then((folder) => { parent ||= `${folder}\\3D_Plans`; if (!info)
 
 document.addEventListener("plans3d:opened", (event) => run(async () => {
   const opened = (event as CustomEvent<Info | null>).detail;
-  [info, creating, proposal, result, next, checked, fitted, everything, restarted] = [opened, false, null, null, null, new Set(), null, false, null];
+  [info, creating, proposal, result, next, checked, fitted, everything, restarted, denseNote] = [opened, false, null, null, null, new Set(), null, false, null, null];
   resetFour();
   resetBuild();
   closeDrawing();

@@ -89,6 +89,7 @@ let timer = 0;
 let guided: Guided | null = null;
 let live: { total: number; done: Set<number>; placed: number[]; pairs: number; points: number; stage: number } | null = null;
 let touched = false;
+let dense: { fraction: number; message: string; started: number } | null = null;
 
 const cameras = () => located?.cameras ?? [];
 const guidedClicks = (): { id: number; image: string; u: number; v: number; anchor: string }[] => guided?.picks ? guided.picks().map((p) => ({ ...p, id: 0, anchor: guided!.anchor })) : clicks.filter((c) => c.anchor === guided?.anchor);
@@ -151,7 +152,7 @@ function render() {
   densifyButton.hidden = openButton.hidden = !located;
   title.textContent = `${source} · photo ${cameras().findIndex((c) => c.name === image) + 1} / ${count}`;
   toolsState.textContent = source ? `Outils photo : ${installed ? "COLMAP installé" : "non installés"}` : "";
-  for (const b of [installButton, extractButton, densifyButton]) b.disabled = Boolean(busy);
+  for (const b of [installButton, extractButton, densifyButton]) b.disabled = Boolean(busy || dense);
   const stopped = interrupted();
   if (stopped) state.replaceChildren(`Calcul interrompu (${TASKS[stopped].toLowerCase()}) — `, button("relancer", "link", "Relancer le calcul", () => run(() => photoTask(stopped))));
   else if (!busy) state.textContent = !installed ? "Outils photo non installés" : !located ? "Positions non calculées" : [`${count} photo${plural} positionnée${plural}`,
@@ -576,6 +577,22 @@ export async function photoTask(method: string, params: Record<string, unknown> 
 
 export const stopTask = () => call("photos.stop", { source });
 
+export const denseInfo = () => dense;
+export const stopDense = () => call("photos.stop", { source, dense: true });
+
+export async function denseTask(id = source) {
+  if (dense || !id) return null;
+  dense = { fraction: NaN, message: "", started: Date.now() };
+  render();
+  try {
+    return await call<Record<string, unknown> | null>("semantique.dense", { source: id });
+  } finally {
+    dense = null;
+    render();
+    await refresh().catch(report);
+  }
+}
+
 export async function autoPositions() {
   await refresh();
   if (busy || !source || cameras().length) return;
@@ -675,6 +692,10 @@ form.onsubmit = (event) => {
 
 onEvent((event) => {
   if (event.event === "photos.live" && LIVE.has(busy)) return showLive(event);
+  if (event.event === "progress" && event.method === "semantique.dense" && dense) {
+    dense = { ...dense, fraction: Number(event.fraction), message: String(event.message ?? "") };
+    return void document.dispatchEvent(new CustomEvent("plans3d:dense"));
+  }
   if (event.event !== "progress" || event.method !== busy) return;
   step = { ...step, fraction: Number(event.fraction), message: String(event.message ?? "") };
   showStep();
