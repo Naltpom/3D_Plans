@@ -90,14 +90,14 @@ def floor(points, up, reach):
     return normal, middle
 
 
-def isolate(model):
+def isolate(model, background=None):
     found, centers, up = coverage(model, 'objet'), photos.camera_centers(model), photos.unit(photos.image_ups({**model, 'orientation': np.ones(len(model['q']))}).sum(0))
-    rel, around = model['P'][np.diff(model['Tptr']) >= 3] - found['center'], centers - found['center']
+    long = np.diff(model['Tptr']) >= 3; rel, around = model['P'][long] - found['center'], centers - found['center']; other = np.zeros(len(rel), bool) if background is None else background[long]
     reach = np.median(np.linalg.norm(around - np.outer(around @ up, up), axis=1))
     up, base = floor(rel[np.linalg.norm(rel - np.outer(rel @ up, up), axis=1) < 0.9 * reach], up, reach)
     e1 = photos.unit(np.cross(up, [1.0, 0, 0] if abs(up[0]) < 0.9 else [0, 1.0, 0])); e2 = np.cross(up, e1)
     xy, h, ground = np.stack([rel @ e1, rel @ e2], 1), (rel - base) @ up, 0.0; near = np.linalg.norm(xy, axis=1)
-    inside = (near < 0.75 * reach) & (h > ground + 0.02 * reach) & (h < ground + 2.5 * reach)
+    inside = (near < 0.75 * reach) & (h > ground + 0.02 * reach) & (h < ground + 2.5 * reach) & ~other
     if np.count_nonzero(inside) < 30: raise ValueError("objet introuvable : tourne autour en le gardant au centre de l'image")
     points = np.c_[xy, h][inside]; gap = cKDTree(points).query(points, 5)[0][:, -1]; radius = 2.5 * np.median(gap); points = points[gap < radius]
     pairs = cKDTree(points).query_pairs(radius, output_type='ndarray')
@@ -117,6 +117,16 @@ def isolate(model):
     sample = np.random.default_rng(0).permutation(len(h))[:PHONE_POINTS]
     shown = np.stack([local[sample, 0] - lo[0], h[sample], local[sample, 1] - lo[1]], 1)
     return {'dims': [float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(top)], 'boxes': [{k: float(v) for k, v in b.items()} for b in shapes], 'simple': simple, 'points': len(h)}, shown
+
+
+def background(model, images):
+    from . import semantique as S
+    if not S.installed(): return None
+    try:
+        maps = [S.ADE[S.segment(os.path.join(images, str(name)))] for name in model['names']]
+        labels, _ = S.vote(model, maps, model['P'], np.repeat(np.arange(len(model['P'])), np.diff(model['Tptr'])), model['Timg'])
+    except Exception: return None
+    return np.isin(labels, S.BACKGROUND)
 
 
 def rotation2(degrees):
@@ -272,7 +282,7 @@ class Scan:
                 photos.run_colmap(['model_converter', '--input_path', folder, '--output_path', folder, '--output_type', 'TXT'], work('convert.log'), progress, .92, .95, 'lecture')
             model = max((photos.read_text_model(folder)[0] for folder in folders(out)), key=lambda m: len(m['names']), default=None)
             if model is None or len(model['names']) < 8: raise ValueError("trop peu d'images placées pour l'objet : fais un tour de plus")
-            self.object, shown = isolate(model); self.info.update(placed=len(model['names']), **{k: v for k, v in coverage(model, 'objet').items() if k != 'center'})
+            self.object, shown = isolate(model, background(model, work('images'))); self.info.update(placed=len(model['names']), **{k: v for k, v in coverage(model, 'objet').items() if k != 'center'})
             self.cloud = {'version': self.cloud.get('version', 0) + 1, 'points': shown.round(4).ravel().tolist(), 'colors': [], 'box': [self.object['dims'][0], self.object['dims'][2], self.object['dims'][1]]}
             self.final = 'objet'
         except photos.Stopped: pass

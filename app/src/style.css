@@ -627,3 +627,6 @@ body.guided #photo-view.guided { inset: 48px 420px 30px 300px; }
 .popover { position: fixed; z-index: 50; width: 260px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 13px; }
 .popover label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
 #cloud-legend { max-height: 50vh; overflow: auto; }
+.pieces { display: flex; flex-direction: column; gap: 8px; }
+.piece { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--raised); font-size: 13px; }
+.piece select { width: 100%; }

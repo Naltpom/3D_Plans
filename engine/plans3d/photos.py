@@ -679,7 +679,8 @@ def photos_colmap(path, source):
         expressions = line_expressions(source, yaw, expr, axis) if expr.startswith(LINE) else [axis_expression(source, yaw, expr, axis, sign * plane['offset'])[0]]
         observations += [Obs(f'{source}:{plane_id}' + ':b' * k, expression, sign * plane['offset'], (sigma_m or PLANE_SIGMA_M) / scale, source, 'photo', f'plan {plane["id"]} ({axis})')
                          for k, expression in enumerate(expressions)]
-    observations += click_observations(project, source, load_model(cache), frame, scale)
+    from .reconnus import observations as furniture_scale
+    observations += click_observations(project, source, load_model(cache), frame, scale) + furniture_scale(project, source)
     if yaw != '0': observations.append(Obs(f'{source}:lacet', yaw, project.params()[yaw][0], YAW_PRIOR_RAD, source, 'supposé', 'lacet des photos a priori'))
     project.db.close(); return observations
 

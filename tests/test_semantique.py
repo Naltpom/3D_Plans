@@ -83,3 +83,21 @@ def test_visibility_reader(tmp_path):
 def test_every_ade_label_has_a_class():
     assert S.ADE.shape == (150,) and S.ADE[0] == S.INDEX['mur'] and S.ADE[7] == S.INDEX['lit'] and S.ADE[2] == S.INDEX['ciel'] and len(S.PALETTE) == len(S.KEYS)
 
+
+
+def test_catalogue_ranking_prefers_matching_dimensions():
+    from plans3d import reconnus
+    entries = [{'id': 'a', 'size': [1.6, 0.9, 2.1]}, {'id': 'b', 'size': [0.9, 1.0, 2.0]}, {'id': 'c', 'size': [1.4, 0.5, 1.95]}]
+    found = reconnus.rank({'size': [1.36, 0.47, 1.9]}, entries)
+    assert entries[found[0][1]]['id'] == 'c' and abs(found[0][2] - 1.03) < 0.03
+
+
+def test_clip_tokenizer_words(tmp_path, monkeypatch):
+    from plans3d import reconnus
+    import json
+    (tmp_path / 'clip_vocab.json').write_text(json.dumps({'a</w>': 320, 'bed</w>': 2722, 'b': 65, 'e': 68, 'd</w>': 67, 'be': 1000}), encoding='utf-8')
+    (tmp_path / 'clip_merges.txt').write_text('#version\nb e\nbe d</w>\n', encoding='utf-8')
+    monkeypatch.setattr(S, 'FOLDER', str(tmp_path)); S.SESSION.pop('tok', None)
+    ids = reconnus.encode('A  Bed')
+    S.SESSION.pop('tok', None)
+    assert ids[:4] == [49406, 320, 2722, 49407] and len(ids) == 77

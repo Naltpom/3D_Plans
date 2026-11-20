@@ -8,7 +8,7 @@ import { closeDrawing, drawingOpen, drawingStep, openDrawing, type Helpers as Dr
 import { node, type Plan } from "./plan2d";
 import { highlight, setView, showWalls } from "./view3d";
 import { sessions } from "./seances";
-import { loadUnderstanding, understandCard } from "./comprendre";
+import { loadUnderstanding, piecesCard, understandCard } from "./comprendre";
 import { scaleEnter, scaleStep as measuresStep, type Helpers as ScaleHelpers } from "./mesures";
 import { phoneCheck } from "./telephone";
 import { closeScan, openScan, scanButtons, scanFinal, scanPanel, scanTitle } from "./scan";
@@ -57,6 +57,7 @@ const PHASES: Record<string, [string, string][]> = {
 };
 PHASES["semantique.analyse"] = [["téléchargement", "Téléchargement du modèle (une seule fois)"], ["photo", "Reconnaissance des objets sur chaque photo"],
   ["profondeurs", "Nuage dense"], ["étiquettes", "Étiquettes des points, murs et ouvertures"]];
+PHASES["meubles.reconnus"] = [["téléchargement", "Téléchargement du modèle image-texte (une seule fois)"], ["comparaison", "Comparaison au catalogue IKEA"]];
 PHASES["photos.restart"] = [...PHASES["photos.extract"].slice(0, 3), ["recalage", "Recalage sur l'ancien calcul"], PHASES["photos.extract"][3]];
 const KINDS: Record<string, string> = { cotes_csv: "Cotes", photos_colmap: "Photos", cadastre_pdf: "Cadastre", cadastre_geojson: "Cadastre", grille_alti: "Relief" };
 const MODE = "plans3d.mode";
@@ -446,7 +447,7 @@ function photoWalls() {
   const densify = button(`Densifier (≈ ${proposal.densify_min} min)`, "", "Optionnel : nuage dense, plus de murs trouvés", () => run(densifyCloud));
   const angles = missing();
   return [
-    ...understandCard(async () => { await loadProposal(true); render(); paint(); }),
+    ...understandCard(async () => { await loadProposal(true); render(); paint(); }), ...piecesCard(() => { render(); paint(); }),
     list,
     ...walls().length && axes.size < 2 ? [el("p", "warn", "Coche au moins un mur dans chaque direction.")] : [],
     row(validate),
@@ -461,6 +462,8 @@ function photoWalls() {
 
 function wallsStep() {
   const photo = photoInfo(), tool = drawing();
+  if (photo.busy === "meubles.reconnus") return [intro("Meubles comparés au catalogue IKEA", "Chaque meuble reconnu est comparé aux articles du catalogue importé : dimensions mesurées sur les photos et ressemblance entre l'image et la description de l'article."),
+    ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "semantique.analyse") return [intro("Analyse des photos par l'IA", "Chaque photo est découpée en murs, sol, plafond, portes, fenêtres, meubles et lampes, sur ce PC. Les murs viennent ensuite des seuls points « mur »."),
     ...progress(photo.busy, photo.fraction, photo.message, photo.started), footer(back(), stop())];
   if (photo.busy === "photos.densify") return [intro("Densification en cours", "Elle cherche des points sur les surfaces peu texturées, puis de nouveaux murs."),

@@ -35,6 +35,7 @@ ids = lambda *names: np.array([INDEX[n] for n in names])
 WALL_POINTS, FLOOR_EDGE, CEILING_EDGE = ids('mur', 'porte', 'tableau'), ids('mur', 'porte'), ids('mur')
 OUTSIDE, FURNITURE = ids('ciel', 'arbre', 'herbe', 'sol_ext'), ids('lit', 'canape', 'fauteuil', 'chaise', 'table', 'bureau', 'ecran', 'armoire', 'etagere', 'sanitaire', 'miroir')
 ON_WALL = ids('mur', 'porte', 'fenetre', 'tableau', 'radiateur', 'rideau')
+BACKGROUND = ids('mur', 'sol', 'plafond', 'porte', 'fenetre', 'rideau', 'tableau', 'radiateur', 'ciel', 'arbre', 'herbe', 'sol_ext', 'batiment', 'personne')
 SIZE, VERSION, MAX_DENSE = 768, 1, 1_500_000
 CELL_M, BAND_M, LINE_M, NMS_M, SUPPORT_M, RANGE_M, WALL_CELL_M, REFINE_M, ASSOC_M = 0.05, 0.04, 0.02, 0.3, 0.4, 8.0, 0.05, 0.4, 0.05
 LOCK, SESSION = threading.Lock(), {}

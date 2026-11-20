@@ -5,3 +5,4 @@ IKEA et les noms de produits IKEA sont des marques d'Inter IKEA Systems B.V. 3D_
 Comprendre la pièce : rien n'est inclus dans ce dépôt ni dans l'installeur ; à la demande, l'appli télécharge dans %LOCALAPPDATA%\3D_Plans\ia :
 - ONNX Runtime DirectML 1.24.4 (https://pypi.org/project/onnxruntime-directml/, licence MIT, Microsoft) ;
 - SegFormer-B5 ADE20K converti en ONNX (https://huggingface.co/Xenova/segformer-b5-finetuned-ade-640-640, poids NVIDIA https://huggingface.co/nvidia/segformer-b5-finetuned-ade-640-640 sous licence NVIDIA Source Code License for SegFormer : usage non commercial seulement, ce qui convient à l'usage personnel de 3D_Plans). Jeu ADE20K : MIT CSAIL.
+- CLIP ViT-B/32 converti en ONNX (https://huggingface.co/Xenova/clip-vit-base-patch32, poids OpenAI https://huggingface.co/openai/clip-vit-base-patch32, licence MIT), pour comparer les meubles reconnus aux descriptions du catalogue.
